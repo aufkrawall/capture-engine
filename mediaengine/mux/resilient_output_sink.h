@@ -85,6 +85,7 @@ public:
     }
 
     int Close(AVIOContext** pbInOut);
+    // Explicit cancellation, including a pending spool that Close otherwise leaves to recording recovery.
     void Discard(AVIOContext** pbInOut = nullptr) noexcept;
 
     bool IsOpen() const noexcept {
@@ -121,6 +122,7 @@ private:
     bool BeginSpooling(const char* operation, DWORD win32Error);
     bool WriteSpoolHeader(bool finalized);
     void TryReplayAndResumeDirect();
+    void Reset(AVIOContext** pbInOut, bool discardPendingSpool) noexcept;
     void CloseHandles() noexcept;
     void FreeAvioContext(AVIOContext** pbInOut) noexcept;
 

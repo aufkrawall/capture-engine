@@ -1,6 +1,6 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-11-03 (local write-ahead output spool failover + replay, media-ended recording notice ABI 75, in-flight mux write busy accounting)
+Last cross-checked: 2026-11-04 (recovery-owned spool lifetime across writer teardown and reuse; notice ABI 75)
 
 ## Summary
 
@@ -109,6 +109,11 @@ Limits:
   replays the finalized `.spool` and publishes `capture_recovered_*` once the share reconnects. If live spooled bytes
   reach `kDefaultMaxLiveSpoolBytes` (2 GiB), the sink signals `SpoolExhausted()` so the encoder initiates an orderly
   stop while reserving `kDefaultFinalizeSpoolReserveBytes` (64 MiB) for flush and trailer writes.
+- **Spool ownership after Close (2026-11-04):** a pending finalized spool belongs to recording recovery. Destruction
+  and the next `Open` release the sink's resources without deleting it; only explicit `Discard` cancels that output.
+  Previously both paths called `Discard`, losing the locally buffered tail/trailer after an offline finalization.
+  `ResilientOutputSinkTest` replays and checks the exact bytes after destruction, reuse and a rejected next open,
+  and verifies explicit cancellation still deletes it. The existing `[OutputSpool]` finalize line records the handoff.
 - **Media-initiated stop notice (`common/capture/media_ended_recording.h`, ABI 75):** when the media helper ends a live
   recording on its own (`OutputFailed`, `SourceContractChanged`, `VideoOutputLost`, or `OutputSpoolExhausted`), it
   publishes `ce::media_end::RequestStop` (`CaptureState::mediaEndedRecording`, encoding the recording's live stamp and

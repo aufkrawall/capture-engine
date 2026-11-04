@@ -368,11 +368,11 @@ SpoolReplayResult ReplaySpoolForStaging(const std::filesystem::path& stagingPath
 }
 
 ResilientOutputSink::~ResilientOutputSink() {
-    Discard(nullptr);
+    Reset(nullptr, false);
 }
 
 int ResilientOutputSink::Open(const std::filesystem::path& stagingPath, AVIOContext** pbOut, Options options) {
-    Discard(pbOut);
+    Reset(pbOut, false);
     if (stagingPath.empty() || !pbOut)
         return AVERROR(EINVAL);
 
@@ -478,10 +478,17 @@ int ResilientOutputSink::Close(AVIOContext** pbInOut) {
 }
 
 void ResilientOutputSink::Discard(AVIOContext** pbInOut) noexcept {
+    Reset(pbInOut, true);
+}
+
+void ResilientOutputSink::Reset(AVIOContext** pbInOut, bool discardPendingSpool) noexcept {
     FreeAvioContext(pbInOut);
     CloseHandles();
-    if (!spoolPath_.empty())
+    // Close handed a pending spool to recording recovery. Only an explicit cancellation may delete it;
+    // destroying or reusing the writer releases resources without taking that ownership back.
+    if (!spoolPath_.empty() && (!pendingSpool_ || discardPendingSpool))
         DeleteFileW(spoolPath_.c_str());
+    spoolPath_.clear();
     open_ = false;
     spooling_ = false;
     pendingSpool_ = false;
