@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/present/present_stage_cost.h"
 
 
 void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive) {
@@ -104,7 +105,11 @@ if (limit == 0.0f) {
 
     // Signal current frame
     uint64_t signalValue = dx12_hook_g_PrerenderFrameIndex + 1;
-    HRESULT signalHr = ctx.queue->Signal(fence, signalValue);
+    HRESULT signalHr = S_OK;
+    {
+        ce::present_stage_cost::StageScope markerStage(ce::present_stage_cost::Stage::kPrerenderMarker);
+        signalHr = ctx.queue->Signal(fence, signalValue);
+    }
     if (FAILED(signalHr)) {
         if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
             HookLog("DX12: Prerender signal failed hr=0x%08X value=%llu", signalHr, signalValue);
@@ -121,6 +126,7 @@ if (limit == 0.0f) {
         uint64_t waitValue = (dx12_hook_g_PrerenderFrameIndex - lookback) + 1;
 
         if (waitFence->GetCompletedValue() < waitValue) {
+            ce::present_stage_cost::StageScope waitStage(ce::present_stage_cost::Stage::kPrerenderWait);
             waitForFence(waitFence, waitEvent, waitValue);
         }
     }

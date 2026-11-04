@@ -7,7 +7,9 @@
 #include <cstdarg>
 #include <cstdio>
 
+#ifndef VK_LAYER_CE_OVERLAY
 DWORD DX12_GetGamePresentThreadId();
+#endif
 
 namespace ce::present_stage_cost {
 
@@ -27,7 +29,11 @@ Aggregator& PresentStageAggregator() {
 // Early returns before the present context is captured (shutdown, reentrancy,
 // invisible helper windows) only know the thread id.
 ThreadRole ClassifyCurrentThreadWithoutPresentContext() {
+#ifdef VK_LAYER_CE_OVERLAY
+    return ThreadRole::kGame;  // the layer has one kind of present: the application's vkQueuePresentKHR
+#else
     return ClassifyThreadRole(DX12_GetGamePresentThreadId(), GetCurrentThreadId(), false);
+#endif
 }
 
 namespace {
@@ -101,7 +107,7 @@ void ReportPresentStageCostIfDue() {
         if (summary.calls == 0) {
             continue;
         }
-        char line[1536];
+        char line[2048];
         FormatRoleSummary(summary, elapsedMs, line, sizeof(line));
         HookLogImportant("%s", line);
     }

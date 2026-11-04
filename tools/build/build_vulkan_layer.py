@@ -76,6 +76,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # frame-generation callback that produced it. The layer has no such
         # callback, so the ring stays empty here, but the symbol is required.
         os.path.join(PROJECT_ROOT, "hook", "present", "present_callback_association.cpp"),
+        # [PRESENT STAGE COST] for vkQueuePresentKHR; the layer's host thread reports it.
+        os.path.join(PROJECT_ROOT, "hook", "present", "present_stage_cost_report.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_metrics_publisher.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "ngx", "nv_lod_spread_override.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "metrics", "perf_logger.cpp"),

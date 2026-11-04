@@ -6,6 +6,7 @@
 
 #include "common/logging/log_meter.h"
 
+#include "hook/present/present_stage_cost.h"
 #include "hook/sharpen/sharpen_request.h"
 
 // The post-process pass (sharpen + display gamma) as seen from the DX12 frame transaction.
@@ -116,6 +117,7 @@ void FrameProcessSession::RunPostProcessOnNormalRoute() {
         postProcessOutcome = ce::post_process_route::ClassifyNormalRouteSkip(inputs);
         return;
     }
+    ce::present_stage_cost::StageScope postProcessStage(ce::present_stage_cost::Stage::kPostProcess);
     RecordPostProcessResult(
         SharpenDX12PresentedFrame(pSwapChain, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx), false);
 }

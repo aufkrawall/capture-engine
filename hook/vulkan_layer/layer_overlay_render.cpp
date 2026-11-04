@@ -7,6 +7,7 @@
  */
 
 #include "layer_overlay_internal.h"
+#include "hook/present/present_stage_cost.h"
 
 void MarkSubmissionSlotStranded(OverlayState& state, uint32_t slot) {
     if (slot >= state.slotStranded.size() || state.slotStranded[slot] != 0) {
@@ -433,6 +434,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     }
 
     // Record command buffer
+    ce::present_stage_cost::EnterStage(ce::present_stage_cost::Stage::kOverlayRecord);
     VkCommandBuffer cmd = state.commandBuffers[submissionSlot];
     disp->fp_vkResetCommandBuffer(cmd, 0);
 
@@ -498,6 +500,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     disp->fp_vkEndCommandBuffer(cmd);
 
     // Submit
+    ce::present_stage_cost::EnterStage(ce::present_stage_cost::Stage::kOverlaySubmit);
     VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;

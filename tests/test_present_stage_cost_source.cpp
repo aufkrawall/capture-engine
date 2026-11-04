@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <regex>
 #include <string>
+#include <utility>
 
 #include "source_fragment_reader.h"
 
@@ -144,6 +145,77 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     const size_t postLimiter = core.find("g_SharedFpsLimiter.ApplyPostPresent();", flush);
     ASSERT_NE(postLimiter, std::string::npos);
     EXPECT_TRUE(PrecededWithin(core, postLimiter, "CostStage::kLimiter", 1));
+}
+
+// CE's swapchain wrappers process the frame themselves when no foreign chain is loaded, and the detour their real
+// Present re-enters only nests inside it: without a recorder that whole route was invisible (dx12_test, 20261104_133008:
+// overlay n=0, own=42 us).
+TEST(PresentStageCostSourceTest, TheSwapchainWrappersRecordTheFrameTheyProcess) {
+    const std::string wrapper = ReadProjectSource("hook/wrappers/dxgi_swapchain_wrap_present.cpp");
+    ASSERT_FALSE(wrapper.empty());
+    for (const auto& [signature, forward] :
+         {std::pair<const char*, const char*>{"HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT",
+                                              "HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);"},
+          std::pair<const char*, const char*>{"HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT",
+                                              "HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags"}}) {
+        const std::string body = FunctionBody(wrapper, signature);
+        ASSERT_FALSE(body.empty()) << signature;
+        const char* ordered[] = {"ce::present_stage_cost::DetourRecorder stageCost;", "g_InWrapperPresent = true;",
+                                 "EnterStage(CostStage::kOverlay);", "EnterStage(CostStage::kLimiter);",
+                                 "CostScope overlayWaitStage(CostStage::kOverlayWait);",
+                                 "EnterStage(CostStage::kForward);", forward, "EnterStage(CostStage::kPostPresent);",
+                                 "CostScope deferredSignalStage(CostStage::kDeferredSignal);"};
+        size_t previous = 0;
+        for (const char* marker : ordered) {
+            const size_t position = body.find(marker, previous);
+            ASSERT_NE(position, std::string::npos) << signature << ": " << marker;
+            previous = position;
+        }
+    }
+}
+
+// vkQueuePresentKHR has no DXGI detour around it: 200 us per present showed up in no CSV column
+// (Strange Brigade Vulkan, 20261104_131318).
+TEST(PresentStageCostSourceTest, TheVulkanPresentRecordsItsStagesAndItsHostThreadReports) {
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
+    const std::string detour = FunctionBody(present, "VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(");
+    ASSERT_FALSE(detour.empty());
+    const char* ordered[] = {"ce::present_stage_cost::DetourRecorder stageCost;", "EnterStage(CostStage::kEntry);",
+                             "CostScope limiterStage(CostStage::kLimiter);", "CostScope overlayStage(CostStage::kOverlay);",
+                             "EnterStage(CostStage::kForward);", "fp_vkQueuePresentKHR(queue,",
+                             "EnterStage(CostStage::kPostPresent);", "CostScope perfRowStage(CostStage::kPerfRow);"};
+    size_t previous = 0;
+    for (const char* marker : ordered) {
+        const size_t position = detour.find(marker, previous);
+        ASSERT_NE(position, std::string::npos) << marker;
+        previous = position;
+    }
+    const std::string internal = ReadProjectSource("hook/vulkan_layer/vulkan_layer_internal.h");
+    const size_t limit = internal.find("inline uint32_t ApplyPrerenderLimitVulkan(");
+    ASSERT_NE(limit, std::string::npos);
+    const size_t wait = internal.find("Stage::kPrerenderWait", limit);
+    const size_t marker = internal.find("Stage::kPrerenderMarker", limit);
+    EXPECT_NE(wait, std::string::npos);
+    EXPECT_NE(marker, std::string::npos);
+    const std::string ipc = ReadProjectSource("hook/vulkan_layer/layer_ipc.cpp");
+    EXPECT_NE(ipc.find("ce::present_stage_cost::ReportPresentStageCostIfDue();"), std::string::npos);
+    const std::string build = ReadProjectSource("tools/build/build_vulkan_layer.py");
+    EXPECT_NE(build.find("\"present_stage_cost_report.cpp\""), std::string::npos);
+}
+
+// A Signal before the overlay costs a few microseconds (20261104_132859): the split that shows it keeps it apart from
+// the wait on the same line.
+TEST(PresentStageCostSourceTest, TheD3D12PrerenderLimitSeparatesItsMarkerFromItsWait) {
+    const std::string prerender = ReadProjectSource("hook/d3d12/dx12_hook_prerender.cpp");
+    ASSERT_FALSE(prerender.empty());
+    const size_t marker = prerender.find("Stage::kPrerenderMarker");
+    const size_t signal = prerender.find("signalHr = ctx.queue->Signal(fence, signalValue);", marker);
+    const size_t wait = prerender.find("Stage::kPrerenderWait", signal);
+    const size_t waitCall = prerender.find("waitForFence(waitFence, waitEvent, waitValue);", wait);
+    ASSERT_NE(marker, std::string::npos);
+    ASSERT_NE(signal, std::string::npos);
+    ASSERT_NE(wait, std::string::npos);
+    ASSERT_NE(waitCall, std::string::npos);
 }
 
 // The present threads never format or log: the hook service loop reports.

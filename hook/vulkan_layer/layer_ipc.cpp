@@ -16,6 +16,7 @@
 #include "hook/runtime/ipc_client.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/metrics/system_metrics.h"
+#include "hook/present/present_stage_cost.h"
 #include "hook/present/vulkan_renderer_policy.h"
 #include "layer_participation.h"
 #include "layer_main.h"
@@ -419,6 +420,7 @@ DWORD WINAPI LayerHostLifecycleThread(LPVOID) {
                 DWORD wait = WAIT_FAILED;
                 do {
                     PerfLogger::Get().Service();
+                    ce::present_stage_cost::ReportPresentStageCostIfDue();
                     wait = count ? WaitForMultipleObjects(count, waits, FALSE, kPerfServiceIntervalMs) : WAIT_FAILED;
                 } while (wait == WAIT_TIMEOUT);
                 const DWORD signaledIndex = wait >= WAIT_OBJECT_0 && wait < WAIT_OBJECT_0 + count

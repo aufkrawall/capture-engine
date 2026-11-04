@@ -43,6 +43,7 @@ struct FrameLimitState;
 #include "hook/pacing/fps_limiter.h"
 
 #include "hook/metrics/perf_logger.h"
+#include "hook/present/present_stage_cost.h"
 
 #include "hook/metrics/performance_metrics.h"
 
@@ -277,13 +278,18 @@ inline uint32_t ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float 
         const size_t oldIndex = (state.frameIndex - lookback) % state.fences.size();
         VkFence oldFence = state.fences[oldIndex];
         const uint64_t waitStartUs = PerfLogger::GetQpcUs();
-        const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &oldFence, VK_TRUE, UINT64_MAX);
+        VkResult waitResult = VK_SUCCESS;
+        {
+            ce::present_stage_cost::StageScope waitStage(ce::present_stage_cost::Stage::kPrerenderWait);
+            waitResult = disp->fp_vkWaitForFences(device, 1, &oldFence, VK_TRUE, UINT64_MAX);
+        }
         waitUs += PerfLogger::GetQpcUs() - waitStartUs;
         if (waitResult != VK_SUCCESS) {
             LayerLog("Vulkan Prerender: wait failed result=%d queue=%p frame=%llu", static_cast<int>(waitResult), queue,
                      static_cast<unsigned long long>(state.frameIndex));
             return 0;
         }
+        ce::present_stage_cost::StageScope resetStage(ce::present_stage_cost::Stage::kPrerenderMarker);
         disp->fp_vkResetFences(device, 1, &oldFence);
         state.submitted[oldIndex] = false;
     }
@@ -302,7 +308,11 @@ inline uint32_t ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     ScopedBorrowedQueueSubmission prerenderSubmissionGuard(queue, queueAlreadySynchronized);
-    const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
+    VkResult submitResult = VK_SUCCESS;
+    {
+        ce::present_stage_cost::StageScope markerStage(ce::present_stage_cost::Stage::kPrerenderMarker);
+        submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
+    }
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Prerender: marker submit failed result=%d queue=%p", static_cast<int>(submitResult), queue);
         return 0;

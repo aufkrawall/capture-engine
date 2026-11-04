@@ -42,11 +42,14 @@ enum class Stage : uint8_t {
     kCorePolicy,     // ExecutePresentCore routing/policy glue
     kMetrics,        // UpdateDXGIPresentMetricsAndPublish
     kFsrTopmost,     // no-callback FSR FG topmost final-batch observation
-    kOverlay,        // ProcessFrame / overlay composite, minus the D3D12 parts below: routing and policy
+    kOverlay,        // ProcessFrame / overlay composite, minus the parts below: routing and policy
+    kPrerenderWait,  // D3D12, Vulkan: the CPU prerender limit waiting for the GPU
+    kPrerenderMarker,// D3D12, Vulkan: its Signal or empty submit for this frame
+    kPostProcess,    // D3D12: the sharpen and gamma pass on the normal route
     kOverlayReset,   // D3D12: allocator and command list reset
-    kOverlayRecord,  // D3D12: back buffer lookup, barriers, the overlay's build and draw recording
-    kOverlaySubmit,  // D3D12: list close, ExecuteCommandLists, Signal
-    kCapture,        // D3D12: publishing the captured frame
+    kOverlayRecord,  // D3D12, Vulkan: back buffer lookup, barriers, the overlay's build and draw recording
+    kOverlaySubmit,  // D3D12, Vulkan: list close, the queue submit, Signal
+    kCapture,        // D3D12, Vulkan: publishing the captured frame
     kLimiter,        // FPS limiter, latency overrides, vsync override, backbuffer latency wait
     kOverlayWait,    // overlay GPU-completion wait before Present
     kPostPresent,    // scope teardown and whatever follows the Present outside the stages below
@@ -72,6 +75,9 @@ constexpr const char* StageName(Stage stage) {
         case Stage::kMetrics: return "metrics";
         case Stage::kFsrTopmost: return "fsr_topmost";
         case Stage::kOverlay: return "overlay";
+        case Stage::kPrerenderWait: return "prerender_wait";
+        case Stage::kPrerenderMarker: return "prerender_marker";
+        case Stage::kPostProcess: return "post_process";
         case Stage::kOverlayReset: return "overlay_reset";
         case Stage::kOverlayRecord: return "overlay_record";
         case Stage::kOverlaySubmit: return "overlay_submit";

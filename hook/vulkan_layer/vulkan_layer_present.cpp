@@ -5,6 +5,7 @@
 #include "vulkan_queue_depth_pacing.h"
 #include "vulkan_reflex_limiter.h"
 #include "hook/metrics/perf_row_source_stats.h"
+#include "hook/present/present_stage_cost.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
@@ -12,6 +13,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         return (disp && disp->fp_vkQueuePresentKHR) ? disp->fp_vkQueuePresentKHR(queue, pPresentInfo)
                                                    : VK_ERROR_INITIALIZATION_FAILED;
     }
+
+    using ce::present_stage_cost::EnterStage;
+    using CostStage = ce::present_stage_cost::Stage;
+    using CostScope = ce::present_stage_cost::StageScope;
+    ce::present_stage_cost::DetourRecorder stageCost;
+    EnterStage(CostStage::kEntry);
 
     g_FGCompat.RecordPresentForNvidiaSmoothMotion();
 
@@ -179,7 +186,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // DXVK D3D9 is paced here too: Vulkan owns the final presentation boundary,
     // and actively bootstrapping a parallel DX9 hook is unsafe for translation
     // runtimes with global renderer state.
+    EnterStage(CostStage::kContext);
     if (!asyncPresentDetected) {
+        CostScope limiterStage(CostStage::kLimiter);
         const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
         const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
         g_VulkanReflexLimiter.SetDevice(queueDevice, disp);
@@ -348,6 +357,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 // Fence wait is tracked separately (it's GPU sync, not our overhead).
                 int32_t fenceWaitUs = 0;
                 int32_t overlayGpuUs = 0;
+                CostScope overlayStage(CostStage::kOverlay);
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWaitSemaphores,
                                                      currentWaitSemaphoreCount, &overlayDone, asyncPresentDetected,
@@ -395,6 +405,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     return;
                 }
 
+                CostScope captureStage(CostStage::kCapture);
                 int64_t captureStartUs = PerfLogger::GetQpcUs();
                 VkSemaphore captureDone = VK_NULL_HANDLE;
                 bool captureStateMissing = false;
@@ -474,6 +485,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             // screen both show the filtered frame, and CE's own overlay pixels
             // are written after the filter has run so they are never sharpened.
             {
+                CostScope postProcessStage(CostStage::kPostProcess);
                 VkSemaphore sharpenDone = VK_NULL_HANDLE;
                 if (SharpenPresentedFrame(sd->device, sd->swapchain, queue, sd->images[idx], idx, sd->format,
                                           sd->colorSpace, sd->extent, sd->imageCount, sd->images.data(),
@@ -540,9 +552,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);
 
     VkResult res = VK_SUCCESS;
+    EnterStage(CostStage::kForward);
     if (disp && disp->fp_vkQueuePresentKHR) {
         res = disp->fp_vkQueuePresentKHR(queue, (pPresentInfo && modified) ? &presentInfoCopy : pPresentInfo);
     }
+    EnterStage(CostStage::kPostPresent);
     const int64_t presentCallEndUs = PerfLogger::GetQpcUs();
     perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
     NoteVulkanQueueDepthPresentResult(sd, queueDepthTag, res);
@@ -550,6 +564,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (res != VK_SUCCESS && pPresentInfo && pPresentInfo->swapchainCount != 0 && pPresentInfo->pSwapchains)
         LogSwapchainInvalidationResult("vkQueuePresentKHR", res, pPresentInfo->pSwapchains[0]);
     if (!asyncPresentDetected) {
+        CostScope limiterStage(CostStage::kLimiter);
         if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
             g_SharedFpsLimiter.ApplyPostPresent();
             perfMetrics.fpsLimitWaitUs += static_cast<int32_t>(g_SharedFpsLimiter.GetLastWaitUs());
@@ -567,6 +582,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // Log performance metrics. The overlay's percentile statistics are sampled
     // here rather than before the down-call: they exist only to fill this CSV row.
     if (PerfLogger::Get().IsEnabled()) {
+        CostScope perfRowStage(CostStage::kPerfRow);
         if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
             ce::perf_row::FillSourceStats(perfMetrics, *perf);
         }
