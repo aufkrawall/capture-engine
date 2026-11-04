@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-11-04 - XeFG's fence wait removed, Present1 records its stages; hardware run pending
+
+- **XeFG:** `DecideOverlayFenceCompletion` (`runtime_presented_swapchain.h`) sends a runtime-owned output chain to the deferred Signal the route
+  already flushes after the Present, inside its mutex. Slot proof still holds: upload slots are coupled to allocators, and those wait on
+  `fenceValues[idx]`, which that Signal now sets. `DX12: Overlay fence completion: <method>` logs each change.
+- **Flow coverage:** `FlowXeFG.GeneratedOutputsNeverWaitOnTheOverlayFence` failed with the exemption off and passes with it. The fake XeFG never
+  called Present1 before, so the real route was untested; it now does when the game does. All 17 XeFG scenarios pass. Not tested on an Intel GPU
+  or real XeFG. The next Talos XeFG run should show `overlay_submit` in tens of us, `overlay_wait` absent and no `Allocator[...] still in-flight`.
+- **Stage line:** `DetourPresent1` records like `DetourPresent`, every forward through `kForward`. New stages: `postsl_overlay` plus its record
+  and submit, the compute route's record and submit, `entry_wrapper`, `entry_api`, `entry_window`. Under a wrapper, Present1's detour now bills
+  CE instead of `forward`, so such a game's `own` can rise with no real change. Flow's clock is virtual: stage durations mean nothing there.
+- **Noticed, not changed:** XeFG keeps rotating through 16 slots because `ShouldReuseFinishedOverlaySlot` is off under FG, though every output
+  now has a Signal. `DetourPresent1`'s normal route never calls `NoteDX12PresentResultForVtablePath`, unlike `ExecutePresentCore`; effect unknown.
+
 ### 2026-11-04 - 0.1.7411 run: the cuts hold; XeFG's presenter is blocked on the overlay fence
 
 - **Session `20261104_144527`, all exit 0, no device removal:** Mirror's Edge and 32-bit `dx12_test` with Alt+Tab (18 focus edges together), Strange
