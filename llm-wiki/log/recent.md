@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-11-04 - 0.1.7414 run: `entry` fixed, XeFG status right from all-off; a one-present false FSR FG found, not fixed
+
+- **Session `20261104_195245`, Talos only, exit 0:** Streamline without FG, then XeFG from 20:00:06 until exit. `uncovered=0`, handoff `firstPresent=drawn endedWithoutOverlay=0 missing=0`, no `still in-flight`, no `overlay divergence`, no lost lines.
+- **`entry` validated on D3D12:** mean 0.6-1.8 us, p95 1.0-4.1, on both routes (was 10-25). No D3D11 game ran.
+- **XeFG status validated from all-off:** `generation=0->1` at 20:00:07.650, `runtime=XeFG published_type=4 published_multiplier=2` 5 ms later. Window #1 44.7/85.5 fps `decided=1`, #2-#5 2x. Off for the 1.4 s XeFG presented with generation 0, which is right.
+- **Not exercised:** XeFG right after DLSS or FSR (no other FG ran), and a menu without present IDs (`frameGenResult` 0 from 20:00:07.694 to exit, no `applicationStopped=1`). `Present1` result path: no minimized-window evidence.
+- **False FSR FG for one present, not fixed:** first Present on XeFG's chain (20:00:06.245) `FG detected via queue change`, `runtime=FSR_FG published_type=2 published_multiplier=2`, Off 3 ms later, though XeFG's presenter registered 127 ms earlier.
+  `InitOverlayBackend`'s queue-change heuristic runs on runtime-owned outputs, despite the comment on `HandleDX12RuntimeOwnedOutputFrame`. Side effects: two FG transitions, dormant mode off, and `FG→off — clearing FG runtime ownership` of the queue XeFG got at 20:00:06.118, not granted again in the run. No visible harm beyond at most one frame's label.
+  Absent from `20261104_183540` and `20261104_144527`, where another FG runtime ran first; why is inferred (the SL-off grace blocks the heuristic). No flow scenario covers XeFG as the first FG runtime after a Streamline chain without FG.
+- **XeFG's Present calls come in pairs, the screen does not:** CSV rows 0.5 ms apart, then ~24.5 ms at base 40. Display series: stddev median 801 us, p95 1037, 83.6 fps, 1% low 67.8; `Pacing health` jag 421-991 us. Same rule as Portal RTX: present calls prove nothing. `nvFlipSchedule applied=1`, so NVIDIA's flip schedule is not what spreads them; what does is unproven.
+- **`core_policy` tail on Streamline's no-FG route is unlabelled Signal, almost certainly:** mean 28-68, p95 106-180, against 6/11 on Present1. CSV `post_present_us` 91-123 in runs, else 4; `deferred_signal` n=0 there, because the external-overlay bypass route calls `InvokeDX12FlushDeferredSignal` outside any stage. Size and route match the known 73-100 us; not measured directly. The runs end as `Ray Reconstruction stopped rendering` fires (120-125 presents without an upscaler).
+- **One-off:** `overlay_submit` 18.95 ms once, 23 ms after XeFG's chain arrived, `fence_wait_us` 0; `20261104_183540` had one of 13.1 ms in the same place. Presents block up to 17.7 ms in that window, so display back-pressure is the likely cause, inferred.
+
 ### 2026-11-04 - XeFG status fixed, per-Present layer lookup removed, Present1 reports its result; hardware run pending
 
 - **`entry`:** `ShouldRewriteFinalPresent` takes the metering query as a callable and asks last, so a process without an armed FIFO never looks for the layer.

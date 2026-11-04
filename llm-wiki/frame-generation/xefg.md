@@ -180,6 +180,14 @@ ORIGIN]` (originator per stream, 10 s summary), `XeFG: ...` (every state call, i
 cadence windows, `SetPresentId paces`), `XeLL: ...` (sleep mode, caps, first marker, anchors), `Streamline Hook: FG
 signal ... is a front`, `[OVERLAY COVERAGE] ... uncoveredByOriginator=`, `DX12: Scene transition gap rebased`.
 
+Reading a run (`20261104_195245`, base 40 fps): XeFG's presenter calls Present1 in pairs 0.5 ms apart, so `qpc_delta_us`
+alternates 0.5 and 24.5 ms. That is not judder; judge pacing by the display series (`source_*` columns, `Pacing health`):
+stddev 0.8 ms there. `present_call_us`, `pre_present_us` and `post_present_us` are 0 on this route.
+
+Open: the first Present on XeFG's chain can publish `FSR_FG` for one present when XeFG is the first FG runtime
+(`FG detected via queue change`), and that false transition clears the queue-ownership flag XeFG was just given. The
+queue-change heuristic in `InitOverlayBackend` still runs on runtime-owned outputs.
+
 ## Rejected approaches
 
 - Pacing on the proxy Present: OptiScaler detours the proxy's vtable-slot bodies; CE would sit in its chain.
