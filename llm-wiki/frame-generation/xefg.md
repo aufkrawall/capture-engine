@@ -48,7 +48,10 @@ on which module's stack a Present came from:
    one output per application frame, or outputs for a whole window with no present ID behind them (Talos's menu, which
    only an output can notice, `NoteRuntimeOutputPresent`). The game's next present ID restores the configured factor at
    once. Below 20 application frames a window decides nothing, so a slow game keeps its factor. A `SetEnabled` edge
-   restarts the cadence. The SL-off grace does not suppress XeFG (`SLOffGraceSuppressesFG`).
+   restarts the cadence. The SL-off grace does not suppress XeFG (`SLOffGraceSuppressesFG`). XeFG's queue is no FSR FG
+   evidence: the queue-change heuristic in `InitOverlayBackend` skips a runtime-presented chain, learns no baseline
+   there and clears a latched verdict. Before that, XeFG as the first FG of a run read "FSR FG 2x" for one present
+   (`20261104_195245`), and in flow a second trip left FSR FG published on the game's chain after XeFG.
 5. **The application frame is `xefgSwapChainSetPresentId`** (game thread, before the proxy Present by contract, also
    inside OptiScaler's present hook): the limiter's input site, the application frame rate and the cadence input.
 
@@ -184,9 +187,8 @@ Reading a run (`20261104_195245`, base 40 fps): XeFG's presenter calls Present1 
 alternates 0.5 and 24.5 ms. That is not judder; judge pacing by the display series (`source_*` columns, `Pacing health`):
 stddev 0.8 ms there. `present_call_us`, `pre_present_us` and `post_present_us` are 0 on this route.
 
-Open: the first Present on XeFG's chain can publish `FSR_FG` for one present when XeFG is the first FG runtime
-(`FG detected via queue change`), and that false transition clears the queue-ownership flag XeFG was just given. The
-queue-change heuristic in `InitOverlayBackend` still runs on runtime-owned outputs.
+`DX12: Queue-change heuristic stands down on / resumes after a runtime-presented output chain` marks the rule in
+Status above: `FG detected via queue change` must not appear while XeFG's chain presents.
 
 ## Rejected approaches
 

@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-04 - XeFG's queue no longer reads as FSR FG; Streamline's Steam transport records its stages; hardware run pending
+
+- **Queue-change heuristic (13450afb):** `InitOverlayBackend` skips a runtime-presented chain, learns no baseline there and clears a latched verdict. Flow showed more than the run: cycle 1 read FSR for one present on arrival, then the false transition cleared queue ownership; cycle 2 read FSR while XeFG generated (`initial=` the Streamline queue, `current=` XeFG's), and FSR stayed published on Streamline's chain afterwards, with one uncovered present.
+- **Tested:** `FlowXeFGSwitch.XeFGAsTheFirstRuntimeNeverReadsAsFSRFG` and `ATripThroughXeFGWithoutGeneration...` read the published type on every frame; both fail without the fix at frame 0 on XeFG's chain. All 22 XeFG scenarios pass. The ownership flag has no direct assertion: it cannot clear without the false transition the scenarios forbid.
+- **Rejected:** resetting the queue baseline while on XeFG's chain. Removing the reset failed no scenario, even with 1200 frames after the return: a stale baseline is blocked by the Streamline handoff suppression, and native chains return on the same queue. Skipping evaluation already keeps XeFG's queue out of the baseline.
+- **Stage label (426b9070):** the external-overlay transport finishes through one helper with `post_present`, `deferred_signal` and `limiter`. Source contract only, which fails without it: flow has no Steam overlay. **Next run:** on Streamline without FG, `core_policy` should fall and `deferred_signal` rise by the same amount. If not, the Signal guess in the entry below was wrong.
+- **Noticed, not changed:** that transport still skips `NoteDX12PresentResultForVtablePath` (`present_result` n=0 in `20261104_195245`) and `NotePresentDeviceResult`, so a Streamline game with the Steam overlay feeds neither the not-presentable hold nor the device-loss latch from Present. Same class as the Present1 gap (cf17414a); no evidence of harm yet. The app-thread post-FSR startup-handoff route keeps its unscoped limiter calls (a known rare gap).
+
 ### 2026-11-04 - 0.1.7414 run: `entry` fixed, XeFG status right from all-off; a one-present false FSR FG found, not fixed
 
 - **Session `20261104_195245`, Talos only, exit 0:** Streamline without FG, then XeFG from 20:00:06 until exit. `uncovered=0`, handoff `firstPresent=drawn endedWithoutOverlay=0 missing=0`, no `still in-flight`, no `overlay divergence`, no lost lines.
