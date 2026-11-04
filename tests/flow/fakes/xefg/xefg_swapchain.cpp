@@ -5,8 +5,10 @@
 // generation enabled each proxy Present shows its generated frames first, composed and presented by a presenter
 // thread of this module, then the real frame, composed and presented on the game thread - OptiScaler's XeFG
 // (20261023_183119) presented on both threads the same way. Generation is off until SetEnabled(1), and the context
-// refuses to initialize without an XeLL context (SetLatencyReduction), as the SDK does. Presents run in lockstep
-// with the game: deterministic, and each output is a physical Present CE must cover.
+// refuses to initialize without an XeLL context (SetLatencyReduction), as the SDK does. A Present with no
+// SetPresentId before it generates nothing and queues only its own frame, on the presenter thread, as real XeFG did
+// in Talos's menu (frameGenResult=-12, 20261104_183540). Presents run in lockstep with the game: deterministic, and
+// each output is a physical Present CE must cover.
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -33,6 +35,7 @@ using namespace ce::xefg_api;
 constexpr const char* kModule = "libxess_fg";
 constexpr Result kErrorUninitialized = -3;
 constexpr Result kErrorInvalidArgument = -4;
+constexpr Result kErrorNoPresentId = -12;  // what real XeFG reported with the game's present IDs gone; the name is CE's
 constexpr uint32_t kMaxInterpolatedFrames = 3;
 
 void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
@@ -52,7 +55,9 @@ struct Settings {
     bool enabled = false;
     uint32_t interpolatedFrames = 1;
     uint32_t presentId = 0;
+    bool presentIdPending = false;
     uint32_t lastFramesPresented = 0;
+    Result lastFrameGenResult = kSuccess;
 };
 
 class XeFGProxySwapChain final : public ForwardingSwapChain {
@@ -140,6 +145,9 @@ private:
         ID3D12Resource* source = nullptr;
         uint32_t generated = 0;
         uint64_t frame = 0;
+        bool realFrameOnly = false;
+        UINT syncInterval = 0;
+        UINT flags = 0;
     };
 
     void CreateBuffers() {
@@ -185,6 +193,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(*settingsMutex_);
             settings = *settings_;
+            settings_->presentIdPending = false;
         }
         const uint64_t frame = ++frames_;
         // The game's frame must be complete on its queue before the runtime reads it.
@@ -192,21 +201,26 @@ private:
         ID3D12Resource* rendered = proxyBuffers_[proxyIndex_].Get();
         proxyIndex_ = (proxyIndex_ + 1) % static_cast<UINT>(proxyBuffers_.size());
         uint32_t generated = 0;
+        const bool stalled = settings.enabled && !settings.presentIdPending;
         if (settings.enabled) {
-            generated = settings.interpolatedFrames;
+            generated = stalled ? 0 : settings.interpolatedFrames;
             std::unique_lock<std::mutex> lock(mutex_);
-            job_ = {rendered, generated, frame};
+            job_ = {rendered, generated, frame, stalled, syncInterval, flags};
             hasJob_ = true;
             cv_.notify_all();
             cv_.wait(lock, [this] { return !hasJob_ || stop_; });
         }
-        // The real frame last, on the game thread.
-        Compose(lanes_[0], rendered);
-        const HRESULT hr = PresentNative(syncInterval, flags);
-        CountPhysicalPresent();
+        HRESULT hr = S_OK;
+        if (!stalled) {
+            // The real frame last, on the game thread.
+            Compose(lanes_[0], rendered);
+            hr = PresentNative(syncInterval, flags);
+            CountPhysicalPresent();
+        }
         {
             std::lock_guard<std::mutex> lock(*settingsMutex_);
             settings_->lastFramesPresented = generated + 1;
+            settings_->lastFrameGenResult = stalled ? kErrorNoPresentId : kSuccess;
         }
         return hr;
     }
@@ -221,6 +235,11 @@ private:
                 if (stop_)
                     return;
                 job = job_;
+            }
+            if (job.realFrameOnly) {
+                Compose(lanes_[1], job.source);
+                PresentNative(job.syncInterval, job.flags);
+                CountPhysicalPresent();
             }
             const int64_t spacing = FrameIntervalMicroseconds() / static_cast<int64_t>(job.generated + 1);
             for (uint32_t i = 0; i < job.generated; ++i) {
@@ -419,6 +438,7 @@ extern "C" __declspec(dllexport) Result xefgSwapChainSetPresentId(Handle handle,
         return kErrorInvalidArgument;
     std::lock_guard<std::mutex> lock(ContextOf(handle)->settingsMutex);
     ContextOf(handle)->settings.presentId = presentId;
+    ContextOf(handle)->settings.presentIdPending = true;
     return kSuccess;
 }
 
@@ -427,7 +447,7 @@ extern "C" __declspec(dllexport) Result xefgSwapChainGetLastPresentStatus(Handle
         return kErrorInvalidArgument;
     std::lock_guard<std::mutex> lock(ContextOf(handle)->settingsMutex);
     status->framesPresented = ContextOf(handle)->settings.lastFramesPresented;
-    status->frameGenResult = kSuccess;
+    status->frameGenResult = ContextOf(handle)->settings.lastFrameGenResult;
     status->isFrameGenEnabled = ContextOf(handle)->settings.enabled ? 1 : 0;
     return kSuccess;
 }

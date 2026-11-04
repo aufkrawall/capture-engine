@@ -34,6 +34,7 @@ struct XeFGGame {
     xefg_api::Handle context = nullptr;
     xell_api::Handle latency = nullptr;
     uint32_t presentId = 0;
+    bool sendPresentIds = true;
 };
 
 namespace {
@@ -130,6 +131,13 @@ bool FlowGame::SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames)
     return true;
 }
 
+bool FlowGame::SetXeFGPresentIds(bool enabled) {
+    if (!xefg_ || !xefg_->context || kind_ != SwapchainKind::kXeFG)
+        return Fail("SetXeFGPresentIds without an XeFG swapchain", E_NOINTERFACE);
+    xefg_->sendPresentIds = enabled;
+    return true;
+}
+
 bool FlowGame::SetXeLLFrameCap(uint32_t minimumIntervalUs) {
     if (!xefg_ || !xefg_->latency)
         return Fail("SetXeLLFrameCap without an XeLL context", E_NOINTERFACE);
@@ -149,7 +157,8 @@ void FlowGame::SubmitXeFGFrame() {
     xefg_->xellSleep(xefg_->latency, frame);
     xefg_->xellAddMarker(xefg_->latency, frame, xell_api::kSimulationStart);
     xefg_->xellAddMarker(xefg_->latency, frame, xell_api::kPresentStart);
-    xefg_->setPresentId(xefg_->context, frame);
+    if (xefg_->sendPresentIds)
+        xefg_->setPresentId(xefg_->context, frame);
 }
 
 void FlowGame::DestroyXeFGContext() {

@@ -83,6 +83,21 @@ TEST(FlowXeFG, Present1OutputsReportTheirStageCost) {
     ExpectEveryPresentCoveredOnce(game);
 }
 
+// Talos sends its first present ID when it enables generation, after hundreds of outputs. The first cadence window
+// counted those as its own and read 4x for a window (20261104_183540: 269 outputs, 45 application frames).
+TEST(FlowXeFG, TheFirstCadenceWindowCountsOnlyItsOwnOutputs) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_TRUE(game.SetXeFGPresentIds(false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetXeFGPresentIds(true)) << game.Error();
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(150)) << game.Error();  // 144 frames fill the window, the rest publish its verdict
+    ExpectPublished(game, kXeFGStatusType, 2, "after the first cadence window");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // Multi-frame generation: three outputs per game frame from XeFG's presenter thread, then the real one.
 TEST(FlowXeFG, MultiFrameGenerationShowsItsFactorAndCoversEveryOutput) {
     FlowGame game(CurrentTestName());

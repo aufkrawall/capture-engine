@@ -119,6 +119,28 @@ TEST(PresentInterposerCadenceTest, TrackerClosesAWindowOnTheApplicationPresentTh
     FAIL() << "a one-second window never closed";
 }
 
+// Talos with XeFG (20261104_183540): the game's first present ID came with generation on, 185 outputs after the
+// swapchain appeared, and window #1 read 269 outputs against 45 application frames as 4x.
+TEST(PresentInterposerCadenceTest, OutputsBeforeTheFirstApplicationFrameAreNotMeasured) {
+    CadenceTracker tracker;
+    CadenceVerdict verdict;
+    for (int i = 0; i < 185; ++i) {
+        tracker.NoteOutputPresent();
+    }
+    EXPECT_FALSE(tracker.NoteApplicationPresent(0, &verdict));
+    for (int i = 1; i <= 60; ++i) {
+        tracker.NoteOutputPresent();
+        tracker.NoteOutputPresent();
+        if (tracker.NoteApplicationPresent(static_cast<int64_t>(i) * 16667, &verdict)) {
+            EXPECT_TRUE(verdict.generating);
+            EXPECT_EQ(verdict.multiplier, 2);
+            EXPECT_NEAR(verdict.outputFps, 120.0f, 1.0f);
+            return;
+        }
+    }
+    FAIL() << "a one-second window never closed";
+}
+
 TEST(PresentInterposerCadenceTest, ResetDiscardsAPartialWindow) {
     CadenceTracker tracker;
     CadenceVerdict verdict;

@@ -12,6 +12,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **XeFG status in the overlay:** the overlay no longer shows a false 4x for a moment after XeFG turns on.
+
 - **D3D12 frame classification with late overlay hooks:** another overlay installing a queue hook after its DLL loaded no longer causes CaptureEngine to exclude the game's forwarded command lists. Caller ownership now uses that queue's current method entry for each submission, so direct calls on other queues cannot leave a stale classification.
 
 - **D3D9 filtering when textures have different mip counts:** binding a texture with only one visible mip level now removes forced anisotropic or mip filtering, and binding a texture with several visible levels enables it again. The texture-bind shortcut now accounts for the application's maximum mip level, preserving fast binds when the filtering decision is unchanged.

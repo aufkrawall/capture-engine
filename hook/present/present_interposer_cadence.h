@@ -84,6 +84,9 @@ public:
         const int applicationPresents = applicationPresents_.fetch_add(1, std::memory_order_relaxed) + 1;
         const int64_t windowStartUs = windowStartUs_.load(std::memory_order_relaxed);
         if (windowStartUs < 0) {
+            // Only what follows belongs to the window. Talos sends XeFG its first present ID when it enables
+            // generation: 185 outputs from before that read as 4x (20261104_183540).
+            outputPresents_.store(0, std::memory_order_relaxed);
             windowStartUs_.store(nowUs, std::memory_order_relaxed);
             return false;
         }

@@ -135,6 +135,9 @@ public:
 
     // xefgSwapChainSetEnabled and xefgSwapChainSetNumInterpolatedFrames on the XeFG context.
     bool SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames = 1);
+    // Whether the game calls xefgSwapChainSetPresentId before its Presents. Talos sends none with generation off or in
+    // a menu, and XeFG then generates nothing (20261104_183540).
+    bool SetXeFGPresentIds(bool enabled);
     // xellSetSleepMode with a minimum frame interval: the game's own XeLL frame cap (0 lifts it).
     bool SetXeLLFrameCap(uint32_t minimumIntervalUs);
     // ResizeBuffers on the game's swapchain at a new size (the XeFG proxy rebinds its native swapchain).
