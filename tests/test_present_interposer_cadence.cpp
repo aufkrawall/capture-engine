@@ -202,6 +202,47 @@ TEST(PresentInterposerCadenceTest, ASlowGameIsNotAStoppedOne) {
     }
 }
 
+TEST(PresentInterposerCadenceTest, OutputsWithoutAnyApplicationFrameCanDecideNotGenerating) {
+    CadenceTracker tracker;
+    CadenceVerdict verdict;
+    // A generation toggle in a menu resets the tracker, and no present ID may follow it.
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        tracker.Reset();
+        const int64_t startUs = cycle * 4 * kWindowUs;
+        for (int i = 0; i < 200; ++i) {
+            EXPECT_FALSE(tracker.NoteOutputPresent(startUs + i * 10'000, &verdict));
+        }
+        ASSERT_TRUE(tracker.NoteOutputPresent(startUs + kApplicationStoppedWindowUs, &verdict));
+        EXPECT_TRUE(verdict.decided);
+        EXPECT_TRUE(verdict.applicationStopped);
+        EXPECT_FALSE(verdict.generating);
+        EXPECT_NEAR(verdict.outputFps, 100.0f, 1.0f);
+    }
+}
+
+TEST(PresentInterposerCadenceTest, FirstApplicationFrameDiscardsTheOutputsOnlyWindow) {
+    CadenceTracker tracker;
+    CadenceVerdict verdict;
+    for (int i = 0; i < 150; ++i) {
+        EXPECT_FALSE(tracker.NoteOutputPresent(i * 10'000, &verdict));
+    }
+    // Even an existing output-only window belongs to the menu, not the first game frame.
+    EXPECT_FALSE(tracker.NoteApplicationPresent(1'500'000, &verdict));
+    for (int i = 1; i <= 60; ++i) {
+        tracker.NoteOutputPresent();
+        tracker.NoteOutputPresent();
+        const bool closed = tracker.NoteApplicationPresent(1'500'000 + i * 16'667, &verdict);
+        if (i < 60) {
+            EXPECT_FALSE(closed);
+        } else {
+            ASSERT_TRUE(closed);
+            EXPECT_TRUE(verdict.generating);
+            EXPECT_EQ(verdict.multiplier, 2);
+            EXPECT_NEAR(verdict.outputFps, 120.0f, 1.0f);
+        }
+    }
+}
+
 TEST(PresentInterposerCadenceTest, ResetDiscardsAPartialWindow) {
     CadenceTracker tracker;
     CadenceVerdict verdict;

@@ -165,11 +165,13 @@ void NotePresentOriginator(bool streamline);
 bool IsStreamlinePresentingNow();
 
 // The presenter's two streams: every output Present on a runtime-owned output swapchain, against the application's
-// frames (XeFG: xefgSwapChainSetPresentId). NoteRuntimeApplicationFrame returns true and fills `verdict` when it
-// closed a measurement window (present_interposer_cadence.h: one second, 20 application frames at least). An output
-// closes one only when the application's frames stopped, and reports that to g_FGCompat itself: no frame will.
+// frames (XeFG: xefgSwapChainSetPresentId). Both streams publish closed measurement windows to g_FGCompat in order
+// (present_interposer_cadence.h: one second, 20 application frames at least). Outputs also open a window without any
+// present IDs and close it when the application's frames stopped. Reset and publication share the same lifetime lock.
+// A presenting/generation edge starts a fresh window atomically with the configured XeFG state.
+void SetRuntimeGenerationState(bool presenterActive, bool enabled, int interpolatedFrames);
 void NoteRuntimeOutputPresent(int64_t nowUs);
-bool NoteRuntimeApplicationFrame(int64_t nowUs, ce::present_interposer::CadenceVerdict* verdict);
+void NoteRuntimeApplicationFrame(int64_t nowUs);
 void ResetRuntimeCadence();
 // The runtime's input boundary (XeFG: SetPresentId) reports application frames: the application frame rate is
 // measured there, not at the outputs. It lapses when those frames stop; each output is the application's frame then.

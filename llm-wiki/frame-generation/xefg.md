@@ -49,7 +49,12 @@ on which module's stack a Present came from:
    one output per application frame, or outputs for a whole window with no present ID behind them (Talos's menu, which
    only an output can notice, `NoteRuntimeOutputPresent`). The game's next present ID restores the configured factor at
    once. Below 20 application frames a window decides nothing, so a slow game keeps its factor. A `SetEnabled` edge
-   restarts the cadence. The SL-off grace does not suppress XeFG (`SLOffGraceSuppressesFG`). XeFG's queue is no FSR FG
+   restarts the cadence. Outputs can open that window before any present ID, so toggling generation in a menu still
+   reaches "not generating"; the first present ID discards those pre-input outputs. `SetRuntimeGenerationState`,
+   both cadence streams and their publication share a short mutex in `fg_presenter.cpp`: changing just the window
+   timestamp atomically did not protect its counters, the input-boundary flag or the ordering of published verdicts.
+   Units cover output-only startup/reset and first-input isolation; flow covers two menu toggles and immediate recovery.
+   The SL-off grace does not suppress XeFG (`SLOffGraceSuppressesFG`). XeFG's queue is no FSR FG
    evidence: the queue-change heuristic in `InitOverlayBackend` skips a runtime-presented chain, learns no baseline
    there and clears a latched verdict. Before that, XeFG as the first FG of a run read "FSR FG 2x" for one present
    (`20261104_195245`), and in flow a second trip left FSR FG published on the game's chain after XeFG.

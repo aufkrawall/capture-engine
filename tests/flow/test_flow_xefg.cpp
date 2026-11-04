@@ -120,6 +120,26 @@ TEST(FlowXeFG, AMenuWithoutPresentIdsReadsAsNotGeneratingAndRecovers) {
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowXeFG, GenerationEnabledInAMenuWithoutPresentIdsReadsAsNotGenerating) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_TRUE(game.SetXeFGPresentIds(false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(450)) << game.Error();
+        ExpectPublished(game, 0, 1, "generation enabled without any present IDs");
+        ASSERT_TRUE(game.SetXeFGPresentIds(true)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(10)) << game.Error();
+        ExpectPublished(game, kXeFGStatusType, 2, "first present ID after the menu");
+        ASSERT_TRUE(game.SetXeFGFrameGeneration(false, 1)) << game.Error();
+        ASSERT_TRUE(game.SetXeFGPresentIds(false)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // Multi-frame generation: three outputs per game frame from XeFG's presenter thread, then the real one.
 TEST(FlowXeFG, MultiFrameGenerationShowsItsFactorAndCoversEveryOutput) {
     FlowGame game(CurrentTestName());

@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "hook/fg/fg_presenter.h"
+#include "hook/fg/fg_detection.h"
 
 namespace {
 
@@ -32,6 +33,32 @@ protected:
     void SetUp() override { ResetForTesting(); }
     void TearDown() override { ResetForTesting(); }
 };
+
+class FGPresenterCadenceTest : public ::testing::Test {
+protected:
+    void SetUp() override { SetRuntimeGenerationState(false, false, 1); }
+    void TearDown() override { SetRuntimeGenerationState(false, false, 1); }
+};
+
+TEST_F(FGPresenterCadenceTest, MenuToggleAndFirstInputPublishStatusWithTheInputBoundary) {
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        const int64_t startUs = cycle * 4'000'000;
+        SetRuntimeGenerationState(true, true, 1);
+        EXPECT_EQ(g_FGCompat.GetRuntimeMode(), RuntimeMode::kXeFG);
+        EXPECT_FALSE(HasRuntimeInputBoundary());
+        for (int i = 0; i <= 200; ++i) {
+            NoteRuntimeOutputPresent(startUs + i * 10'000);
+        }
+        EXPECT_NE(g_FGCompat.GetRuntimeMode(), RuntimeMode::kXeFG);
+        EXPECT_FALSE(HasRuntimeInputBoundary());
+        NoteRuntimeApplicationFrame(startUs + 2'010'000);
+        EXPECT_EQ(g_FGCompat.GetRuntimeMode(), RuntimeMode::kXeFG);
+        EXPECT_EQ(g_FGCompat.GetFGMultiplier(), 2);
+        EXPECT_TRUE(HasRuntimeInputBoundary());
+        SetRuntimeGenerationState(true, false, 1);
+        EXPECT_FALSE(HasRuntimeInputBoundary());
+    }
+}
 
 TEST(FGPresenterPolicyTest, ARuntimeCreateScopeIsAuthoritativeAndModuleIdentityTheFallback) {
     EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kXeFGSwapchain, false), Presenter::kXeFGSwapchain);

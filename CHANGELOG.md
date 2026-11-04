@@ -14,6 +14,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **XeFG enabled while a menu sends no frame IDs:** the overlay now recognizes that no frames are being generated even when no application frame follows a generation toggle, and restores XeFG status as soon as frame IDs resume. Cadence resets and status publication are serialized between the game and presenter threads so an older window cannot overwrite a newer verdict.
+
 - **Minimized D3D12 games that present with Present1:** CaptureEngine now recognizes when such a game cannot present, on the same path Present already used, and pauses its work on the back buffer until the window returns.
 - **Streamline games with the Steam overlay:** the same recognition now works in these games without frame generation, and CaptureEngine also notices a lost device from their `Present` results, with or without frame generation, including DLSS FG after a switch from FSR FG. That route now also writes the performance CSV, which had no rows for as long as DLSS FG ran after FSR FG, and no longer repeats a memory check on every frame.
 

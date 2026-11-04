@@ -90,8 +90,8 @@ inline CadenceVerdict ClassifyStoppedApplication(int outputPresents, int64_t win
 
 // Counts both streams over a sliding window. An interposer's two Note* calls come from the same render thread in
 // present order (its private present happens inside the application's); a runtime's outputs come from its presenter
-// thread too (XeFG), so one compare-exchange on the window's start decides who closes it. The counters stay relaxed: a
-// present landing in the neighbouring window is one present's worth of skew.
+// thread too (XeFG), so its owner serializes window changes and verdict publication together. The interposer's
+// counters stay relaxed: a present landing in the neighbouring window is one present's worth of skew.
 class CadenceTracker {
 public:
     void NoteOutputPresent() {
@@ -104,7 +104,12 @@ public:
     bool NoteOutputPresent(int64_t nowUs, CadenceVerdict* out) {
         const int outputPresents = outputPresents_.fetch_add(1, std::memory_order_relaxed) + 1;
         int64_t windowStartUs = windowStartUs_.load(std::memory_order_relaxed);
-        if (windowStartUs < 0 || nowUs - windowStartUs < kApplicationStoppedWindowUs ||
+        if (windowStartUs < 0) {
+            // A toggle can happen in a menu that never sends a present ID. Outputs must be able to start its window.
+            windowStartUs_.store(nowUs, std::memory_order_relaxed);
+            return false;
+        }
+        if (nowUs - windowStartUs < kApplicationStoppedWindowUs ||
             outputPresents < kMinApplicationPresentsForVerdict ||
             !windowStartUs_.compare_exchange_strong(windowStartUs, nowUs, std::memory_order_relaxed)) {
             return false;
@@ -120,14 +125,19 @@ public:
 
     // Returns true and fills `out` when the application present closed a measurement window.
     bool NoteApplicationPresent(int64_t nowUs, CadenceVerdict* out) {
+        const bool firstApplicationFrame = !applicationWindowStarted_.exchange(true, std::memory_order_relaxed);
         const int applicationPresents = applicationPresents_.fetch_add(1, std::memory_order_relaxed) + 1;
         int64_t windowStartUs = windowStartUs_.load(std::memory_order_relaxed);
-        if (windowStartUs < 0) {
+        if (firstApplicationFrame || windowStartUs < 0) {
             // Only what follows belongs to the window. Talos sends XeFG its first present ID when it enables
             // generation: 185 outputs from before that read as 4x (20261104_183540).
             outputPresents_.store(0, std::memory_order_relaxed);
             windowStartUs_.store(nowUs, std::memory_order_relaxed);
-            return false;
+            const bool resumed = applicationStopped_.exchange(false, std::memory_order_relaxed);
+            if (resumed && out) {
+                *out = CadenceVerdict{};
+            }
+            return resumed;
         }
         // Back from a stop nothing is measured yet, and the undecided verdict says so now, not a window later.
         const bool resumed = applicationStopped_.load(std::memory_order_relaxed);
@@ -153,6 +163,7 @@ public:
         outputPresents_.store(0, std::memory_order_relaxed);
         windowStartUs_.store(kNoWindow, std::memory_order_relaxed);
         applicationStopped_.store(false, std::memory_order_relaxed);
+        applicationWindowStarted_.store(false, std::memory_order_relaxed);
     }
 
 private:
@@ -163,6 +174,7 @@ private:
     std::atomic<int> outputPresents_{0};
     std::atomic<int64_t> windowStartUs_{kNoWindow};
     std::atomic<bool> applicationStopped_{false};
+    std::atomic<bool> applicationWindowStarted_{false};
 };
 
 }  // namespace ce::present_interposer

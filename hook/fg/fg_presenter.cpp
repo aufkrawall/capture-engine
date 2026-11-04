@@ -43,6 +43,9 @@ std::atomic<size_t> g_outputPresenterCount{0};
 std::atomic<uint64_t> g_presents{0};
 std::atomic<uint64_t> g_lastStreamlinePresent{0};
 ce::present_interposer::CadenceTracker g_runtimeCadence;
+std::mutex g_runtimeCadenceMutex;
+bool g_runtimeGenerationEnabled = false;
+bool g_runtimePresenterActive = false;
 std::atomic<bool> g_runtimeInputBoundary{false};
 std::atomic<uint8_t> g_dlssgApiProvider{static_cast<uint8_t>(DLSSGApiProvider::kUnknown)};
 
@@ -282,7 +285,19 @@ bool IsStreamlinePresentingNow() {
                                   g_lastStreamlinePresent.load(std::memory_order_acquire));
 }
 
+void SetRuntimeGenerationState(bool presenterActive, bool enabled, int interpolatedFrames) {
+    std::lock_guard<std::mutex> lock(g_runtimeCadenceMutex);
+    if (g_runtimeGenerationEnabled != enabled || g_runtimePresenterActive != presenterActive) {
+        g_runtimeCadence.Reset();
+        g_runtimeInputBoundary.store(false, std::memory_order_release);
+    }
+    g_runtimeGenerationEnabled = enabled;
+    g_runtimePresenterActive = presenterActive;
+    g_FGCompat.SetXeFGState(presenterActive, enabled, interpolatedFrames);
+}
+
 void NoteRuntimeOutputPresent(int64_t nowUs) {
+    std::lock_guard<std::mutex> lock(g_runtimeCadenceMutex);
     ce::present_interposer::CadenceVerdict verdict;
     if (g_runtimeCadence.NoteOutputPresent(nowUs, &verdict)) {
         g_runtimeInputBoundary.store(false, std::memory_order_release);
@@ -290,12 +305,18 @@ void NoteRuntimeOutputPresent(int64_t nowUs) {
     }
 }
 
-bool NoteRuntimeApplicationFrame(int64_t nowUs, ce::present_interposer::CadenceVerdict* verdict) {
+void NoteRuntimeApplicationFrame(int64_t nowUs) {
+    // Keep the window, its input-boundary flag and the published verdict in the same order on both threads.
+    std::lock_guard<std::mutex> lock(g_runtimeCadenceMutex);
     g_runtimeInputBoundary.store(true, std::memory_order_release);
-    return g_runtimeCadence.NoteApplicationPresent(nowUs, verdict);
+    ce::present_interposer::CadenceVerdict verdict;
+    if (g_runtimeCadence.NoteApplicationPresent(nowUs, &verdict)) {
+        g_FGCompat.NoteXeFGCadence(verdict);
+    }
 }
 
 void ResetRuntimeCadence() {
+    std::lock_guard<std::mutex> lock(g_runtimeCadenceMutex);
     g_runtimeCadence.Reset();
     g_runtimeInputBoundary.store(false, std::memory_order_release);
 }
@@ -344,8 +365,7 @@ void ResetForTesting() {
     g_outputPresenterCount.store(0, std::memory_order_release);
     g_presents.store(0, std::memory_order_release);
     g_lastStreamlinePresent.store(0, std::memory_order_release);
-    g_runtimeInputBoundary.store(false, std::memory_order_release);
-    g_runtimeCadence.Reset();
+    ResetRuntimeCadence();
     g_dlssgApiProvider.store(static_cast<uint8_t>(DLSSGApiProvider::kUnknown), std::memory_order_release);
 }
 

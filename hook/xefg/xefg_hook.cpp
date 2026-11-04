@@ -73,7 +73,8 @@ void PublishStateLocked() {
     const auto it = presenting ? g_contexts.find(presenting) : g_contexts.end();
     const bool enabled = it != g_contexts.end() && it->second.initialized && it->second.enabled;
     const uint32_t frames = it != g_contexts.end() ? it->second.interpolatedFrames : 1;
-    g_FGCompat.SetXeFGState(ce::fg_presenter::HasRuntimeOwnedOutputPresenter(), enabled, static_cast<int>(frames));
+    ce::fg_presenter::SetRuntimeGenerationState(ce::fg_presenter::HasRuntimeOwnedOutputPresenter(), enabled,
+                                               static_cast<int>(frames));
 }
 
 void PublishState() {
@@ -235,10 +236,6 @@ Result Detour_SetEnabled(Handle handle, uint32_t enabled) {
             context.enabled = enabled != 0;
         }
         PublishStateLocked();
-    }
-    if (changed) {
-        // A window across the edge would measure neither state, and a game may send no present IDs in the new one.
-        ce::fg_presenter::ResetRuntimeCadence();
     }
     static ce::log_meter::ChangeGate s_gate;
     if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(handle, enabled, result)); verdict || changed) {
@@ -502,10 +499,7 @@ void NoteApplicationFrame(Handle handle, uint32_t presentId) {
         return;
     }
     DXGIShared::NoteRuntimeInputApplicationFrame();
-    ce::present_interposer::CadenceVerdict verdict;
-    if (ce::fg_presenter::NoteRuntimeApplicationFrame(PerfLogger::GetQpcUs(), &verdict)) {
-        g_FGCompat.NoteXeFGCadence(verdict);
-    }
+    ce::fg_presenter::NoteRuntimeApplicationFrame(PerfLogger::GetQpcUs());
 }
 
 void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
