@@ -1,5 +1,40 @@
 # llm-wiki Log
 
+### 2026-11-04 - 0.1.7409 re-run: no regressions, what the stage split really shows
+
+- **Sessions, all exit 0, no device removal:** Strange Brigade Vulkan `20261104_131318`, DX12 `132859`; 32-bit `dx12_test`
+  with Alt+Tab spam `133008` (13 focus edges, 4043 frames); Mirror's Edge `133147`; BL2 `133240`; BioShock Infinite `133441`.
+- **Mirror's Edge before/after (`20261103_213712`):** `skipped quad` 461 lines -> 0; vertices 61.5-64.3k -> 48.8-51k; graph-only
+  70-75 -> 34.5 us; CSV `overlay_us` median 144 -> 90; CE per present without the limiter 429 -> 361 us (~339 without two
+  startup frames in that window). The frame stayed under
+  65,536, so the base-vertex chunk path has still not run on a GPU (`dx12_test` 46,880 vertices, `commands=1`).
+- **BL2 before/after (`20261103_194318`):** `overlay_us` median 38 -> 26, DX9 upload 6.8 -> 4.7, draw 9.1 -> 5.8, `tail-only` 98%
+  of uploads. No RTSS run in this batch. `High Present Overhead` ~260-270 ms on the first overlay frame (`capture_us` 259 ms)
+  is one frame and was already in the older sessions.
+- **Strange Brigade DX12, us mean:** own 311 = entry 10, context 22, routing 9, policy+metrics 6, overlay 45, reset 15, record 53,
+  submit 46, deferred_signal 100. About 45 of it is two early frames (max 25, 14.5, 10 ms). No HotS run, so no x64 before/after.
+- **`deferred_signal` 100 us is not what Signal costs.** The CSV splits the DX12 run in two. Phase 1, ~144 fps: Present blocks
+  6.2 ms, `post_present_us` 104, `overlay_us` 71. Phase 2, ~124 fps: the wait moves to `prerender_wait_us` 6.1 ms, `present_call_us`
+  ~230, `post_present_us` 5, `overlay_us` 171. The prerender path's own Signal plus bookkeeping is ~7 us
+  (`prerender_wait_us` median while it does not wait). So Signal costs about 5-7 us. The ~100 us follows the long block
+  or the load (cold caches or a busy driver; these runs cannot separate them), and removing Signal would probably not save it.
+- **`overlay` is not only routing:** ~22 us on Strange Brigade, ~103 on Mirror's Edge, which runs `rcas_gamma` per frame (its own
+  list, ECL and Signal, `Sharpen: DX12 running`). HotS logs the same pass. A user-enabled effect, not overlay overhead.
+- **Upload saving is smaller than `upload_slot_geometry.h` says:** written per frame of the whole frame: Strange Brigade DX12
+  25-27 of 59-65 KB, Vulkan 33-40 of 60-65 KB, Mirror's Edge 385-451 of ~1305 KB. Every slot rewrites the head once after each text change, and
+  full frames come every 16-50 frames with 16 (D3D12) or 32 (Vulkan) slots in rotation.
+- **Vulkan:** overlay `overlay_us` median 54, GPU 11. `pre_present - prerender - overlay` jumps from ~21 to ~200 us when the game
+  drops to ~123 fps. Probably the prerender marker's `vkResetFences` + empty `vkQueueSubmit`, which sit outside `waitUs`
+  (`ApplyPrerenderLimitVulkan`); not measured, and the layer has no stage split.
+- **Preamble:** entry + context + startup_routing is ~42 us on every DXGI Present (x64 41.7, x86 D3D12 46.8, D3D11 46). `context`
+  fell only 25.7 -> 22.3 (different games), so the caller cache was not the main cost there. `log_level=trace` adds the
+  `QueryThreadCycleTime` pairs. On the wrapper route (`dx12_test`, no third-party overlay) the inner detour pays ~42 us just to
+  early-return, and the stage report does not see the wrapper's overlay work (`overlay` n=0).
+- **Background 32-bit D3D12:** `overlay_us` ~7 ms in `dx12_test` while unfocused is the same-frame fence wait of the focus guard,
+  by design; ~140 fps held and the foreground median stayed 149 us.
+- **Open, not started:** reuse finished upload slots instead of rotating all of them; a finer preamble split; Vulkan stage split and
+  a prerender marker that reuses the overlay's submit. In these runs all but the wrapper route had 5-6 ms of idle wait per frame, so no fps was at stake.
+
 ### 2026-11-03 - D3D12 and Vulkan per-frame cost: evidence from 0.1.7407, cuts committed, re-run pending
 
 - **32-bit D3D12 hit the 16-bit vertex limit (Mirror's Edge, `20261103_213712`, DPI 1.5):** solid-span text (the
