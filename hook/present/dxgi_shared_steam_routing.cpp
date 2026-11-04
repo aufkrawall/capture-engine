@@ -200,17 +200,21 @@ void NoteRuntimeInputApplicationFrame() {
 
 namespace DXGIShared {
 void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapChain, const char* source) {
-    if (!pSwapChain || !IsReadableMemory(pSwapChain, sizeof(void*))) {
+    ce::present_stage_cost::StageScope hookRefreshStage(ce::present_stage_cost::Stage::kHookRefresh);
+    // Runs on every Present of the bypass routes. With the entry left to a foreign chain nothing here can refresh, so
+    // nothing needs asking; otherwise the memo keeps the kernel out of it after a chain's first Present.
+    const bool presentEntryLeftToForeignChain =
+        dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire);
+    if (presentEntryLeftToForeignChain) {
         return;
     }
-
-    void** vtable = *(void***)pSwapChain;
-    const bool hasReadableVtable = vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*));
+    thread_local ce::present_probe::SwapchainProbeMemo t_probed;
+    void** const vtable =
+        ce::present_probe::ProbeSwapchainTable(pSwapChain, 23 * sizeof(void*), t_probed, IsReadableMemory);
+    const bool hasReadableVtable = vtable != nullptr;
     const bool trackedVtableMatchesCurrent = hasReadableVtable && dxgi_shared_s_hookedVTable == vtable;
     const bool presentHookInstalled = hasReadableVtable && IsPresentDetourAddress(vtable[8]);
     const bool present1HookInstalled = hasReadableVtable && IsPresent1DetourAddress(vtable[22]);
-    const bool presentEntryLeftToForeignChain =
-        dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire);
 
     if (!DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(hasReadableVtable, trackedVtableMatchesCurrent,
                                                                    presentHookInstalled, present1HookInstalled,

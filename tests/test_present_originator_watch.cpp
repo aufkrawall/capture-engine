@@ -176,4 +176,41 @@ TEST(SwapchainProbeMemoTest, OnlyTheSameObjectWithTheSameTableIsAlreadyProved) {
     EXPECT_FALSE(memo.Holds(&objectA, nullptr));
 }
 
+// A Present route that asked the kernel twice per frame spent up to 131 us on it (20261104_210842).
+TEST(SwapchainProbeMemoTest, AProbeAsksTheKernelOnlyAboutWhatItHasNotProvedYet) {
+    void* tableA[2] = {};
+    void* tableB[2] = {};
+    void** swapchainA = tableA;
+    void** swapchainB = tableA;
+    int asked = 0;
+    bool readable = true;
+    const auto isReadable = [&](const void*, size_t) {
+        ++asked;
+        return readable;
+    };
+    ce::present_probe::SwapchainProbeMemo memo;
+
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableA), memo, isReadable), tableA);
+    EXPECT_EQ(asked, 2) << "the first sight asks about the object and its table";
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableA), memo, isReadable), tableA);
+    EXPECT_EQ(asked, 2) << "every Present after that asks nothing";
+
+    swapchainA = tableB;
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableB), memo, isReadable), tableB);
+    EXPECT_EQ(asked, 3) << "a new table at the same address is proved";
+
+    asked = 0;
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainB, sizeof(tableA), memo, isReadable), tableA);
+    EXPECT_EQ(asked, 2) << "another object starts over";
+
+    ce::present_probe::SwapchainProbeMemo unreadable;
+    readable = false;
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableB), unreadable, isReadable), nullptr);
+    EXPECT_FALSE(unreadable.HoldsObject(&swapchainA)) << "nothing unproved is remembered";
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(nullptr, sizeof(tableB), unreadable, isReadable), nullptr);
+    void** noTable = nullptr;
+    readable = true;
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&noTable, sizeof(tableB), unreadable, isReadable), nullptr);
+}
+
 }  // namespace

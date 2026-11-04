@@ -556,6 +556,8 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     if (!pSwapChain || !resultOut) {
         return false;
     }
+    // What it costs to decide. A Present it does invoke is charged to kForward inside this scope.
+    ce::present_stage_cost::StageScope foreignInvokeStage(ce::present_stage_cost::Stage::kForeignInvoke);
 
     // Below a foreign Present chain, every overlay in it has ALREADY drawn on the way down to
     // CE's deep body hook. Inviting one of them again duplicates the whole chain: CE -> Steam

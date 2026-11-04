@@ -6,20 +6,9 @@ namespace DXGIShared {
 // Two VirtualQuery system calls per Present, on a pointer the detour has already called through by now. The first
 // sight of a chain still probes it; after that a matching object and table cannot have become unreadable.
 bool PresentSwapchainProbesOk(IDXGISwapChain* pSwapChain, size_t presentSlot, ce::present_probe::SwapchainProbeMemo& memo) {
-    if (!pSwapChain) {
-        return false;
-    }
-    if (!memo.HoldsObject(pSwapChain) && !IsReadableMemory(pSwapChain, sizeof(void*))) {
-        return false;
-    }
-    void** table = *reinterpret_cast<void***>(pSwapChain);
-    if (!memo.Holds(pSwapChain, table)) {
-        if (!table || !IsReadableMemory(reinterpret_cast<const void*>(table), (presentSlot + 1) * sizeof(void*))) {
-            return false;
-        }
-        memo.Remember(pSwapChain, table);
-    }
-    return table[presentSlot] != nullptr;
+    void** const table =
+        ce::present_probe::ProbeSwapchainTable(pSwapChain, (presentSlot + 1) * sizeof(void*), memo, IsReadableMemory);
+    return table && table[presentSlot] != nullptr;
 }
 
 void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,

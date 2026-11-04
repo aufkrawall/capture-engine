@@ -42,6 +42,8 @@ enum class Stage : uint8_t {
     kContext,        // caller identity, bypass trampoline, CapturePresentCallContext
     kOriginWalk,     // the originator's stack walk below a foreign chain
     kStartupRouting, // ExecuteStartupRouting decisions
+    kHookRefresh,    // bypass routes: whether the swapchain's Present hooks are still live
+    kForeignInvoke,  // bypass routes: whether a foreign overlay's Present may be invoked
     kCorePolicy,     // ExecutePresentCore routing/policy glue
     kMetrics,        // UpdateDXGIPresentMetricsAndPublish
     kFsrTopmost,     // no-callback FSR FG topmost final-batch observation
@@ -78,6 +80,8 @@ constexpr const char* StageName(Stage stage) {
         case Stage::kContext: return "context";
         case Stage::kOriginWalk: return "origin_walk";
         case Stage::kStartupRouting: return "startup_routing";
+        case Stage::kHookRefresh: return "hook_refresh";
+        case Stage::kForeignInvoke: return "foreign_invoke";
         case Stage::kCorePolicy: return "core_policy";
         case Stage::kMetrics: return "metrics";
         case Stage::kFsrTopmost: return "fsr_topmost";
