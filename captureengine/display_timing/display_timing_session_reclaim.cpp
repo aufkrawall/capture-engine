@@ -14,11 +14,12 @@ using display_timing_etw::MakeProperties;
 
 namespace ce::display_timing_reclaim {
 
-// Stops every `CE_DisplayTiming_*` session whose owning process is gone. Returns
-// how many were stopped. Sessions belonging to a live process - including another
-// CaptureEngine that is using its own - are left alone, and so is every session
-// that does not carry our name prefix.
-int ReclaimLeakedSessions(uint32_t startStatus) {
+// Stops every CaptureEngine trace session whose owning process is gone, or which
+// matches the opening session name under our own process id. Returns how many were
+// stopped. Sessions belonging to a live process - including another CaptureEngine
+// that is using its own, or a live sibling session under our own pid - are left alone,
+// and so is every session that does not carry our name prefix.
+int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName) {
     // QueryAllTracesW writes each session's logger name AND log file name into the
     // buffer it is handed, so every buffer has to be large enough for both. A buffer
     // sized for our own short session name is not, and undersizing it corrupts memory
@@ -68,7 +69,8 @@ int ReclaimLeakedSessions(uint32_t startStatus) {
                 CloseHandle(owner);
             }
         }
-        if (!ce::display_timing_reclaim::ShouldStopSession(ownerPid, currentPid, ownerAlive)) {
+        const bool isTheSessionBeingOpened = openingName && (wcscmp(name, openingName) == 0);
+        if (!ce::display_timing_reclaim::ShouldStopSession(ownerPid, currentPid, ownerAlive, isTheSessionBeingOpened)) {
             continue;
         }
         auto stopProperties = MakeProperties(name);
@@ -86,7 +88,7 @@ int ReclaimLeakedSessions(uint32_t startStatus) {
 // Opens the screen-change trace session, sweeping leaked CaptureEngine sessions out of
 // the way first and once more if the open is refused anyway. Returns the Win32 status
 // of the last StartTraceW attempt.
-uint32_t OpenSessionWithReclaim(uint64_t* sessionHandle, const wchar_t* sessionName) {
+uint32_t OpenSessionWithReclaim(uint64_t* sessionHandle, const wchar_t* sessionName, uint32_t flushTimerMs) {
     if (!sessionHandle || !sessionName) {
         return ERROR_INVALID_PARAMETER;
     }
@@ -95,21 +97,21 @@ uint32_t OpenSessionWithReclaim(uint64_t* sessionHandle, const wchar_t* sessionN
     // and the machine-wide budget refuses a new one, at which point screen-change timing
     // degrades to presentation timing in near-silence. Sweep before asking, so the leak
     // cannot accumulate at all.
-    const int reclaimedBeforeStart = ReclaimLeakedSessions(0);
+    const int reclaimedBeforeStart = ReclaimLeakedSessions(0, sessionName);
     if (reclaimedBeforeStart > 0) {
-        LogInfo("[DisplayTiming] Reclaimed %d leaked screen-change trace session(s) left by earlier "
+        LogInfo("[DisplayTiming] Reclaimed %d leaked CaptureEngine trace session(s) left by earlier "
                 "CaptureEngine processes that did not shut down",
                 reclaimedBeforeStart);
     }
 
-    auto properties = MakeProperties(sessionName);
+    auto properties = MakeProperties(sessionName, flushTimerMs);
     ULONG status = StartTraceW(sessionHandle, sessionName, properties.Get());
     if (status != ERROR_SUCCESS && ShouldReclaimAfterStartFailure(status)) {
         // Still refused: a session may have been freed since, or one of ours may have died
         // between the sweep above and here. One more sweep, one more attempt.
-        const int reclaimed = ReclaimLeakedSessions(status);
+        const int reclaimed = ReclaimLeakedSessions(status, sessionName);
         if (reclaimed > 0) {
-            auto retryProperties = MakeProperties(sessionName);
+            auto retryProperties = MakeProperties(sessionName, flushTimerMs);
             const ULONG retryStatus = StartTraceW(sessionHandle, sessionName, retryProperties.Get());
             LogInfo("[DisplayTiming] Reclaimed %d more leaked trace session(s) after status %lu; restart status %lu",
                     reclaimed, status, retryStatus);

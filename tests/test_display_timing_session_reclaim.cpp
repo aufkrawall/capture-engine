@@ -22,6 +22,10 @@ TEST(DisplayTimingSessionReclaimTest, ParsesTheOwnerPidTheServiceWrites) {
     EXPECT_EQ(ParseSessionOwnerPid(L"CE_DisplayTiming_00005840"), 0x5840u);
     EXPECT_EQ(ParseSessionOwnerPid(L"CE_DisplayTiming_000012C8"), 0x12C8u);
     EXPECT_EQ(ParseSessionOwnerPid(L"CE_DisplayTiming_FFFFFFFF"), 0xFFFFFFFFu);
+    // Also the format swprintf(L"CE_PresentProgress_%08X", pid) produces.
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_00005840"), 0x5840u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_000012C8"), 0x12C8u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_FFFFFFFF"), 0xFFFFFFFFu);
 }
 
 // Stopping a stranger's trace session would be a serious bug, so anything that is
@@ -37,6 +41,14 @@ TEST(DisplayTimingSessionReclaimTest, RefusesEverySessionNameThatIsNotOurs) {
     EXPECT_EQ(ParseSessionOwnerPid(L"CE_DisplayTiming_000012C80"), 0u);  // longer than the format writes
     EXPECT_EQ(ParseSessionOwnerPid(L"CE_DisplayTiming_00000000"), 0u);   // pid 0 is not a process
     EXPECT_EQ(ParseSessionOwnerPid(L"XCE_DisplayTiming_000012C8"), 0u);  // prefix must start the name
+
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_"), 0u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_1234"), 0u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_000012c8"), 0u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_0000ZZZZ"), 0u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_000012C80"), 0u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"CE_PresentProgress_00000000"), 0u);
+    EXPECT_EQ(ParseSessionOwnerPid(L"XCE_PresentProgress_000012C8"), 0u);
 }
 
 TEST(DisplayTimingSessionReclaimTest, ReclaimsOnlyAfterTheTwoLeakedSessionStatuses) {
@@ -49,14 +61,19 @@ TEST(DisplayTimingSessionReclaimTest, ReclaimsOnlyAfterTheTwoLeakedSessionStatus
 
 TEST(DisplayTimingSessionReclaimTest, StopsOnlyOurSessionsWhoseOwnerIsGone) {
     constexpr uint32_t kCurrent = 0x1234;
-    // Owner dead: ours to take back.
-    EXPECT_TRUE(ShouldStopSession(0x5840, kCurrent, /*ownerProcessAlive=*/false));
-    // Our own process id from a previous life (pid reuse after a kill).
-    EXPECT_TRUE(ShouldStopSession(kCurrent, kCurrent, /*ownerProcessAlive=*/true));
-    // Another CaptureEngine that is still running is using its session.
-    EXPECT_FALSE(ShouldStopSession(0x5840, kCurrent, /*ownerProcessAlive=*/true));
-    // Not one of ours at all.
-    EXPECT_FALSE(ShouldStopSession(0, kCurrent, /*ownerProcessAlive=*/false));
+    // Own pid + being opened = true (pid reuse after a kill of the exact same session name).
+    EXPECT_TRUE(ShouldStopSession(kCurrent, kCurrent, /*ownerAlive=*/true, /*isTheSessionBeingOpened=*/true));
+    // Own pid + other name = false (regression test for the trap: another name under our pid is a live sibling).
+    EXPECT_FALSE(ShouldStopSession(kCurrent, kCurrent, /*ownerAlive=*/true, /*isTheSessionBeingOpened=*/false));
+    // Dead owner = true (ours to take back).
+    EXPECT_TRUE(ShouldStopSession(0x5840, kCurrent, /*ownerAlive=*/false, /*isTheSessionBeingOpened=*/false));
+    EXPECT_TRUE(ShouldStopSession(0x5840, kCurrent, /*ownerAlive=*/false, /*isTheSessionBeingOpened=*/true));
+    // Live owner (different pid) = false (another CaptureEngine is using its session).
+    EXPECT_FALSE(ShouldStopSession(0x5840, kCurrent, /*ownerAlive=*/true, /*isTheSessionBeingOpened=*/false));
+    EXPECT_FALSE(ShouldStopSession(0x5840, kCurrent, /*ownerAlive=*/true, /*isTheSessionBeingOpened=*/true));
+    // Owner 0 = false (not one of ours).
+    EXPECT_FALSE(ShouldStopSession(0, kCurrent, /*ownerAlive=*/false, /*isTheSessionBeingOpened=*/false));
+    EXPECT_FALSE(ShouldStopSession(0, kCurrent, /*ownerAlive=*/false, /*isTheSessionBeingOpened=*/true));
 }
 
 // The recovery is worth nothing if the service does not attempt it, and the failure
@@ -84,10 +101,10 @@ TEST(DisplayTimingSessionReclaimTest, TheServiceReclaimsAndThenRetriesTheSession
 
     // The sweep runs BEFORE the session is opened, so a leak cannot accumulate at all,
     // and again after a refusal so a session freed in between is still picked up.
-    const size_t sweep = reclaim.find("ReclaimLeakedSessions(0)");
+    const size_t sweep = reclaim.find("ReclaimLeakedSessions(0, sessionName)");
     const size_t firstStart = reclaim.find("StartTraceW(sessionHandle, sessionName, properties.Get())", sweep);
     const size_t reclaimGate = reclaim.find("ShouldReclaimAfterStartFailure(status)", firstStart);
-    const size_t reclaimCall = reclaim.find("ReclaimLeakedSessions(status)", reclaimGate);
+    const size_t reclaimCall = reclaim.find("ReclaimLeakedSessions(status, sessionName)", reclaimGate);
     const size_t retry = reclaim.find("StartTraceW(sessionHandle, sessionName, retryProperties.Get())", reclaimCall);
     ASSERT_NE(sweep, std::string::npos);
     ASSERT_NE(firstStart, std::string::npos);
@@ -100,7 +117,7 @@ TEST(DisplayTimingSessionReclaimTest, TheServiceReclaimsAndThenRetriesTheSession
     EXPECT_LT(reclaimCall, retry);
     // A live owner is consulted before anything is stopped, and only via the policy.
     EXPECT_NE(reclaim.find("PROCESS_QUERY_LIMITED_INFORMATION"), std::string::npos);
-    EXPECT_NE(reclaim.find("ShouldStopSession(ownerPid, currentPid, ownerAlive)"), std::string::npos);
+    EXPECT_NE(reclaim.find("ShouldStopSession(ownerPid, currentPid, ownerAlive, isTheSessionBeingOpened)"), std::string::npos);
     EXPECT_NE(reclaim.find("ParseSessionOwnerPid(name)"), std::string::npos);
     EXPECT_NE(reclaim.find("EVENT_TRACE_CONTROL_STOP"), std::string::npos);
 }
