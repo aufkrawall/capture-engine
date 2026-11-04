@@ -42,6 +42,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "vulkan_layer_swapchain.cpp"),
         os.path.join(layer_dir, "vulkan_reflex_limiter.cpp"),
         os.path.join(layer_dir, "layer_ipc.cpp"),
+        os.path.join(layer_dir, "layer_format_mapping.cpp"),
         os.path.join(layer_dir, "layer_renderer_bootstrap.cpp"),
         os.path.join(layer_dir, "layer_overlay.cpp"),
         os.path.join(layer_dir, "layer_overlay_compute.cpp"),
