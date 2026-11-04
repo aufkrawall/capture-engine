@@ -84,7 +84,7 @@ private:
 };
 
 // Delivers DXGI Present start/stop events into a tracker. The controller's
-// implementation consumes the elevation service's shared display trace.
+// implementation consumes the elevation service's display trace or opens an own session.
 class Feed {
 public:
     virtual ~Feed() = default;

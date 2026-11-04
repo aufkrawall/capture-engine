@@ -576,7 +576,7 @@ foreground_acquire_grace_ms=2000
 ; narrower and back - what a manual resize does. One attempt per stall; every
 ; step and its outcome is logged ([WindowHeartbeat]).
 ; It does not inject a DLL, open the game's memory, steal focus or simulate input,
-; and never touches the foreground window. Needs the elevation service.
+; and never touches the foreground window. Needs the elevation service, or CaptureEngine running as administrator.
 ; This global default applies only to process-backed profiles; a profile can use
 ; WindowHeartbeat.enabled=true or false to override it.
 enabled=false

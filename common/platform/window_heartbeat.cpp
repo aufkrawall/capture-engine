@@ -206,7 +206,7 @@ struct Service::State {
                     appliedGeneration = generation;
                     LogDebug("[WindowHeartbeat] configured enabled=%d cadenceMs=%llu stallThresholdMs=%llu trace=%s",
                              pump.Enabled() ? 1 : 0, static_cast<unsigned long long>(kIntervalMs),
-                             static_cast<unsigned long long>(thresholdUs / 1000), feed ? "service" : "none");
+                             static_cast<unsigned long long>(thresholdUs / 1000), feed ? "available" : "none");
                 }
                 MSG message = {};
                 // PeekMessage also dispatches asynchronous completion callbacks.
@@ -244,7 +244,7 @@ struct Service::State {
                     steer = true;
                 }
             }
-            // The trace lease talks to the elevation service: never under the configuration lock.
+            // The trace feed acquires the lease or opens an ETW session: never under the configuration lock.
             if (steer)
                 trace.Steer(background, tracker);
             if (MsgWaitForMultipleObjectsEx(1, &wake, waitMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_FAILED) {

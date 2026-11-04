@@ -82,7 +82,7 @@ struct RuntimeParts {
     Clock clock;
     bool vulkanResidency = false;  // registers the implicit Vulkan layer (resident; tests leave it off)
     bool heartbeat = false;        // window heartbeat service (tests leave it off)
-    // The heartbeat's Present trace (production: the elevation service's display trace). Null: no stall detection.
+    // The heartbeat's Present trace (production: elevation service display trace or own session). Null: no stall detection.
     std::function<std::unique_ptr<ce::present_progress::Feed>()> makePresentFeed;
     // Repairs interrupted recordings (11, part 3) on a worker thread the engine owns; `cancel` nonzero stops it.
     // Null: no recovery (tests that do not exercise it).

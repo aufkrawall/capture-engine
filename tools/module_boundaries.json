@@ -172,7 +172,7 @@
     {
       "source": "runtime/core/runtime_create.cpp",
       "target": "captureengine/display_timing/present_progress_feed.h",
-      "reason": "The composition root hands the window heartbeat its Present trace, the elevation service's display trace consumed by role-host code compiled into cengine.dll (DR-15).",
+      "reason": "The composition root hands the window heartbeat its Present trace, the elevation service's display trace or own session consumed by role-host code compiled into cengine.dll (DR-15).",
       "milestone": "M7"
     },
     {
