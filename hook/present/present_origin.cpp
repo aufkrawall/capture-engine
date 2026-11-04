@@ -131,10 +131,12 @@ void MaybeLogSummary(uint64_t nowMs) {
 
 // What a stack frame's module is. Return addresses repeat from Present to Present, so each is classified once: the
 // path copy, the token scans and above all the loader miss on a trampoline frame are all per module, not per frame.
+// Base names only: a full path per entry takes the hook DLL past its thread-local budget, and only the one frame that
+// decides needs its path, which WalkPresentOriginator looks up.
 struct FrameVerdict {
     FrameKind kind = FrameKind::kNoImage;
     Originator originator = Originator::kUnresolved;
-    char path[MAX_PATH] = {};
+    char baseName[PresentOrigin::kModuleNameLength] = {};
 };
 
 const FrameVerdict& ClassifyWalkedFrame(const void* address, bool moduleSetObservable, uint64_t moduleSet) {
@@ -143,15 +145,15 @@ const FrameVerdict& ClassifyWalkedFrame(const void* address, bool moduleSetObser
                         moduleSetObservable && address != nullptr, [address](FrameVerdict& fresh) {
         fresh = FrameVerdict{};
         HMODULE module = nullptr;
+        char path[MAX_PATH] = {};
         // No module is an answer too (a trampoline or thunk), and it stands until a module loads.
-        if (!TryGetModulePathFromCodeAddress(address, fresh.path, sizeof(fresh.path), &module) || !module) {
-            fresh.path[0] = '\0';
+        if (!TryGetModulePathFromCodeAddress(address, path, sizeof(path), &module) || !module) {
             return true;
         }
-        fresh.kind = ce::present_originator::ClassifyFrame(fresh.path, module == CaptureEngineModuleHandle(),
-                                                           SystemDirectory());
+        fresh.kind = ce::present_originator::ClassifyFrame(path, module == CaptureEngineModuleHandle(), SystemDirectory());
+        strncpy_s(fresh.baseName, sizeof(fresh.baseName), ce::overlay_compat::ExtractModuleBaseName(path), _TRUNCATE);
         if (fresh.kind == FrameKind::kOther) {
-            fresh.originator = ce::present_originator::ClassifyOriginatorModule(fresh.path, IsStreamlineModuleHandle(module));
+            fresh.originator = ce::present_originator::ClassifyOriginatorModule(path, IsStreamlineModuleHandle(module));
         }
         return true;
     });
@@ -173,11 +175,13 @@ void WalkPresentOriginator(PresentOrigin* out, bool moduleSetObservable, uint64_
             if (frame.kind == FrameKind::kNoImage || frame.kind == FrameKind::kCaptureEngine) {
                 continue;  // A trampoline or thunk, or CE's own wrapper/detour frames.
             }
-            RecordWalkedModule(out, frame.path);
+            RecordWalkedModule(out, frame.baseName);
             if (frame.kind != FrameKind::kOther) {
                 continue;  // Steam / RTSS (the chain CE sits below) and the system's dispatch frames between them.
             }
-            SetOriginator(out, frame.path, frame.originator);
+            char path[MAX_PATH] = {};
+            TryGetModulePathFromCodeAddress(stackFrames[i], path, sizeof(path));
+            SetOriginator(out, path, frame.originator);
             return;
         }
         if (frameCount < kBatchFrames) {
