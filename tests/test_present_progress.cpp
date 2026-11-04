@@ -123,9 +123,12 @@ TEST(PresentProgressTest, SharedProviderSetDeliversPresentReturns) {
     EXPECT_EQ(display_timing_etw::kRuntimeMpoPresentStop, 0x38);
     const std::string etw = ce::test_source::ReadFile(std::filesystem::current_path() / "common" / "platform" /
                                                       "display_timing_etw.h");
+    const size_t provider = etw.find("inline ULONG EnableRuntimePresentProvider(");
+    ASSERT_NE(provider, std::string::npos);
     const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
     ASSERT_NE(providerSet, std::string::npos);
-    const size_t runtime = etw.find("kRuntimeProvider, kRuntimeKeyword", providerSet);
+    EXPECT_NE(etw.find("EnableRuntimePresentProvider(session)", providerSet), std::string::npos);
+    const size_t runtime = etw.find("kRuntimeProvider, kRuntimeKeyword", provider);
     ASSERT_NE(runtime, std::string::npos);
     const size_t end = etw.find(");", runtime);
     const std::string filter = etw.substr(runtime, end - runtime);
