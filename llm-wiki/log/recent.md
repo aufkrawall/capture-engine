@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-11-04 - XeFG status fixed, per-Present layer lookup removed, Present1 reports its result; hardware run pending
+
+- **`entry`:** `ShouldRewriteFinalPresent` takes the metering query as a callable and asks last, so a process without an armed FIFO never looks for the layer.
+- **XeFG status:** `SLOffGraceSuppressesFG` exempts XeFG. `CadenceTracker` drops outputs from before its window opens, tells undecided from decided, and an output closes a window
+  after a whole one with no application frame (`applicationStopped`); the next frame answers undecided at once. Decided "not generating" makes `ClassifyRuntimeMode` read like generation off, reusing
+  a route `SetEnabled(0)` already takes. The input boundary lapses with it, so outputs count as application frames again. A `SetEnabled` edge resets the cadence. Changed verdicts always log.
+- **Coverage:** the three flow scenarios failed before their fixes as the run did: type 0 at 30 frames, 4x, 2x in the menu. All 20 XeFG scenarios pass. The fake now generates nothing for a Present without a present ID, on its presenter
+  thread, reporting -12. Not tested: real XeFG, and the 1:1 window with present IDs still coming (unit only, the fake stops generating only when IDs stop).
+- **Logs:** the three noisy lines log on change. No new tests: `ChangeGate` has its own, and these only choose its key.
+- **Present1 result:** only a source-order test, which fails without the fix. Flow cannot reach it: native swapchains are wrapped there, and `IsHookIsolatedFromHost` turns the hold off.
+- **Next run should show:** D3D12 `entry` 1-2 us. XeFG on after DLSS or FSR: `FG publication ... runtime=XeFG` holding, no `overlay divergence`, window #1 at 2x. In a menu: `output cadence window ... applicationStopped=1` and
+  `FG: XeFG is enabled and generates nothing` within 2 s, overlay off, `may generate again` on return. `FG: XeFG` lines per menu entry, not per frame.
+- **Noticed, not changed:** in flow, DLSS FG enabled before the first frame leaves 22 of the first presents unaccounted (`Treating Streamline-originated Present as synthetic re-entrant`, before the overlay is up). Scenarios
+  render frames first, so none showed it. No real-game evidence. `present_call_us` is still 0 on XeFG's route.
+
 ### 2026-11-04 - 0.1.7413 run: XeFG's wait is gone; `entry` explained; three XeFG status defects found, none fixed yet
 
 - **Session `20261104_183540`, exit 0 both, no device removal:** Talos (DLSS FG, off, DLSS FG, FSR, off, XeFG, off), DOOM Eternal Vulkan. `uncovered=0`

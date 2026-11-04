@@ -44,7 +44,11 @@ on which module's stack a Present came from:
 4. **Status `XeFG Nx`** (overlay type 4, `RuntimeMode::kXeFG`): presenter registered and `SetEnabled(1)`. The factor
    is the measured output/application cadence (`CadenceTracker`, outputs per Present, application frames per
    `SetPresentId`); `SetNumInterpolatedFrames + 1` only until one is measured. Native NVAPI/Streamline latency reports
-   are ignored for it (as for FSR FG).
+   are ignored for it (as for FSR FG). A window that decides "not generating" makes the mode read like generation off:
+   one output per application frame, or outputs for a whole window with no present ID behind them (Talos's menu, which
+   only an output can notice, `NoteRuntimeOutputPresent`). The game's next present ID restores the configured factor at
+   once. Below 20 application frames a window decides nothing, so a slow game keeps its factor. A `SetEnabled` edge
+   restarts the cadence. The SL-off grace does not suppress XeFG (`SLOffGraceSuppressesFG`).
 5. **The application frame is `xefgSwapChainSetPresentId`** (game thread, before the proxy Present by contract, also
    inside OptiScaler's present hook): the limiter's input site, the application frame rate and the cadence input.
 
@@ -308,13 +312,9 @@ not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's pres
 
 ## Open questions
 
-- **Status defects seen on 0.1.7413, not fixed yet (`20261104_183540`, numbers in `log/recent.md`):** after a Streamline FG
-  phase the 300-frame SL-off grace publishes Off over a generating XeFG (only the FSR API counts as confirmed, and the
-  grace arms on the first ProcessFrame of the new chain, 21 s after SL went off); window #1 of `CadenceTracker` counts outputs
-  from before it opened and reads 4x; `xefgMeasuredMultiplier == 0` means both "no verdict" and "not generating", so
-  `ResolveXeFGMultiplier` reports the configured 2x in a menu where XeFG queues 1 frame with `frameGenResult=-12`.
 - What `frameGenResult=-12` means, and whether every menu causes it. `ResultName` prints only "error". It starts as the game
-  stops its upscaler (`Ray Reconstruction stopped rendering`), so it looks game-driven, not CE-driven. Not proven.
+  stops its upscaler and its present IDs (`Ray Reconstruction stopped rendering`), so it looks game-driven, not CE-driven.
+  Not proven. The status no longer depends on it: the cadence decides.
 - Who presents the real frame under OptiScaler (game thread or XeFG's thread); the route does not depend on it.
 - Whether XeFG tolerates CE's create-time swapchain changes inside its own native create (descriptor overrides are
   skipped there today).
