@@ -56,6 +56,7 @@ void RetireOverlayGpuResources(bool synchronization, bool views) {
         state.overlayCompletionValue = 0;
         state.gpuCompletionUnprovable = false;
         state.allocIndex = 0;
+        state.slotPicker.Reset();
     }
     if (views) {
         take(state.rtvDescHeap); take(state.srvDescHeap); take(state.offscreenRT);

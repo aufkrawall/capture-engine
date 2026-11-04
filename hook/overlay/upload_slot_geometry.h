@@ -14,8 +14,9 @@ namespace CustomOverlay {
 // 32-bit D3D12 text path (Mirror's Edge, 20261103_213712: 70 us per graph-only frame).
 //
 // The renderer reports each change, like any other backend: a whole new frame, or a frame that differs only
-// behind its first vertices and indices. "Head" is the part those frames share. Slots rotate faster than the
-// rows change, so most draws find a slot that holds the current head and write only the graph.
+// behind its first vertices and indices. "Head" is the part those frames share. A draw on a slot that holds the
+// current head writes only the graph; each slot in use writes the head once per text change, so how much this
+// saves depends on how few slots a backend cycles through.
 class UploadSlotGeometry {
 public:
     explicit UploadSlotGeometry(size_t slotCount) : slots_(slotCount) {}
@@ -67,7 +68,7 @@ public:
         return plan;
     }
     void MarkWritten(size_t slot) {
-        slots_[slot] = Slot{frame_, head_, indexList_};
+        slots_[slot] = Slot{frame_, head_, indexList_, true};
     }
 
     // The slot's memory was replaced.
@@ -78,12 +79,18 @@ public:
         std::fill(slots_.begin(), slots_.end(), Slot{});
     }
 
+    size_t SlotsUsedInWindow() const {
+        return static_cast<size_t>(
+            std::count_if(slots_.begin(), slots_.end(), [](const Slot& slot) { return slot.usedInWindow; }));
+    }
+
     // Bytes written per frame, for the backend's rate-limited log line.
     struct Totals {
         uint32_t frames = 0;
         uint64_t vertexBytes = 0;
         uint64_t indexBytes = 0;
         uint64_t frameBytes = 0;  // what writing everything would have cost
+        uint32_t slotsUsed = 0;
     };
     static constexpr uint32_t kReportFrames = 600;
     bool NoteBytes(uint64_t vertexBytes, uint64_t indexBytes, uint64_t frameBytes, Totals* report) {
@@ -94,6 +101,9 @@ public:
         if (totals_.frames < kReportFrames)
             return false;
         *report = totals_;
+        report->slotsUsed = static_cast<uint32_t>(SlotsUsedInWindow());
+        for (Slot& slot : slots_)
+            slot.usedInWindow = false;
         totals_ = {};
         return true;
     }
@@ -104,6 +114,7 @@ private:
         uint64_t frame = 0;
         uint64_t head = 0;
         uint64_t indexList = 0;
+        bool usedInWindow = false;
     };
 
     std::vector<Slot> slots_;

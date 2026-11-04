@@ -179,6 +179,7 @@ struct DX12OverlayState {
     std::vector<ID3D12CommandAllocator*> allocators;
     ID3D12GraphicsCommandList* cmdList = nullptr;
     int allocIndex = 0;
+    ce::dx12_overlay_policy::OverlaySlotPicker slotPicker;
     ID3D12Fence* fence = nullptr;
     HANDLE fenceEvent = nullptr;
     UINT64 currentFenceValue = 0;

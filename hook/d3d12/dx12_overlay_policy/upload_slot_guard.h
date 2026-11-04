@@ -3,6 +3,8 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 // Pinning the fence whose lifetime the per-slot upload-ring guards are keyed
@@ -44,6 +46,67 @@ inline constexpr int ResolveAllocatorCoupledUploadSlot(int allocatorSlot) {
 
 inline constexpr bool CanUseFenceGuardedUploadSlotFallback(bool hasFence, uint64_t publishedGuardValue) {
     return hasFence && publishedGuardValue != 0;
+}
+
+// Which allocator and upload slot the overlay's next draw takes. Rotating through all 16 made every slot write the
+// whole text once after each text change, and the text changes every 16-50 frames: on 32-bit D3D12, whose text is
+// a megabyte of solid spans, that was about 340 KB per frame into write-combined memory (Mirror's Edge,
+// 20261104_133147). The GPU is rarely more than a frame or two behind, so taking the lowest finished slot keeps two
+// or three slots in use, and their allocators warm.
+//
+// Finished means proved. A slot's fence value only proves its last submission if the value was assigned after that
+// submission: a route that submits without a Signal leaves an old value behind, and rotation only got away with that
+// because the slot came around again 16 frames later. Such a slot stays out until a Signal covers it, so those routes
+// fall back to plain rotation, exactly what they had before.
+class OverlaySlotPicker {
+public:
+    // Before the list reaches the queue. `currentFenceValue`: the value Signals have reached so far; the next one
+    // this slot gets is larger.
+    void NoteSubmitted(int slot, uint64_t currentFenceValue) {
+        if (slot >= 0 && slot < kAllocatorCoupledUploadSlotCount) {
+            submitted_[static_cast<size_t>(slot)] = true;
+            submittedAt_[static_cast<size_t>(slot)] = currentFenceValue;
+        }
+    }
+
+    // The first finished slot from `firstSlot` on, or -1.
+    int Pick(const uint64_t* fenceValues, int slotCount, int firstSlot, uint64_t completedFenceValue) const {
+        if (!fenceValues || slotCount <= 0 || slotCount > kAllocatorCoupledUploadSlotCount || firstSlot < 0) {
+            return -1;
+        }
+        for (int offset = 0; offset < slotCount; ++offset) {
+            const int slot = (firstSlot + offset) % slotCount;
+            if (IsFinished(slot, fenceValues[slot], completedFenceValue)) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    // The fence and allocators were replaced: every value recorded so far belongs to them.
+    void Reset() {
+        submitted_ = {};
+        submittedAt_ = {};
+    }
+
+private:
+    bool IsFinished(int slot, uint64_t fenceValue, uint64_t completedFenceValue) const {
+        const auto index = static_cast<size_t>(slot);
+        if (fenceValue > completedFenceValue) {
+            return false;
+        }
+        return !submitted_[index] || fenceValue > submittedAt_[index];
+    }
+
+    std::array<bool, kAllocatorCoupledUploadSlotCount> submitted_{};
+    std::array<uint64_t, kAllocatorCoupledUploadSlotCount> submittedAt_{};
+};
+
+// The lowest finished slot is only for the plain route: under frame generation or a runtime-owned swapchain the
+// overlay's slots may have no Signal, and a failed Signal leaves nothing to reason from.
+inline constexpr bool ShouldReuseFinishedOverlaySlot(bool hasFence, bool frameGenerationActive, bool runtimeOwnedPresentation,
+                                                     bool gpuCompletionUnprovable) {
+    return hasFence && !frameGenerationActive && !runtimeOwnedPresentation && !gpuCompletionUnprovable;
 }
 
 class UploadSlotGuardFenceBinding {

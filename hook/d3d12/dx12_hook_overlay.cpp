@@ -296,6 +296,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
             }
             dx12_hook_g_State.currentFenceValue = 0;
             dx12_hook_g_State.allocIndex = 0;
+            dx12_hook_g_State.slotPicker.Reset();
             dx12_hook_g_State.syncInit = false;
             dx12_hook_g_State.syncDevice = nullptr;
             if (queueDevice) {
@@ -422,6 +423,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     std::fill(dx12_hook_g_State.fenceValues.begin(), dx12_hook_g_State.fenceValues.end(), 0);
     dx12_hook_g_State.currentFenceValue = 0;
     dx12_hook_g_State.allocIndex = 0;
+    dx12_hook_g_State.slotPicker.Reset();
 
     HookLog("InitOverlaySync: Fence values reset to 0, currentFenceValue=0");
 
@@ -511,6 +513,7 @@ void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
     dx12_hook_g_State.currentFenceValue = 0;
     dx12_hook_g_State.crossQueueFenceValue = 0;
     dx12_hook_g_State.allocIndex = 0;
+    dx12_hook_g_State.slotPicker.Reset();
     dx12_hook_g_State.syncInit = false;
     dx12_hook_g_State.syncDevice = nullptr;
     dx12_hook_g_State.cachedSC3 = nullptr;

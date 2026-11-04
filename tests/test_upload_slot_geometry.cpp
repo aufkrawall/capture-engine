@@ -139,6 +139,24 @@ TEST(UploadSlotGeometryTest, BytesAreReportedOncePerWindow) {
     EXPECT_FALSE(geometry.NoteBytes(10, 2, 100, &report)) << "a new window";
 }
 
+TEST(UploadSlotGeometryTest, TheReportCountsTheSlotsThatDrewInItsWindow) {
+    UploadSlotGeometry geometry(8);
+    UploadSlotGeometry::Totals report;
+    geometry.NoteWholeFrame();
+    geometry.IndicesToHold(kIndices);
+    for (uint32_t frame = 0; frame < UploadSlotGeometry::kReportFrames - 1; ++frame) {
+        geometry.MarkWritten(frame % 2);
+        ASSERT_FALSE(geometry.NoteBytes(10, 2, 100, &report));
+    }
+    geometry.MarkWritten(5);
+    ASSERT_TRUE(geometry.NoteBytes(10, 2, 100, &report));
+    EXPECT_EQ(report.slotsUsed, 3u);
+
+    // The next window starts from nothing, and keeping what a slot holds is not touched by it.
+    EXPECT_EQ(geometry.SlotsUsedInWindow(), 0u);
+    EXPECT_FALSE(geometry.PlanSlot(5, kVertices).writeVertices);
+}
+
 // The contract, end to end against plain memory: after every plan a slot's memory reads as the current frame.
 // Frames are random: new rows, a moved graph of varying length, cached redraws, slots skipped because they were
 // in flight, and whole-frame draws lost to the same.

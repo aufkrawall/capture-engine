@@ -211,10 +211,11 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
     uploadedGeometry_.MarkWritten(slot);
     CustomOverlay::UploadSlotGeometry::Totals uploadReport;
     if (uploadedGeometry_.NoteBytes(vertexBytesWritten, indexBytesWritten, vbBytes + ibBytes, &uploadReport)) {
-        HookLogImportant("[Overlay] DX12 upload over %u frames: vertices=%.1fKB indices=%.1fKB of %.1fKB per frame",
+        HookLogImportant("[Overlay] DX12 upload over %u frames: vertices=%.1fKB indices=%.1fKB of %.1fKB per frame slots=%u",
                          uploadReport.frames, static_cast<double>(uploadReport.vertexBytes) / 1024.0 / uploadReport.frames,
                          static_cast<double>(uploadReport.indexBytes) / 1024.0 / uploadReport.frames,
-                         static_cast<double>(uploadReport.frameBytes) / 1024.0 / uploadReport.frames);
+                         static_cast<double>(uploadReport.frameBytes) / 1024.0 / uploadReport.frames,
+                         uploadReport.slotsUsed);
     }
 
     // Set pipeline — NO SetDescriptorHeaps!

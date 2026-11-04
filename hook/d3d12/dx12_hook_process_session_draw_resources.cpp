@@ -8,7 +8,17 @@ ProcessFrameFlow FrameProcessSession::SelectAllocatorSlot() {
         return ProcessFrameFlow::kOverlayDone;
     }
 
-    idx = dx12_hook_g_State.allocIndex % allocatorPoolSize;
+    const int nextInRing = dx12_hook_g_State.allocIndex % allocatorPoolSize;
+    const bool runtimeOwnedPresentation = dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
+                                          DXGIShared::DoesFGRuntimeOwnSwapchain();
+    const bool reuseFinishedSlot = ce::dx12_overlay_policy::ShouldReuseFinishedOverlaySlot(
+        dx12_hook_g_State.fence != nullptr, slFGActive || g_FGCompat.IsFGActive(), runtimeOwnedPresentation,
+        dx12_hook_g_State.gpuCompletionUnprovable);
+    // Without a fence nothing is proved, and the first slot from the ring on that has none to prove is still right.
+    const UINT64 completed = dx12_hook_g_State.fence ? dx12_hook_g_State.fence->GetCompletedValue() : 0;
+    const int finished = dx12_hook_g_State.slotPicker.Pick(dx12_hook_g_State.fenceValues.data(), allocatorPoolSize,
+                                                           reuseFinishedSlot ? 0 : nextInRing, completed);
+    idx = finished >= 0 ? finished : nextInRing;
     dx12_hook_g_State.allocIndex = (idx + 1) % allocatorPoolSize;
 
     // With 16 allocators, we never need to wait under normal conditions.

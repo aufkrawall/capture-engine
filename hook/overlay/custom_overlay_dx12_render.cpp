@@ -185,10 +185,11 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     uploadedGeometry.MarkWritten(slot);
     UploadSlotGeometry::Totals uploadReport;
     if (uploadedGeometry.NoteBytes(vertexBytesWritten, indexBytesWritten, vbSize + ibSize, &uploadReport)) {
-        HookLogImportant("[Overlay] DX12 upload over %u frames: vertices=%.1fKB indices=%.1fKB of %.1fKB per frame",
+        HookLogImportant("[Overlay] DX12 upload over %u frames: vertices=%.1fKB indices=%.1fKB of %.1fKB per frame slots=%u",
                          uploadReport.frames, static_cast<double>(uploadReport.vertexBytes) / 1024.0 / uploadReport.frames,
                          static_cast<double>(uploadReport.indexBytes) / 1024.0 / uploadReport.frames,
-                         static_cast<double>(uploadReport.frameBytes) / 1024.0 / uploadReport.frames);
+                         static_cast<double>(uploadReport.frameBytes) / 1024.0 / uploadReport.frames,
+                         uploadReport.slotsUsed);
     }
 
     if (hasTexturedCommands) {

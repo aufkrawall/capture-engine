@@ -383,6 +383,8 @@ if (idx < 0) {
     idx = preferredIdx;
 }
 dx12_hook_g_State.allocIndex = (idx + 1) % allocPoolSize;
+// This route's submission and its Signal come later: the normal route must not take the slot before that proof.
+dx12_hook_g_State.slotPicker.NoteSubmitted(idx, dx12_hook_g_State.currentFenceValue);
 list = dx12_hook_g_State.cmdList;
 alloc = (idx < allocPoolSize) ? dx12_hook_g_State.allocators[idx] : nullptr;
 if (!list || !alloc) {

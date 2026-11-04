@@ -152,6 +152,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
     }
 
 
+    dx12_hook_g_State.slotPicker.NoteSubmitted(idx, dx12_hook_g_State.currentFenceValue);
     {
         ScopedCEOverlayECLSubmission ceOverlayECLGuard("normal overlay submit");
         if (!useDedicated && realECL && !isSLWrapperECL) {
