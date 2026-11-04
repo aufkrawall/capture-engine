@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "dxgi_shared_forwarded_present.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
 #include "translated_swapchain_owner.h"
@@ -589,7 +590,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     "tid=0x%04X)",
                     bypassNum, (void*)presentBypass, GetCurrentThreadId());
             }
-            return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
+            ForwardedPresentRecord record(true, "FFX startup-handoff Present");
+            const HRESULT hr =
+                record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });
+            return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, "Present");
         }
     }
     // Before the routing that applies the CPU prerender limit: every route below returns through it

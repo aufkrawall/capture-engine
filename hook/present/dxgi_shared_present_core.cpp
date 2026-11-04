@@ -29,8 +29,9 @@ void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, con
 }
 
 namespace DXGIShared {
-HRESULT ReportForwardedPresentResult(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
-                                     const char* presentName) {
+namespace {
+void NotePresentResultForFocusTracking(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
+                                       const char* presentName) {
     if (api == APIType::D3D12) {
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
@@ -38,17 +39,28 @@ HRESULT ReportForwardedPresentResult(IDXGISwapChain* pSwapChain, UINT SyncInterv
         ce::present_stage_cost::StageScope presentResultStage(ce::present_stage_cost::Stage::kPresentResult);
         NoteDX12PresentResultForVtablePath(pSwapChain, presentName, SyncInterval, Flags, hr);
     }
+}
+}  // namespace
+
+HRESULT ReportForwardedPresentResult(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
+                                     const char* presentName) {
+    NotePresentResultForFocusTracking(pSwapChain, SyncInterval, Flags, api, hr, presentName);
     NotePresentDeviceResult(hr, presentName);
     return hr;
 }
 
 HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
                                const char* presentName) {
+    NotePresentResultForFocusTracking(pSwapChain, SyncInterval, Flags, api, hr, presentName);
+
     if (SUCCEEDED(hr)) {
         ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
         g_SharedFpsLimiter.ApplyPostPresent();
     }
-    return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, presentName);
+
+    NotePresentDeviceResult(hr, presentName);
+
+    return hr;
 }
 
 // Runs inside DetourPresent's core_policy stage; named sub-regions below open their own
@@ -164,14 +176,16 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent: app-thread post-FSR startup-handoff overlayless SL route");
             }
-            ApplyFpsLimiterStage(pSwapChain, true);
-            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
-            WaitBackbufferFrameLatency(pSwapChain);
-            HRESULT handoffHr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);
-            if (SUCCEEDED(handoffHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
+            ForwardedPresentRecord record(true, "app-thread post-FSR Streamline startup handoff");
+            {
+                CostScope limiterStage(CostStage::kLimiter);
+                record.TimeLimiter([&] { ApplyFpsLimiterStage(pSwapChain, true); });
+                ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
+                WaitBackbufferFrameLatency(pSwapChain);
             }
-            return handoffHr;
+            const HRESULT handoffHr =
+                record.Forward([&] { return ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags); });
+            return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, handoffHr, "Present");
         }
     }
     {

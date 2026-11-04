@@ -300,16 +300,28 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     // Every forward ends through one function. CE's not-presentable hold and device-loss latch run on its reports, and
     // Streamline's Steam transport left them out (`present_result` n=0, 20261104_195245). Flow scenarios cannot reach
     // that route, which needs the Steam overlay, or the hold, which is off in an isolated hook.
+    const std::string focusReport = FunctionBody(core, "void NotePresentResultForFocusTracking(");
+    ASSERT_FALSE(focusReport.empty());
+    const size_t resultStage = focusReport.find("Stage::kPresentResult");
+    ASSERT_NE(resultStage, std::string::npos);
+    EXPECT_NE(focusReport.find("NoteDX12PresentResultForVtablePath(pSwapChain, presentName,", resultStage),
+              std::string::npos);
     const std::string finish = FunctionBody(core, "HRESULT FinishForwardedPresent(");
     ASSERT_FALSE(finish.empty());
     size_t finishStep = 0;
-    for (const char* marker : {"CostStage::kPresentResult", "NoteDX12PresentResultForVtablePath(pSwapChain, presentName,",
+    for (const char* marker : {"NotePresentResultForFocusTracking(pSwapChain,",
                                // The limiter's post-present wait is the limiter's, not bookkeeping.
-                               "CostStage::kLimiter", "g_SharedFpsLimiter.ApplyPostPresent();",
+                               "Stage::kLimiter", "g_SharedFpsLimiter.ApplyPostPresent();",
                                "NotePresentDeviceResult(hr, presentName);"}) {
         finishStep = finish.find(marker, finishStep);
         ASSERT_NE(finishStep, std::string::npos) << marker;
     }
+    // A route that ran no limiter has no post-present half to run.
+    const std::string report = FunctionBody(core, "HRESULT ReportForwardedPresentResult(");
+    ASSERT_FALSE(report.empty());
+    EXPECT_NE(report.find("NotePresentResultForFocusTracking(pSwapChain,"), std::string::npos);
+    EXPECT_NE(report.find("NotePresentDeviceResult(hr, presentName);"), std::string::npos);
+    EXPECT_EQ(report.find("ApplyPostPresent"), std::string::npos);
 }
 
 // CE's swapchain wrappers process the frame themselves when no foreign chain is loaded, and the detour their real

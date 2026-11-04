@@ -64,6 +64,67 @@ TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneBypassEndsLikeTheNormalRout
     }
 }
 
+// The presents before that bypass takes over, and the routes around it, returned with no CSV row, no result report and no
+// [PRESENT STALL] accounting: 9 outputs per switch in 20261104_222523, drawn and forwarded and otherwise invisible. The
+// routes need Steam or the fake FFX startup, so these are source contracts; ForwardedPresentRecordTest covers the record.
+TEST(DXGISharedSourceTest, EveryRouteThatForwardsAPresentRecordsAndReportsIt) {
+    struct Route {
+        const char* file;
+        const char* open;
+        const char* forward;
+        const char* report;
+    };
+    const Route routes[] = {
+        {"dxgi_shared_present_routing.cpp",
+         "ForwardedPresentRecord record(presentBypass != nullptr, \"Streamline startup-handoff Present\");",
+         "record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });",
+         "return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, hr, \"Present\");"},
+        {"dxgi_shared_present_routing.cpp",
+         "ForwardedPresentRecord record(presentBypass != nullptr, \"Streamline startup normal-route Present\");",
+         "record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });",
+         "return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, hr, \"Present\");"},
+        {"dxgi_shared_present_core.cpp", "ForwardedPresentRecord record(true, \"app-thread post-FSR Streamline startup handoff\");",
+         "record.Forward([&] { return ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags); });",
+         "return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, handoffHr, \"Present\");"},
+        {"dxgi_shared_present.cpp", "ForwardedPresentRecord record(true, \"FFX startup-handoff Present\");",
+         "record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });",
+         "return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, \"Present\");"},
+        {"dxgi_shared_present1.cpp",
+         "ForwardedPresentRecord record(present1Bypass != nullptr, \"Streamline startup-handoff Present1\");",
+         "ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters); });",
+         "return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, \"Present1\");"},
+        {"dxgi_shared_present1.cpp",
+         "ForwardedPresentRecord record(present1Bypass != nullptr, \"Streamline startup normal-route Present1\");",
+         "ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters); });",
+         "return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, \"Present1\");"},
+        {"dxgi_shared_present1.cpp", "ForwardedPresentRecord record(true, \"FFX startup-handoff Present1\");",
+         "ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters); });",
+         "return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, \"Present1\");"},
+        {"dxgi_shared_present1.cpp",
+         "ForwardedPresentRecord record(true, \"app-thread post-FSR Streamline startup handoff Present1\");",
+         "ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, Flags, pPresentParameters); });",
+         "return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, api, handoffHr, \"Present1\");"},
+    };
+    for (const Route& route : routes) {
+        const std::string source = ReadHookSource(route.file);
+        ASSERT_FALSE(source.empty()) << route.file;
+        const size_t open = source.find(route.open);
+        ASSERT_NE(open, std::string::npos) << route.open;
+        const size_t forward = source.find(route.forward, open);
+        ASSERT_NE(forward, std::string::npos) << route.open;
+        EXPECT_NE(source.find(route.report, forward), std::string::npos) << route.open;
+    }
+    // A guarded Steam invoke presents too, and its result is reported the same way.
+    const std::string routing = ReadHookSource("dxgi_shared_present_routing.cpp");
+    size_t guarded = routing.find("ForwardedPresentRecord record(presentBypass != nullptr");
+    for (int route = 0; route < 2; ++route) {
+        ASSERT_NE(guarded, std::string::npos);
+        guarded = routing.find("return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, guardedSteamHr, \"Present\");",
+                               guarded + 1);
+    }
+    EXPECT_NE(guarded, std::string::npos);
+}
+
 // With the Present entry left to a foreign chain, the refresh cannot do anything and used to ask the kernel about the
 // swapchain and its table first, on every Present of the route: `startup_routing` 131 us here, 9 us on an earlier run
 // of the same code (20261104_210842, 20261104_154909; which part cost it is inferred, these stages will say).

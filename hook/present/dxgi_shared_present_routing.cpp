@@ -191,6 +191,8 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent: startup-handoff normal-route transport");
             }
+            PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+            ForwardedPresentRecord record(presentBypass != nullptr, "Streamline startup-handoff Present");
             bool exactStartupTransportDrawn = false;
             if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
                     ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, ctx.safePostFSRBootstrapPath, ctx.streamlineFGRunning,
@@ -199,18 +201,19 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     pSwapChain, "DetourPresent/startup-handoff-transport");
             }
             HRESULT guardedSteamHr = S_OK;
+            record.BeginDownCall();
             if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
                                                             "Streamline startup-handoff Present", &guardedSteamHr)) {
+                record.EndDownCall();
                 if (SUCCEEDED(guardedSteamHr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
                                                         "streamline-startup-handoff-transport",
                                                         "DetourPresent/guarded-startup-handoff");
                 }
                 *earlyReturn = true;
-                return guardedSteamHr;
+                return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, guardedSteamHr, "Present");
             }
 
-            PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
                 static std::atomic<int> s_streamlineStartupHandoffBypassLogCount{0};
                 int bypassCount = s_streamlineStartupHandoffBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -229,14 +232,15 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                                                                    ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
                                                                    ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
                                                                    "startupHandoffNormalRoute");
-                const HRESULT hr = ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
+                const HRESULT hr =
+                    record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });
                 if (SUCCEEDED(hr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
                                                         "streamline-startup-handoff-transport",
                                                         "DetourPresent/startup-handoff-bypass");
                 }
                 *earlyReturn = true;
-                return hr;
+                return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, hr, "Present");
             }
         } else if (ctx.runtimeOwnedSwapchainActive) {
             static std::atomic<int> s_streamlineStartupHandoffNormalTransportAllowedLogCount{0};
@@ -294,6 +298,13 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 ctx.hadFSRFGPhase ? 1 : 0, ctx.activeDLSSFGRuntimeSignalObserved ? 1 : 0,
                 ctx.streamlineStartupTransitionWindowActive ? 1 : 0, ctx.currentThreadId);
         }
+        const bool bypassStartupPresent = DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+            ctx.api == APIType::D3D12, keepStartupPresentOnNormalRoute, ctx.postSLConfirmedRendering,
+            ctx.postSLConfirmedButStartupSettling, streamlineStartupNormalRouteTransportRisk, startupNormalRouteSteamRisk);
+        PFN_Present presentBypass = bypassStartupPresent ? EnsurePresentBypassTrampoline() : nullptr;
+        // Before the draw below, so total_us covers it. The first presents of DLSS FG after FSR FG run here, without a
+        // row or a result until now (9 presents, 20261104_222523).
+        ForwardedPresentRecord record(presentBypass != nullptr, "Streamline startup normal-route Present");
         if (shouldInvokePostSLCallbackOnNormalRoute) {
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
@@ -329,19 +340,17 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     ctx.activeDLSSFGRuntimeSignalObserved ? 1 : 0, ctx.safePostFSRBootstrapPath ? 1 : 0, ctx.currentThreadId);
             }
         }
-        if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-                ctx.api == APIType::D3D12, keepStartupPresentOnNormalRoute, ctx.postSLConfirmedRendering,
-                ctx.postSLConfirmedButStartupSettling, streamlineStartupNormalRouteTransportRisk,
-                startupNormalRouteSteamRisk)) {
+        if (bypassStartupPresent) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline startup normal-route Present");
             HRESULT guardedSteamHr = S_OK;
+            record.BeginDownCall();
             if (TryInvokeGuardedExternalSteamOverlayPresent(
                     pSwapChain, SyncInterval, Flags, "Streamline startup normal-route Present", &guardedSteamHr)) {
+                record.EndDownCall();
                 *earlyReturn = true;
-                return guardedSteamHr;
+                return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, guardedSteamHr, "Present");
             }
 
-            PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
                 static std::atomic<int> s_streamlineStartupNormalRouteBypassLogCount{0};
                 int bypassCount =
@@ -367,8 +376,10 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                                                                    ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
                                                                    ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
                                                                    "keepStartupNormalRoute");
+                const HRESULT hr =
+                    record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });
                 *earlyReturn = true;
-                return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
+                return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, hr, "Present");
             }
         } else if (ctx.runtimeOwnedSwapchainActive && ctx.callerFromStreamlineModule) {
             static std::atomic<int> s_streamlineStartupNormalTransportAllowedLogCount{0};

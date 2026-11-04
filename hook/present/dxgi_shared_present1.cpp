@@ -205,7 +205,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     "tid=0x%04X)",
                     bypassNum, (void*)present1Bypass, GetCurrentThreadId());
             }
-            return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
+            ForwardedPresentRecord record(true, "FFX startup-handoff Present1");
+            const HRESULT hr = record.Forward(
+                [&] { return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters); });
+            return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, "Present1");
         }
     }
     bool streamlineSyntheticReentrant =
@@ -256,6 +259,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent1: startup-handoff normal-route transport");
             }
+            PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
+            ForwardedPresentRecord record(present1Bypass != nullptr, "Streamline startup-handoff Present1");
             bool exactStartupTransportDrawn = false;
             if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
                     api == APIType::D3D12, hadFSRFGPhase, safePostFSRBootstrapPath, streamlineFGRunning,
@@ -263,7 +268,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 exactStartupTransportDrawn = DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(
                     pSwapChain, "DetourPresent1/startup-handoff-transport");
             }
-            PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
                 static std::atomic<int> s_streamlineStartupHandoffBypassLogCount1{0};
                 int bypassCount = s_streamlineStartupHandoffBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -278,13 +282,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)present1Bypass, presentOwner, presentDepthVal, currentThreadId);
                 }
-                const HRESULT hr = ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
+                const HRESULT hr = record.Forward(
+                    [&] { return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters); });
                 if (SUCCEEDED(hr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
                                                         "streamline-startup-handoff-transport",
                                                         "DetourPresent1/startup-handoff-bypass");
                 }
-                return hr;
+                return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, "Present1");
             }
         } else if (runtimeOwnedSwapchainActive) {
             static std::atomic<int> s_streamlineStartupHandoffNormalTransportAllowedLogCount1{0};
@@ -342,6 +347,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 hadFSRFGPhase ? 1 : 0, activeDLSSFGRuntimeSignalObserved ? 1 : 0,
                 streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
+        const bool bypassStartupPresent1 = DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+            api == APIType::D3D12, keepStartupPresentOnNormalRoute, postSLConfirmedRendering,
+            postSLConfirmedButStartupSettling, streamlineStartupNormalRouteTransportRisk, startupNormalRouteSteamRisk);
+        PFN_Present1 present1Bypass = bypassStartupPresent1 ? EnsurePresent1BypassTrampoline() : nullptr;
+        ForwardedPresentRecord record(present1Bypass != nullptr, "Streamline startup normal-route Present1");
         if (shouldInvokePostSLCallbackOnNormalRoute) {
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
@@ -377,12 +387,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     activeDLSSFGRuntimeSignalObserved ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
-        if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-                api == APIType::D3D12, keepStartupPresentOnNormalRoute, postSLConfirmedRendering,
-                postSLConfirmedButStartupSettling, streamlineStartupNormalRouteTransportRisk,
-                startupNormalRouteSteamRisk)) {
+        if (bypassStartupPresent1) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline startup normal-route Present1");
-            PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
                 static std::atomic<int> s_streamlineStartupNormalRouteBypassLogCount1{0};
                 int bypassCount =
@@ -404,7 +410,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     DX12_RetainStreamlineStartupActivationSwapchain(pSwapChain,
                                                                     "DetourPresent1: startup normal-route bypass");
                 }
-                return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
+                const HRESULT hr = record.Forward(
+                    [&] { return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters); });
+                return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, "Present1");
             }
         } else if (runtimeOwnedSwapchainActive && callerFromStreamlineModule) {
             static std::atomic<int> s_streamlineStartupNormalTransportAllowedLogCount1{0};
@@ -684,14 +692,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent1: app-thread post-FSR startup-handoff overlayless SL route");
             }
-            ApplyFpsLimiterStage(pSwapChain, true);
+            ForwardedPresentRecord record(true, "app-thread post-FSR Streamline startup handoff Present1");
+            EnterStage(CostStage::kLimiter);
+            record.TimeLimiter([&] { ApplyFpsLimiterStage(pSwapChain, true); });
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             WaitBackbufferFrameLatency(pSwapChain);
-            HRESULT handoffHr = ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, Flags, pPresentParameters);
-            if (SUCCEEDED(handoffHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            return handoffHr;
+            const HRESULT handoffHr = record.Forward(
+                [&] { return ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, Flags, pPresentParameters); });
+            return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, api, handoffHr, "Present1");
         }
     }
     // A DX11/DX10 Present1 the wrapper does not own wrote no perf CSV row until 2026-10-17. A D3D12
