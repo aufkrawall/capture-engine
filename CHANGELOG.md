@@ -12,7 +12,7 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **XeFG status in the overlay:** the overlay no longer shows a false 4x for a moment after XeFG turns on.
+- **XeFG status in the overlay:** after DLSS FG or FSR FG, the overlay now shows XeFG as soon as it turns on instead of showing frame generation as off for 300 frames, and it no longer shows a false 4x for a moment after that.
 
 - **D3D12 frame classification with late overlay hooks:** another overlay installing a queue hook after its DLL loaded no longer causes CaptureEngine to exclude the game's forwarded command lists. Caller ownership now uses that queue's current method entry for each submission, so direct calls on other queues cannot leave a stale classification.
 

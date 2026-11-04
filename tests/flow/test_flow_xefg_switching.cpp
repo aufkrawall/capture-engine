@@ -61,6 +61,29 @@ TEST(FlowXeFGSwitch, GTAStyleSwitchesKeepTheOverlay) {
     SwitchBetweenXeFGAndTheOtherRuntimes(false, FSRUiResource::kPlaceholder);
 }
 
+// Talos (20261104_183540): the first ProcessFrame on XeFG's chain saw Streamline's FG gone, 21 s late, and armed the
+// 300-frame grace against heuristic false positives. It trusted only FSR's API, so a generating XeFG read as off for
+// exactly 300 frames. SetEnabled with XeFG's own swapchain registered is as explicit as ffxConfigure.
+TEST(FlowXeFGSwitch, TheStatusFollowsXeFGRightAfterDLSSFG) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ExpectPublished(game, 1, 2, "DLSS FG on");
+
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kXeFG)) << game.Error();
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(30)) << game.Error();
+    ExpectPublished(game, kXeFGStatusType, 2, "30 frames after DLSS FG -> XeFG");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // OptiScaler with FGInput=DLSSG and FGOutput=XeFG: the game keeps asking Streamline for DLSS-G while XeFG presents
 // every frame (session 20261023_183119 published "DLSS FG 2x" and drew on half the frames). A DLSS-G signal beside a
 // runtime-presented swapchain is a front: the status stays XeFG, and a DLSS-G state taken before XeFG appeared is

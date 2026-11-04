@@ -81,14 +81,12 @@ if (s_slOffGraceFrames > 0) {
     // FG types.  The cached 2× multiplier from departing DLSS FG falsely
     // activates NVIDIA_SM detection, and elevated ECL counts falsely
     // trigger heuristic FSR_FG.  Only trust explicit API hooks
-    // (fsrFGApiActive from ffxCreateContext).  DLSS_FG API requires SL
-    // running, which is false during this grace period.
-    if (!currentSLFGRunning && currentFGActive) {
-        bool fsrApiConfirmed = g_FGCompat.IsFSRFGApiActive();
-        if (!fsrApiConfirmed) {
-            currentFGActive = false;
-            currentRuntimeMode = ce::fg_runtime::RuntimeMode::kOff;
-        }
+    // (SLOffGraceSuppressesFG).  DLSS_FG API requires SL running, which
+    // is false during this grace period.
+    if (!currentSLFGRunning && currentFGActive &&
+        ce::fg_runtime::SLOffGraceSuppressesFG(currentRuntimeMode, g_FGCompat.IsFSRFGApiActive())) {
+        currentFGActive = false;
+        currentRuntimeMode = ce::fg_runtime::RuntimeMode::kOff;
     }
 }
 

@@ -126,6 +126,13 @@ inline bool IsRuntimeFGActive(RuntimeMode mode) {
            mode == RuntimeMode::kXeFG;
 }
 
+// After Streamline's FG goes off, ECL ratios and its cached multiplier can read as generation for a while, so the
+// grace believes only a runtime that states its own state: FFX's configure, or XeFG's SetEnabled with its swapchain
+// registered. Suppressing XeFG read as off for exactly 300 frames while it generated (Talos, 20261104_183540).
+inline bool SLOffGraceSuppressesFG(RuntimeMode mode, bool fsrFGApiActive) {
+    return !fsrFGApiActive && mode != RuntimeMode::kXeFG;
+}
+
 inline bool IsActualGeneratedFrameMode(RuntimeMode mode) {
     return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG;
 }

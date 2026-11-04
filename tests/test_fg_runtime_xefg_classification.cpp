@@ -100,6 +100,16 @@ TEST(XeFGRuntimeClassificationTest, TheMultiplierIsTheConfiguredOneUntilTheCaden
     EXPECT_EQ(compat.GetFGMultiplier(), 3);
 }
 
+// A generating XeFG read as off for exactly 300 frames after Streamline's FG had gone (Talos, 20261104_183540).
+TEST(XeFGRuntimeClassificationTest, TheGraceAfterStreamlineBelievesOnlyARuntimeStatingItsOwnState) {
+    using ce::fg_runtime::SLOffGraceSuppressesFG;
+    EXPECT_FALSE(SLOffGraceSuppressesFG(RuntimeMode::kXeFG, false));
+    EXPECT_FALSE(SLOffGraceSuppressesFG(RuntimeMode::kFSRFG, true));
+    EXPECT_TRUE(SLOffGraceSuppressesFG(RuntimeMode::kFSRFG, false)) << "heuristic FSR FG, from elevated ECL counts";
+    EXPECT_TRUE(SLOffGraceSuppressesFG(RuntimeMode::kNvidiaSmoothMotion, false)) << "the departing cached multiplier";
+    EXPECT_TRUE(SLOffGraceSuppressesFG(RuntimeMode::kDLSSFG, false));
+}
+
 TEST(XeFGRuntimeClassificationTest, TheOverlayShowsXeFGWithItsMultiplier) {
     PerformanceMetrics metrics;
     ce::overlay_metrics::PublishOverlayFGMetrics(&metrics, {
