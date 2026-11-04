@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "common/logging/log_meter.h"
+#include "hook/fg/fg_detection.h"
 #include "hook/runtime/hook_common.h"
 
 namespace ce::fg_presenter {
@@ -281,8 +282,12 @@ bool IsStreamlinePresentingNow() {
                                   g_lastStreamlinePresent.load(std::memory_order_acquire));
 }
 
-void NoteRuntimeOutputPresent() {
-    g_runtimeCadence.NoteOutputPresent();
+void NoteRuntimeOutputPresent(int64_t nowUs) {
+    ce::present_interposer::CadenceVerdict verdict;
+    if (g_runtimeCadence.NoteOutputPresent(nowUs, &verdict)) {
+        g_runtimeInputBoundary.store(false, std::memory_order_release);
+        g_FGCompat.NoteXeFGCadence(verdict);
+    }
 }
 
 bool NoteRuntimeApplicationFrame(int64_t nowUs, ce::present_interposer::CadenceVerdict* verdict) {

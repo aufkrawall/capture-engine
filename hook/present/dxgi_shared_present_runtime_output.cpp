@@ -56,7 +56,7 @@ HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncIn
                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
     }
-    ce::fg_presenter::NoteRuntimeOutputPresent();
+    ce::fg_presenter::NoteRuntimeOutputPresent(PerfLogger::GetQpcUs());
 
     std::lock_guard<std::mutex> outputLock(RuntimeOutputMutex());
     bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);

@@ -236,6 +236,10 @@ Result Detour_SetEnabled(Handle handle, uint32_t enabled) {
         }
         PublishStateLocked();
     }
+    if (changed) {
+        // A window across the edge would measure neither state, and a game may send no present IDs in the new one.
+        ce::fg_presenter::ResetRuntimeCadence();
+    }
     static ce::log_meter::ChangeGate s_gate;
     if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(handle, enabled, result)); verdict || changed) {
         HookLogImportant("XeFG: SetEnabled(%u) context=%p result=%d (%s)%s", enabled, handle, result,
@@ -501,14 +505,6 @@ void NoteApplicationFrame(Handle handle, uint32_t presentId) {
     ce::present_interposer::CadenceVerdict verdict;
     if (ce::fg_presenter::NoteRuntimeApplicationFrame(PerfLogger::GetQpcUs(), &verdict)) {
         g_FGCompat.NoteXeFGCadence(verdict);
-        static std::atomic<uint32_t> s_windows{0};
-        const uint32_t window = s_windows.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (ce::log_meter::ShouldLogCadence(window, 5, 60)) {
-            HookLogImportant("XeFG: output cadence window #%u - application=%.1f fps output=%.1f fps generating=%d "
-                             "multiplier=%d presentId=%u",
-                             window, verdict.applicationFps, verdict.outputFps, verdict.generating ? 1 : 0,
-                             verdict.multiplier, presentId);
-        }
     }
 }
 

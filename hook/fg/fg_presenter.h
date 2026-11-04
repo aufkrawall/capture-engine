@@ -166,12 +166,13 @@ bool IsStreamlinePresentingNow();
 
 // The presenter's two streams: every output Present on a runtime-owned output swapchain, against the application's
 // frames (XeFG: xefgSwapChainSetPresentId). NoteRuntimeApplicationFrame returns true and fills `verdict` when it
-// closed a measurement window (present_interposer_cadence.h: one second, 20 application frames at least).
-void NoteRuntimeOutputPresent();
+// closed a measurement window (present_interposer_cadence.h: one second, 20 application frames at least). An output
+// closes one only when the application's frames stopped, and reports that to g_FGCompat itself: no frame will.
+void NoteRuntimeOutputPresent(int64_t nowUs);
 bool NoteRuntimeApplicationFrame(int64_t nowUs, ce::present_interposer::CadenceVerdict* verdict);
 void ResetRuntimeCadence();
 // The runtime's input boundary (XeFG: SetPresentId) reports application frames: the application frame rate is
-// measured there, not at the outputs.
+// measured there, not at the outputs. It lapses when those frames stop; each output is the application's frame then.
 bool HasRuntimeInputBoundary();
 
 // DLSS-G API provider, recorded when CE resolves slDLSSGSetOptions/slDLSSGGetState.

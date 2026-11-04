@@ -374,6 +374,7 @@ private:
     std::atomic<bool> xefgEnabled{false};
     std::atomic<int> xefgInterpolatedFrames{1};
     std::atomic<int> xefgMeasuredMultiplier{0};
+    std::atomic<bool> xefgMeasuredNotGenerating{false};
     std::atomic<float> xefgMeasuredOutputFps{0.0f};
     std::atomic<float> xefgMeasuredApplicationFps{0.0f};
     int ResolveXeFGMultiplier() const;

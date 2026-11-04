@@ -28,6 +28,9 @@ struct DetectionSnapshot {
     // An XeFG swapchain presents the displayed frames, and generation is enabled on it (xefgSwapChainSetEnabled).
     bool xefgPresenterActive = false;
     bool xefgEnabled = false;
+    // Enabled, but the output cadence measured nothing generated: one output per application frame, or none behind
+    // them at all (Talos's menu, 20261104_183540).
+    bool xefgMeasuredNotGenerating = false;
 };
 
 // Highest first: a presenter-owned generator (XeFG's swapchain with generation on), the FSR API, confirmed DLSS
@@ -35,7 +38,7 @@ struct DetectionSnapshot {
 // is what actually puts the frames on screen; a Streamline signal beside it is a front (fg_presenter.h).
 inline RuntimeMode ClassifyRuntimeMode(const DetectionSnapshot& snapshot) {
     const bool dlssFGConfirmed = snapshot.dlssFGApiActive && snapshot.dlssFGMultiplier >= 2;
-    if (snapshot.xefgPresenterActive && snapshot.xefgEnabled) {
+    if (snapshot.xefgPresenterActive && snapshot.xefgEnabled && !snapshot.xefgMeasuredNotGenerating) {
         return RuntimeMode::kXeFG;
     }
     if (snapshot.fsrFGApiActive) {

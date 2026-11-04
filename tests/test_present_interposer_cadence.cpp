@@ -141,6 +141,67 @@ TEST(PresentInterposerCadenceTest, OutputsBeforeTheFirstApplicationFrameAreNotMe
     FAIL() << "a one-second window never closed";
 }
 
+TEST(PresentInterposerCadenceTest, OneOutputPerApplicationFrameIsDecidedAsNotGenerating) {
+    const CadenceVerdict verdict = ClassifyInterposerCadence(60, 60, kWindowUs);
+    EXPECT_TRUE(verdict.decided);
+    EXPECT_FALSE(verdict.generating);
+    EXPECT_FALSE(verdict.applicationStopped);
+}
+
+// A game below 20 fps generates all the same: too few application frames must not read as "not generating".
+TEST(PresentInterposerCadenceTest, TooFewApplicationFramesDecideNothing) {
+    const CadenceVerdict verdict = ClassifyInterposerCadence(kMinApplicationPresentsForVerdict - 1, 30, kWindowUs);
+    EXPECT_FALSE(verdict.decided);
+    EXPECT_FALSE(verdict.generating);
+}
+
+// Talos's menu (20261104_183540): no more present IDs while XeFG keeps presenting. Nothing else could close the window,
+// so the status kept the last measured 2x.
+TEST(PresentInterposerCadenceTest, OutputsCloseTheWindowOnceTheApplicationsFramesStopped) {
+    CadenceTracker tracker;
+    CadenceVerdict verdict;
+    EXPECT_FALSE(tracker.NoteApplicationPresent(0, &verdict));
+
+    const int64_t kOutputIntervalUs = 6944;
+    int64_t nowUs = 0;
+    bool closed = false;
+    while (!closed && nowUs < 3 * kWindowUs) {
+        nowUs += kOutputIntervalUs;
+        closed = tracker.NoteOutputPresent(nowUs, &verdict);
+    }
+    ASSERT_TRUE(closed);
+    EXPECT_GE(nowUs, kApplicationStoppedWindowUs);
+    EXPECT_LT(nowUs, kApplicationStoppedWindowUs + kOutputIntervalUs);
+    EXPECT_TRUE(verdict.decided);
+    EXPECT_TRUE(verdict.applicationStopped);
+    EXPECT_FALSE(verdict.generating);
+    EXPECT_NEAR(verdict.outputFps, 144.0f, 1.0f);
+
+    // The stop is reported once per stopped window, and the game's next frame says so at once.
+    EXPECT_FALSE(tracker.NoteOutputPresent(nowUs + kOutputIntervalUs, &verdict));
+    verdict.decided = true;
+    EXPECT_TRUE(tracker.NoteApplicationPresent(nowUs + 2 * kOutputIntervalUs, &verdict));
+    EXPECT_FALSE(verdict.decided);
+    EXPECT_FALSE(verdict.applicationStopped);
+}
+
+// A slow frame is not a stop: outputs alone close nothing until a whole window passed with none behind them, and a
+// runtime that only presents when the game does stays below the evidence an output needs.
+TEST(PresentInterposerCadenceTest, ASlowGameIsNotAStoppedOne) {
+    CadenceTracker slowFrame;
+    CadenceVerdict verdict;
+    EXPECT_FALSE(slowFrame.NoteApplicationPresent(0, &verdict));
+    for (int64_t nowUs = 6944; nowUs < kApplicationStoppedWindowUs; nowUs += 6944) {
+        EXPECT_FALSE(slowFrame.NoteOutputPresent(nowUs, &verdict)) << "at " << nowUs;
+    }
+
+    CadenceTracker slowGame;
+    EXPECT_FALSE(slowGame.NoteApplicationPresent(0, &verdict));
+    for (int i = 1; i < kMinApplicationPresentsForVerdict; ++i) {
+        EXPECT_FALSE(slowGame.NoteOutputPresent(static_cast<int64_t>(i) * kApplicationStoppedWindowUs, &verdict));
+    }
+}
+
 TEST(PresentInterposerCadenceTest, ResetDiscardsAPartialWindow) {
     CadenceTracker tracker;
     CadenceVerdict verdict;

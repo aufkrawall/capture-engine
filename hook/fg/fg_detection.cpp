@@ -94,6 +94,7 @@ ce::fg_runtime::DetectionSnapshot FGCompatibility::CaptureDetectionSnapshot() co
     snapshot.dlssFGMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
     snapshot.xefgPresenterActive = xefgPresenterActive.load(std::memory_order_acquire);
     snapshot.xefgEnabled = xefgEnabled.load(std::memory_order_acquire);
+    snapshot.xefgMeasuredNotGenerating = xefgMeasuredNotGenerating.load(std::memory_order_acquire);
     return snapshot;
 }
 
@@ -627,8 +628,9 @@ void FGCompatibility::SetXeFGState(bool presenterActive, bool enabled, int inter
     const bool wasPresenter = xefgPresenterActive.exchange(presenterActive, std::memory_order_acq_rel);
     const bool wasEnabled = xefgEnabled.exchange(enabled, std::memory_order_acq_rel);
     const int wasFrames = xefgInterpolatedFrames.exchange(frames, std::memory_order_acq_rel);
-    if (!presenterActive || !enabled) {
+    if (!presenterActive || !enabled || !wasEnabled) {
         xefgMeasuredMultiplier.store(0, std::memory_order_release);
+        xefgMeasuredNotGenerating.store(false, std::memory_order_release);
     }
     if (wasPresenter != presenterActive || wasEnabled != enabled || wasFrames != frames) {
         HookLog("FG: XeFG presenter=%d->%d generation=%d->%d interpolatedFrames=%d->%d (configured %dx)",
@@ -638,10 +640,28 @@ void FGCompatibility::SetXeFGState(bool presenterActive, bool enabled, int inter
 }
 
 void FGCompatibility::NoteXeFGCadence(const ce::present_interposer::CadenceVerdict& verdict) {
+    // A changed verdict always logs: the windows after the first few said nothing about Talos's menu (20261104_183540).
+    static std::atomic<uint32_t> s_windows{0};
+    const uint32_t window = s_windows.fetch_add(1, std::memory_order_relaxed) + 1;
+    static ce::log_meter::ChangeGate s_verdicts;
+    const auto changedVerdict = s_verdicts.Observe(ce::log_meter::FieldKey(
+        verdict.decided, verdict.generating, verdict.multiplier, verdict.applicationStopped));
+    if (changedVerdict || ce::log_meter::ShouldLogCadence(window, 5, 60)) {
+        HookLogImportant("XeFG: output cadence window #%u - application=%.1f fps output=%.1f fps generating=%d "
+                         "multiplier=%d decided=%d applicationStopped=%d",
+                         window, verdict.applicationFps, verdict.outputFps, verdict.generating ? 1 : 0,
+                         verdict.multiplier, verdict.decided ? 1 : 0, verdict.applicationStopped ? 1 : 0);
+    }
     xefgMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
     xefgMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
-    const int measured = verdict.generating && xefgEnabled.load(std::memory_order_acquire) ? verdict.multiplier : 0;
+    const bool enabled = xefgEnabled.load(std::memory_order_acquire);
+    const int measured = verdict.generating && enabled ? verdict.multiplier : 0;
     xefgMeasuredMultiplier.store(measured, std::memory_order_release);
+    // An undecided window says nothing, so the configured factor stands: a game below 20 fps generates all the same.
+    const bool notGenerating = enabled && verdict.decided && !verdict.generating;
+    if (xefgMeasuredNotGenerating.exchange(notGenerating, std::memory_order_acq_rel) != notGenerating) {
+        HookLogImportant("FG: XeFG is enabled and %s", notGenerating ? "generates nothing" : "may generate again");
+    }
     const int configured = xefgInterpolatedFrames.load(std::memory_order_acquire) + 1;
     static ce::log_meter::ChangeGate s_divergence;
     const bool diverged = measured >= 2 && measured != configured;

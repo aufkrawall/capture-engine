@@ -98,6 +98,28 @@ TEST(FlowXeFG, TheFirstCadenceWindowCountsOnlyItsOwnOutputs) {
     ExpectNoDebugLayerErrors();
 }
 
+// Talos's menu (20261104_183540): the game stops sending present IDs, XeFG queues one frame per Present and reports an
+// error, and generation stays enabled. The overlay kept reading "XeFG 2x" with stale rates.
+TEST(FlowXeFG, AMenuWithoutPresentIdsReadsAsNotGeneratingAndRecovers) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(450)) << game.Error();
+    ExpectPublished(game, kXeFGStatusType, 2, "in the game");
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(game.SetXeFGPresentIds(false)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(450)) << game.Error();  // over two windows without an application frame
+        ExpectPublished(game, 0, 1, "in the menu");
+        ASSERT_TRUE(game.SetXeFGPresentIds(true)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(10)) << game.Error();
+        ExpectPublished(game, kXeFGStatusType, 2, "right after the menu");
+        ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+        ExpectPublished(game, kXeFGStatusType, 2, "measured again after the menu");
+    }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // Multi-frame generation: three outputs per game frame from XeFG's presenter thread, then the real one.
 TEST(FlowXeFG, MultiFrameGenerationShowsItsFactorAndCoversEveryOutput) {
     FlowGame game(CurrentTestName());

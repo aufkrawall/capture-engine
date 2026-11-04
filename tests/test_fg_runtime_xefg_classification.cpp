@@ -100,6 +100,42 @@ TEST(XeFGRuntimeClassificationTest, TheMultiplierIsTheConfiguredOneUntilTheCaden
     EXPECT_EQ(compat.GetFGMultiplier(), 3);
 }
 
+// Talos's menu (20261104_183540): generation stays enabled while XeFG queues one frame per Present. The fallback to
+// the configured factor read that as "XeFG 2x".
+TEST(XeFGRuntimeClassificationTest, MeasuredAsNotGeneratingItReadsLikeGenerationOff) {
+    FGCompatibility compat;
+    compat.SetXeFGState(true, true, 1);
+
+    ce::present_interposer::CadenceVerdict notGenerating;
+    notGenerating.decided = true;
+    notGenerating.outputFps = 144.0f;
+    notGenerating.applicationFps = 144.0f;
+    compat.NoteXeFGCadence(notGenerating);
+    EXPECT_NE(compat.GetRuntimeMode(), RuntimeMode::kXeFG);
+    EXPECT_FALSE(compat.IsFGActive());
+
+    // The next undecided window (the game is back, or below 20 fps) restores what the game asked for at once.
+    compat.NoteXeFGCadence(ce::present_interposer::CadenceVerdict{});
+    EXPECT_EQ(compat.GetRuntimeMode(), RuntimeMode::kXeFG);
+    EXPECT_EQ(compat.GetFGMultiplier(), 2);
+
+    compat.NoteXeFGCadence(notGenerating);
+    ce::present_interposer::CadenceVerdict generating;
+    generating.decided = true;
+    generating.generating = true;
+    generating.multiplier = 2;
+    compat.NoteXeFGCadence(generating);
+    EXPECT_EQ(compat.GetRuntimeMode(), RuntimeMode::kXeFG);
+
+    // Generation off and on again starts from what the game configured, not from an old measurement.
+    compat.NoteXeFGCadence(notGenerating);
+    compat.SetXeFGState(true, false, 1);
+    EXPECT_FALSE(compat.IsFGActive());
+    compat.NoteXeFGCadence(notGenerating);  // a window closing as generation went off
+    compat.SetXeFGState(true, true, 1);
+    EXPECT_EQ(compat.GetRuntimeMode(), RuntimeMode::kXeFG);
+}
+
 // A generating XeFG read as off for exactly 300 frames after Streamline's FG had gone (Talos, 20261104_183540).
 TEST(XeFGRuntimeClassificationTest, TheGraceAfterStreamlineBelievesOnlyARuntimeStatingItsOwnState) {
     using ce::fg_runtime::SLOffGraceSuppressesFG;
