@@ -39,6 +39,10 @@ detection measures game/render thread and Present progress, which no window mess
   - Sibling session safety: `ShouldStopSession` in `display_timing_session_reclaim.h` allows both `CE_DisplayTiming_<pid>`
     and `CE_PresentProgress_<pid>` under the same PID (sensors role running on an engine thread). A session matching
     the current PID is only stopped if its exact name matches the session being opened (pid reuse after a kill).
+    Reclamation visits at most the populated query capacity: `QueryAllTracesW` can return `ERROR_MORE_DATA` with a
+    count above the supplied 64 entries. Partial enumeration logs its limit. An unqueryable process is kept alive
+    conservatively; only `OpenProcess`'s `ERROR_INVALID_PARAMETER` (absent PID) or a successful exited-process query
+    permits reclamation of another PID. `ReclaimEnvironment` tests these OS boundaries without touching real sessions.
   - Earlier rejection superseded: an own session was originally rejected due to needing admin and risking leaks on kill.
     Admin rights are now only required when already held (no privilege escalation requested); leaks are bounded by
     session reclaim on subsequent runs; and the session is only held while a profiled process has a background window.

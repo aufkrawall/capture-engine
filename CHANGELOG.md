@@ -14,6 +14,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Display timing and background-window recovery on busy systems:** trace-session cleanup no longer reads past its session array when Windows reports more active sessions than fit. Cleanup also preserves another CaptureEngine process's sessions when its owner cannot be queried, reclaiming them only when the owner is confirmed gone.
+
 - **XeFG enabled while a menu sends no frame IDs:** the overlay now recognizes that no frames are being generated even when no application frame follows a generation toggle, and restores XeFG status as soon as frame IDs resume. Cadence resets and status publication are serialized between the game and presenter threads so an older window cannot overwrite a newer verdict.
 
 - **Minimized D3D12 games that present with Present1:** CaptureEngine now recognizes when such a game cannot present, on the same path Present already used, and pauses its work on the back buffer until the window returns.

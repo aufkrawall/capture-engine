@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "captureengine/display_timing/display_timing_session_reclaim.h"
+#include "captureengine/display_timing/display_timing_session_reclaim_environment.h"
 
 #include "source_fragment_reader.h"
 
@@ -12,6 +15,113 @@ namespace {
 using ce::display_timing_reclaim::ParseSessionOwnerPid;
 using ce::display_timing_reclaim::ShouldReclaimAfterStartFailure;
 using ce::display_timing_reclaim::ShouldStopSession;
+
+struct FakeReclaim {
+    std::vector<std::wstring> names;
+    std::vector<std::wstring> stopped;
+    ULONG queryStatus = ERROR_SUCCESS;
+    ULONG reportedCount = 0;
+    DWORD openError = ERROR_SUCCESS;
+    DWORD exitQueryError = ERROR_SUCCESS;
+    DWORD exitCode = 0;
+    int opened = 0;
+    int closed = 0;
+
+    FakeReclaim() {
+        wchar_t name[64];
+        const unsigned int otherPid = GetCurrentProcessId() == 0x5840 ? 0x5844 : 0x5840;
+        swprintf_s(name, L"CE_PresentProgress_%08X", otherPid);
+        names.emplace_back(name);
+    }
+
+    ce::display_timing_reclaim::ReclaimEnvironment Environment() {
+        return {
+            [this](EVENT_TRACE_PROPERTIES** sessions, ULONG capacity, ULONG* count) {
+                for (size_t i = 0; i < names.size() && i < capacity; ++i) {
+                    auto* properties = sessions[i];
+                    auto* name = reinterpret_cast<wchar_t*>(reinterpret_cast<std::byte*>(properties) +
+                                                            properties->LoggerNameOffset);
+                    const size_t chars = (properties->Wnode.BufferSize - properties->LoggerNameOffset) / sizeof(wchar_t);
+                    wcscpy_s(name, chars, names[i].c_str());
+                }
+                *count = reportedCount ? reportedCount : static_cast<ULONG>(names.size());
+                return queryStatus;
+            },
+            [this](uint32_t) -> HANDLE {
+                ++opened;
+                SetLastError(openError);
+                return openError == ERROR_SUCCESS ? reinterpret_cast<HANDLE>(uintptr_t{1}) : nullptr;
+            },
+            [this](HANDLE, DWORD* code) -> BOOL {
+                *code = exitCode;
+                SetLastError(exitQueryError);
+                return exitQueryError == ERROR_SUCCESS;
+            },
+            [this](HANDLE) { ++closed; },
+            [this](const wchar_t* name) -> ULONG {
+                stopped.emplace_back(name);
+                return ERROR_SUCCESS;
+            }};
+    }
+};
+
+TEST(DisplayTimingSessionReclaimTest, PartialEnumerationUsesOnlyThePopulatedArray) {
+    FakeReclaim fake;
+    const std::wstring name = fake.names.front();
+    fake.names.assign(64, name);
+    fake.reportedCount = 81;
+    fake.queryStatus = ERROR_MORE_DATA;
+    EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(1450, nullptr, fake.Environment()), 64);
+    EXPECT_EQ(fake.opened, 64);
+    EXPECT_EQ(fake.closed, 64);
+    EXPECT_EQ(fake.stopped.size(), 64u);
+}
+
+TEST(DisplayTimingSessionReclaimTest, InaccessibleOwnerIsKeptButAnAbsentPidIsReclaimed) {
+    for (DWORD error : {DWORD{ERROR_ACCESS_DENIED}, DWORD{ERROR_NOT_ENOUGH_MEMORY}, DWORD{ERROR_INVALID_PARAMETER}}) {
+        FakeReclaim fake;
+        fake.openError = error;
+        const int expected = error == ERROR_INVALID_PARAMETER ? 1 : 0;
+        EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, nullptr, fake.Environment()), expected);
+        EXPECT_EQ(fake.stopped.size(), static_cast<size_t>(expected));
+        EXPECT_EQ(fake.closed, 0);
+    }
+}
+
+TEST(DisplayTimingSessionReclaimTest, ExitQueryFailureAndLiveOwnerAreKeptWhileExitedOwnerIsReclaimed) {
+    FakeReclaim fake;
+    fake.exitQueryError = ERROR_ACCESS_DENIED;
+    EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, nullptr, fake.Environment()), 0);
+    fake.exitQueryError = ERROR_SUCCESS;
+    fake.exitCode = STILL_ACTIVE;
+    EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, nullptr, fake.Environment()), 0);
+    fake.exitCode = 1;
+    EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, nullptr, fake.Environment()), 1);
+    EXPECT_EQ(fake.opened, 3);
+    EXPECT_EQ(fake.closed, 3);
+    EXPECT_EQ(fake.stopped, fake.names);
+}
+
+TEST(DisplayTimingSessionReclaimTest, OwnPidReclaimsOnlyTheOpeningNameAndNeverASiblingOrForeignSession) {
+    FakeReclaim fake;
+    wchar_t openingName[64];
+    wchar_t siblingName[64];
+    swprintf_s(openingName, L"CE_PresentProgress_%08X", static_cast<unsigned int>(GetCurrentProcessId()));
+    swprintf_s(siblingName, L"CE_DisplayTiming_%08X", static_cast<unsigned int>(GetCurrentProcessId()));
+    fake.names = {siblingName, L"UnrelatedSession", openingName};
+    EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, openingName, fake.Environment()), 1);
+    EXPECT_EQ(fake.opened, 0);
+    EXPECT_EQ(fake.stopped, (std::vector<std::wstring>{openingName}));
+}
+
+TEST(DisplayTimingSessionReclaimTest, FailedEnumerationNeverInspectsOrStopsSessions) {
+    FakeReclaim fake;
+    fake.queryStatus = ERROR_ACCESS_DENIED;
+    fake.reportedCount = 81;
+    EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, nullptr, fake.Environment()), 0);
+    EXPECT_EQ(fake.opened, 0);
+    EXPECT_TRUE(fake.stopped.empty());
+}
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);

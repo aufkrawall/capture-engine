@@ -1,14 +1,17 @@
 #include "display_timing_session_reclaim.h"
+#include "display_timing_session_reclaim_environment.h"
 
 #include <windows.h>
 #include <evntrace.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <vector>
 
 #include "common/platform/display_timing_etw.h"
 
 #include "common/logging/logging.h"
+#include "common/logging/log_meter.h"
 
 using display_timing_etw::MakeProperties;
 
@@ -20,6 +23,19 @@ namespace ce::display_timing_reclaim {
 // that is using its own, or a live sibling session under our own pid - are left alone,
 // and so is every session that does not carry our name prefix.
 int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName) {
+    const ReclaimEnvironment env{
+        &QueryAllTracesW,
+        [](uint32_t pid) { return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid); },
+        &GetExitCodeProcess,
+        [](HANDLE owner) { CloseHandle(owner); },
+        [](const wchar_t* name) {
+            auto properties = MakeProperties(name);
+            return ControlTraceW(0, name, properties.Get(), EVENT_TRACE_CONTROL_STOP);
+        }};
+    return ReclaimLeakedSessions(startStatus, openingName, env);
+}
+
+int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName, const ReclaimEnvironment& env) {
     // QueryAllTracesW writes each session's logger name AND log file name into the
     // buffer it is handed, so every buffer has to be large enough for both. A buffer
     // sized for our own short session name is not, and undersizing it corrupts memory
@@ -40,16 +56,25 @@ int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName) {
         sessions[i] = properties;
     }
     ULONG sessionCount = 0;
-    const ULONG queryStatus = QueryAllTracesW(sessions.data(), kMaxSessions, &sessionCount);
+    const ULONG queryStatus = env.query(sessions.data(), kMaxSessions, &sessionCount);
     if (queryStatus != ERROR_SUCCESS && queryStatus != ERROR_MORE_DATA) {
         LogWarn("[DisplayTiming] Could not enumerate trace sessions to reclaim leaked ones: %lu (start status %lu)",
                 queryStatus, static_cast<unsigned long>(startStatus));
         return 0;
     }
+    // ERROR_MORE_DATA reports the required count, but only fills the supplied array.
+    const ULONG returnedSessions = std::min(sessionCount, kMaxSessions);
+    if (sessionCount > kMaxSessions) {
+        static ce::log_meter::ChangeGate s_partialEnumeration;
+        if (const auto verdict = s_partialEnumeration.Observe(sessionCount)) {
+            LogWarn("[DisplayTiming] Trace enumeration returned %lu of %lu sessions; reclaiming only populated entries%s",
+                    returnedSessions, sessionCount, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
 
     const uint32_t currentPid = static_cast<uint32_t>(GetCurrentProcessId());
     int reclaimed = 0;
-    for (ULONG i = 0; i < sessionCount; ++i) {
+    for (ULONG i = 0; i < returnedSessions; ++i) {
         auto* properties = sessions[i];
         if (!properties || properties->LoggerNameOffset == 0) {
             continue;
@@ -60,21 +85,37 @@ int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName) {
         if (ownerPid == 0) {
             continue;
         }
-        bool ownerAlive = false;
+        bool ownerAlive = true;
         if (ownerPid != currentPid) {
-            HANDLE owner = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
+            DWORD ownerError = ERROR_SUCCESS;
+            HANDLE owner = env.openOwner(ownerPid);
             if (owner) {
                 DWORD exitCode = 0;
-                ownerAlive = !GetExitCodeProcess(owner, &exitCode) || exitCode == STILL_ACTIVE;
-                CloseHandle(owner);
+                if (env.queryOwnerExit(owner, &exitCode)) {
+                    ownerAlive = exitCode == STILL_ACTIVE;
+                } else {
+                    ownerError = GetLastError();
+                }
+                env.closeOwner(owner);
+            } else {
+                ownerError = GetLastError();
+                // Only an absent PID proves death. Access denied and other failures leave ownership unknown.
+                ownerAlive = ownerError != ERROR_INVALID_PARAMETER;
+            }
+            if (ownerAlive && ownerError != ERROR_SUCCESS) {
+                static ce::log_meter::StreamChangeGate<16> s_unknownOwners;
+                if (const auto verdict = s_unknownOwners.Observe(ownerPid, ownerError)) {
+                    LogWarn("[DisplayTiming] Keeping trace session for unconfirmed owner pid %lu (error=%lu)%s",
+                            static_cast<unsigned long>(ownerPid), ownerError,
+                            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                }
             }
         }
         const bool isTheSessionBeingOpened = openingName && (wcscmp(name, openingName) == 0);
         if (!ce::display_timing_reclaim::ShouldStopSession(ownerPid, currentPid, ownerAlive, isTheSessionBeingOpened)) {
             continue;
         }
-        auto stopProperties = MakeProperties(name);
-        const ULONG stopStatus = ControlTraceW(0, name, stopProperties.Get(), EVENT_TRACE_CONTROL_STOP);
+        const ULONG stopStatus = env.stop(name);
         if (stopStatus == ERROR_SUCCESS) {
             ++reclaimed;
         } else {
