@@ -508,6 +508,18 @@ uint64_t FlowGame::DrainPresentStageCalls() const {
     return drain ? drain() : 0;
 }
 
+void FlowGame::StartPerfCsv(const std::string& path) const {
+    if (const auto start = reinterpret_cast<CEFlow_StartPerfCsv_t>(GetProcAddress(hook_, "CEFlow_StartPerfCsv"))) {
+        start(path.c_str());
+    }
+}
+
+void FlowGame::StopPerfCsv() const {
+    if (const auto stop = reinterpret_cast<CEFlow_StopPerfCsv_t>(GetProcAddress(hook_, "CEFlow_StopPerfCsv"))) {
+        stop();
+    }
+}
+
 uint64_t FlowGame::PhysicalPresents() const {
     return g_physicalPresents.load(std::memory_order_relaxed);
 }

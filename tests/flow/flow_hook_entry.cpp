@@ -9,6 +9,7 @@
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "hook/d3d12/dx12_hook_ecl_forward.h"
 #include "hook/d3d12/dx12_device_trace.h"
+#include "hook/metrics/perf_logger.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/overrides/published_graphics_config.h"
 #include "hook/overrides/sampler_override/translation_scope.h"
@@ -320,6 +321,14 @@ extern "C" __declspec(dllexport) uint64_t CEFlow_DrainPresentStageCalls() {
         calls += PresentStageAggregator().Drain(static_cast<ThreadRole>(role)).calls;
     }
     return calls;
+}
+
+extern "C" __declspec(dllexport) void CEFlow_StartPerfCsv(const char* path) {
+    PerfLogger::Get().Init(path);
+}
+
+extern "C" __declspec(dllexport) void CEFlow_StopPerfCsv() {
+    PerfLogger::Get().Shutdown();
 }
 
 extern "C" __declspec(dllexport) void CEFlow_GetPostProcess(CEFlowPostProcess* out) {

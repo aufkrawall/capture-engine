@@ -83,6 +83,44 @@ TEST(FlowXeFG, Present1OutputsReportTheirStageCost) {
     ExpectEveryPresentCoveredOnce(game);
 }
 
+// XeFG's rows came from its frame work alone, with present_call_us, pre_present_us and post_present_us 0 and no limiter
+// wait (20261104_195245, 20261104_221303). The route now holds that row for the down-call: one row per output, and the
+// log names the route's row as held. The hook's clock is virtual here, so the durations themselves prove nothing.
+TEST(FlowXeFG, EveryOutputWritesOneRowWithItsDownCallSplit) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+    const std::string csvPath = game.LogDirectory() + "/perf_metrics_flow.csv";
+    game.StartPerfCsv(csvPath);
+    const uint64_t presentsBefore = game.PhysicalPresents();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    const uint64_t presents = game.PhysicalPresents() - presentsBefore;
+    game.StopPerfCsv();
+
+    std::ifstream csv(csvPath);
+    ASSERT_TRUE(csv.is_open()) << csvPath;
+    uint64_t rows = 0;
+    for (std::string line; std::getline(csv, line);) {
+        ++rows;
+    }
+    ASSERT_GT(rows, 1u) << csvPath;
+    --rows;  // the header
+    // The presenter thread may be mid-output at either end of the window.
+    const uint64_t slack = 4;
+    EXPECT_GE(rows + slack, presents) << "an output without a row; logs: " << game.LogDirectory();
+    EXPECT_LE(rows, presents + slack) << "an output with two rows; logs: " << game.LogDirectory();
+
+    std::ifstream log(game.LogDirectory() + "/hook_debug.log");
+    ASSERT_TRUE(log.is_open());
+    const std::string text{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
+    EXPECT_NE(text.find("[PERF CSV] present row of DXGIShared::RuntimeOwnedOutputPresent (api=DX12): the frame's own row, "
+                        "with the down-call split"),
+              std::string::npos)
+        << "logs: " << game.LogDirectory();
+}
+
 // Talos sends its first present ID when it enables generation, after hundreds of outputs. The first cadence window
 // counted those as its own and read 4x for a window (20261104_183540: 269 outputs, 45 application frames).
 TEST(FlowXeFG, TheFirstCadenceWindowCountsOnlyItsOwnOutputs) {

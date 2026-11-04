@@ -114,6 +114,11 @@ using CEFlow_GetPhysicalPixelSampler_t = bool (*)(ID3D11DeviceContext* context, 
 // count: the hook's clock is virtual here, so a stage's duration, and whether it reports any, says nothing.
 using CEFlow_DrainPresentStageCalls_t = uint64_t (*)();
 
+// The perf CSV, which only a session's hook thread opens otherwise. Rows and their count mean something here; their
+// durations do not, for the reason above.
+using CEFlow_StartPerfCsv_t = void (*)(const char* path);
+using CEFlow_StopPerfCsv_t = void (*)();
+
 struct CEFlowPostSLLifecycle {
     uint32_t epoch = 0;
     uint32_t callbacksInFlight = 0;

@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "forwarded_present_record.h"
 #include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
@@ -64,6 +65,9 @@ HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (isFirstHook)
             g_SharedState.inPresentHook.store(false);
     });
+    // Holds the row HandleDX12RuntimeOwnedOutputFrame logs below: it had no present columns and no limiter wait, so a
+    // slow XeFG output did not show where its time went (20261104_195245, 20261104_221303).
+    ForwardedPresentRecord record(true, "DXGIShared::RuntimeOwnedOutputPresent", /*holdsInnerRow=*/true);
     {
         CostScope metricsStage(CostStage::kMetrics);
         g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
@@ -84,12 +88,15 @@ HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncIn
         // Every output passes the limiter as the runtime output it is: the application's frames are paced at the
         // runtime's input boundary, and this thread is the runtime's presenter (PresentSite::kRuntimeOutputPresent).
         CostScope limiterStage(CostStage::kLimiter);
-        ApplyFpsLimiterStage(pSwapChain, true, ce::fps_limiter_policy::PresentSite::kRuntimeOutputPresent);
+        record.TimeLimiter(
+            [&] { ApplyFpsLimiterStage(pSwapChain, true, ce::fps_limiter_policy::PresentSite::kRuntimeOutputPresent); });
         preLimiterCapture.Close();
         ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
     }
-    const HRESULT hr = present1 ? CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters)
-                                : CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    const HRESULT hr = record.Forward([&] {
+        return present1 ? CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters)
+                        : CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    });
     ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
     {
         // The overlay's fence Signal follows the Present on the queue the overlay was submitted to, and it is the only

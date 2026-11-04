@@ -23,15 +23,15 @@ TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneBypassEndsLikeTheNormalRout
     const size_t route = helper.find("HRESULT ExecuteStandaloneOutputBypass(");
     ASSERT_NE(route, std::string::npos);
     size_t previous = route;
-    for (const char* marker : {"row.emplace(PerfLogger::Get().IsEnabled(), \"DX12\", route);",
-                               "CostScope perfRowStage(CostStage::kPerfRow);",
+    for (const char* marker : {"ForwardedPresentRecord record(true, route);",
                                "InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);",
-                               "row->NoteOverlaySince(drawStartUs);",
+                               "record.NoteOverlaySince(drawStartUs);",
                                "RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, route);",
+                               "record.TimeLimiter(",
                                "ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, wrapperOwnsPresent,",
-                               "row->NoteFpsLimitWaitSince(limiterStartUs);", "CostScope limiterStage(CostStage::kLimiter);",
+                               "CostScope limiterStage(CostStage::kLimiter);",
                                "ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);",
-                               "row->BeginPresentCall();", "forward(SyncInterval, Flags);", "row->EndPresentCall();",
+                               "record.Forward([&] { return forward(SyncInterval, Flags); });",
                                "EnterStage(CostStage::kPostPresent);",
                                "return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, APIType::D3D12, hr, presentName);"}) {
         const size_t position = helper.find(marker, previous);

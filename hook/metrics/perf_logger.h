@@ -151,6 +151,8 @@ public:
         bool filled = false;
     };
     static HeldRow* SetInnerRowSink(HeldRow* sink);
+    // A hook further out on this thread holds its present's row, so a nested route's row would be a second one.
+    static bool HasInnerRowSink();
 
     static int64_t GetQpcUs();
     static int64_t GetQpcFrequency();

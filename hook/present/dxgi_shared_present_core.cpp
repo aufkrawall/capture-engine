@@ -29,26 +29,26 @@ void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, con
 }
 
 namespace DXGIShared {
-HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
-                               const char* presentName) {
-    using CostStage = ce::present_stage_cost::Stage;
-    using CostScope = ce::present_stage_cost::StageScope;
+HRESULT ReportForwardedPresentResult(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
+                                     const char* presentName) {
     if (api == APIType::D3D12) {
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
         // switch (the wrapped path already does this via the wrapper).
-        CostScope presentResultStage(CostStage::kPresentResult);
+        ce::present_stage_cost::StageScope presentResultStage(ce::present_stage_cost::Stage::kPresentResult);
         NoteDX12PresentResultForVtablePath(pSwapChain, presentName, SyncInterval, Flags, hr);
     }
+    NotePresentDeviceResult(hr, presentName);
+    return hr;
+}
 
+HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
+                               const char* presentName) {
     if (SUCCEEDED(hr)) {
-        CostScope limiterStage(CostStage::kLimiter);
+        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
         g_SharedFpsLimiter.ApplyPostPresent();
     }
-
-    NotePresentDeviceResult(hr, presentName);
-
-    return hr;
+    return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, presentName);
 }
 
 // Runs inside DetourPresent's core_policy stage; named sub-regions below open their own

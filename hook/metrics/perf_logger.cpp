@@ -191,6 +191,10 @@ PerfLogger::HeldRow* PerfLogger::SetInnerRowSink(HeldRow* sink) {
     return previous;
 }
 
+bool PerfLogger::HasInnerRowSink() {
+    return t_innerRowSink != nullptr;
+}
+
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
     ce::pacing_trace::Record(ce::pacing_trace::Kind::Frame, metrics.frameNum, nullptr,
         metrics.totalUs, metrics.overlayUs, metrics.fenceWaitUs, 0, metrics.qpcUs);

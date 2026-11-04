@@ -1,15 +1,17 @@
 #pragma once
 
-#include <optional>
-
-#include "dx11_present_perf_row.h"
 #include "dxgi_shared_internal.h"
+#include "forwarded_present_record.h"
 
 namespace DXGIShared {
 
-// How a Present ends once its route forwarded it and flushed any deferred Signal: the result reports that focus and
-// occlusion tracking and the device-loss latch run on, and the limiter's post-present half. `presentName` is "Present"
-// or "Present1". Routes that returned without it fed neither report (`present_result` n=0, 20261104_183540).
+// The reports a forwarded Present's result feeds: focus and occlusion tracking, and the device-loss latch. `presentName`
+// is "Present" or "Present1". Routes that returned without them fed neither (`present_result` n=0, 20261104_183540).
+HRESULT ReportForwardedPresentResult(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
+                                     const char* presentName);
+
+// How a Present ends once its route ran the limiter, forwarded it and flushed any deferred Signal: the reports, and the
+// limiter's post-present half.
 HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
                                const char* presentName);
 
@@ -26,22 +28,17 @@ HRESULT ExecuteStandaloneOutputBypass(IDXGISwapChain* pSwapChain, UINT SyncInter
     using CostStage = ce::present_stage_cost::Stage;
     using CostScope = ce::present_stage_cost::StageScope;
     // Opened before the draw, so total_us covers it. PostSL logs no row of its own, so this one is the frame's.
-    std::optional<DX11PresentPerfRow> row;
-    row.emplace(PerfLogger::Get().IsEnabled(), "DX12", route);
-    auto rowGuard = ce::make_scope_guard([&row] {
-        CostScope perfRowStage(CostStage::kPerfRow);
-        row.reset();
-    });
-
-    const int64_t drawStartUs = row->NowUs();
+    ForwardedPresentRecord record(true, route);
+    const int64_t drawStartUs = record.NowUs();
     InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
-    row->NoteOverlaySince(drawStartUs);
+    record.NoteOverlaySince(drawStartUs);
 
     RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, route);
 
-    const int64_t limiterStartUs = row->NowUs();
-    ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, wrapperOwnsPresent, callbackProvenRuntimeOutput, route);
-    row->NoteFpsLimitWaitSince(limiterStartUs);
+    record.TimeLimiter([&] {
+        ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, wrapperOwnsPresent, callbackProvenRuntimeOutput,
+                                                        route);
+    });
 
     // This is Streamline's physical output, not the app's proxy Present. Forced FIFO belongs here: applying sync=1 to
     // the proxy can stall DLSS-G's pacer, while omitting it here lets the recovered post-FSR output exceed refresh
@@ -51,9 +48,7 @@ HRESULT ExecuteStandaloneOutputBypass(IDXGISwapChain* pSwapChain, UINT SyncInter
         ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
     }
 
-    row->BeginPresentCall();
-    const HRESULT hr = forward(SyncInterval, Flags);
-    row->EndPresentCall();
+    const HRESULT hr = record.Forward([&] { return forward(SyncInterval, Flags); });
 
     ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
     return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, APIType::D3D12, hr, presentName);
