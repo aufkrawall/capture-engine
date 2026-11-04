@@ -396,7 +396,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // before reaching the normal IsRecursivePresent() check at line ~530.
     // This caused stack overflow crashes (0xC00000FD) with ~500 recursive frames.
     static thread_local int s_presentRecurseDepth = 0;
+    EnterStage(CostStage::kEntryWrapper);
     const bool wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
+    EnterStage(CostStage::kEntry);
     const bool inWrapperPresent = IsInWrapperPresent();
     const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool isReentrant =
@@ -505,7 +507,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
     }
 
+    EnterStage(CostStage::kEntryApi);
     const APIType api = DetectAPIType(pSwapChain);
+    EnterStage(CostStage::kEntryWindow);
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent")) {
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }

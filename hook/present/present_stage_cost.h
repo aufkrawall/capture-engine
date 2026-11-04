@@ -34,7 +34,10 @@ namespace ce::present_stage_cost {
 
 enum class Stage : uint8_t {
     kUnattributed,   // glue outside every named region
-    kEntry,          // detour preamble: association, FIFO policy, heartbeat, entry watch, API/visibility checks
+    kEntry,          // detour preamble: association, FIFO policy, CPU cost, heartbeat, entry watch
+    kEntryWrapper,   // whether the swapchain is CE's wrapper (a COM QueryInterface)
+    kEntryApi,       // which API the swapchain belongs to
+    kEntryWindow,    // D3D12: whether its window is an invisible helper's (GetDesc, IsWindowVisible)
     kKeepAlive,      // exact post-SL-off keep-alive render before routing
     kContext,        // caller identity, bypass trampoline, CapturePresentCallContext
     kOriginWalk,     // the originator's stack walk below a foreign chain
@@ -43,6 +46,7 @@ enum class Stage : uint8_t {
     kMetrics,        // UpdateDXGIPresentMetricsAndPublish
     kFsrTopmost,     // no-callback FSR FG topmost final-batch observation
     kOverlay,        // ProcessFrame / overlay composite, minus the parts below: routing and policy
+    kPostSLOverlay,  // D3D12: the draw on Streamline's final output, minus its record and submit below
     kPrerenderWait,  // D3D12, Vulkan: the CPU prerender limit waiting for the GPU
     kPrerenderMarker,// D3D12, Vulkan: its Signal or empty submit for this frame
     kPostProcess,    // D3D12: the sharpen and gamma pass on the normal route
@@ -67,6 +71,9 @@ constexpr const char* StageName(Stage stage) {
     switch (stage) {
         case Stage::kUnattributed: return "unattributed";
         case Stage::kEntry: return "entry";
+        case Stage::kEntryWrapper: return "entry_wrapper";
+        case Stage::kEntryApi: return "entry_api";
+        case Stage::kEntryWindow: return "entry_window";
         case Stage::kKeepAlive: return "keepalive";
         case Stage::kContext: return "context";
         case Stage::kOriginWalk: return "origin_walk";
@@ -75,6 +82,7 @@ constexpr const char* StageName(Stage stage) {
         case Stage::kMetrics: return "metrics";
         case Stage::kFsrTopmost: return "fsr_topmost";
         case Stage::kOverlay: return "overlay";
+        case Stage::kPostSLOverlay: return "postsl_overlay";
         case Stage::kPrerenderWait: return "prerender_wait";
         case Stage::kPrerenderMarker: return "prerender_marker";
         case Stage::kPostProcess: return "post_process";

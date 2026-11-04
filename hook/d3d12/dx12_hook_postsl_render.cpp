@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_postsl_session.h"
 #include "common/logging/log_meter.h"
+#include "hook/present/present_stage_cost.h"
 
 std::atomic<int> s_postSLRenders{0};
 std::atomic<int> s_postSLSkipFence{0};
@@ -27,11 +28,17 @@ void PostSLRenderSession::Run() {
         if (flow == PostSLFlow::kReturn) {
             return;
         }
-        flow = RecordOverlayDraw();
+        {
+            ce::present_stage_cost::StageScope recordStage(ce::present_stage_cost::Stage::kOverlayRecord);
+            flow = RecordOverlayDraw();
+        }
         if (flow == PostSLFlow::kReturn) {
             return;
         }
-        flow = SubmitAndConfirmOutput();
+        {
+            ce::present_stage_cost::StageScope submitStage(ce::present_stage_cost::Stage::kOverlaySubmit);
+            flow = SubmitAndConfirmOutput();
+        }
         if (flow == PostSLFlow::kReturn) {
             return;
         }

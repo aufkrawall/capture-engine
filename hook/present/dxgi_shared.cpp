@@ -116,6 +116,8 @@ void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, I
         return;
     ++s_postSLFinalOutputPresentCallbackDepth;
     auto scope = ce::make_scope_guard([]() { --s_postSLFinalOutputPresentCallbackDepth; });
+    // Every route's PostSL draw, which otherwise reads as the routing around it (`startup_routing`).
+    ce::present_stage_cost::StageScope overlayStage(ce::present_stage_cost::Stage::kPostSLOverlay);
     callback(swapChain);
 }
 

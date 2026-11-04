@@ -55,7 +55,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // See DetourPresent: counted before every early return below.
     NotePresentInterposerOutputPresent(pSwapChain);
 
+    EnterStage(CostStage::kEntryApi);
     const APIType api = DetectAPIType(pSwapChain);
+    EnterStage(CostStage::kEntryWindow);
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent1")) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
@@ -99,7 +101,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     EnterStage(CostStage::kContext);
     const void* detourCallerAddress = ResolvePresent1DetourCaller(pSwapChain, CE_CAPTURE_RETURN_ADDRESS());
+    EnterStage(CostStage::kEntryWrapper);
     const bool wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
+    EnterStage(CostStage::kContext);
     const bool inWrapperPresent = IsInWrapperPresent();
     // Signals the prerender marker after whichever route below forwards the Present.
     D3D11PrerenderPresentScope prerenderScope;

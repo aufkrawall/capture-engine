@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "hook/overlay/overlay_shader_spirv.h"
+#include "hook/present/present_stage_cost.h"
 
 namespace {
 
@@ -537,6 +538,8 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
         return false;
     }
 
+    // The same stages as the direct route (RenderOverlay); the layer's own summary splits graphics from compute.
+    ce::present_stage_cost::EnterStage(ce::present_stage_cost::Stage::kOverlayRecord);
     const bool phaseSampled =
         (state.computePresentDiagnostics.frames + 1) % kDiagnosticSampleInterval == 0;
     const int64_t graphicsRecordStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
@@ -635,6 +638,7 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
         computeRecordMissUs = static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeRecordStartUs);
     }
 
+    ce::present_stage_cost::EnterStage(ce::present_stage_cost::Stage::kOverlaySubmit);
     VkSubmitInfo graphicsSubmit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     graphicsSubmit.commandBufferCount = 1;
     graphicsSubmit.pCommandBuffers = &graphicsCommand;

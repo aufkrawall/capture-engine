@@ -159,6 +159,64 @@ TEST(PresentStageCostSourceTest, DetourPresent1AdvancesThroughItsStagesInOrder) 
     EXPECT_TRUE(PrecededWithin(detour, endScope, "Stage::kPostPresent", 1));
 }
 
+// The D3D12 preamble cost 9-16 us against 1.6 us on DXGI under Vulkan, and nothing said which part (20261104_144527).
+TEST(PresentStageCostSourceTest, BothDetoursSplitTheirPreamble) {
+    for (const auto& [file, signature] :
+         {std::pair<const char*, const char*>{"hook/present/dxgi_shared_present.cpp",
+                                              "HRESULT STDMETHODCALLTYPE DetourPresent("},
+          std::pair<const char*, const char*>{"hook/present/dxgi_shared_present1.cpp",
+                                              "HRESULT STDMETHODCALLTYPE DetourPresent1("}}) {
+        const std::string detour = FunctionBody(ReadProjectSource(file), signature);
+        ASSERT_FALSE(detour.empty()) << file;
+        const size_t wrapper = detour.find("IsWrappedSwapChainObject(pSwapChain);");
+        const size_t api = detour.find("DetectAPIType(pSwapChain);");
+        const size_t window = detour.find("ShouldBypassDX12InvisibleWindowPresent(pSwapChain");
+        ASSERT_NE(wrapper, std::string::npos) << file;
+        ASSERT_NE(api, std::string::npos) << file;
+        ASSERT_NE(window, std::string::npos) << file;
+        EXPECT_TRUE(PrecededWithin(detour, wrapper, "EnterStage(CostStage::kEntryWrapper);", 1)) << file;
+        EXPECT_TRUE(PrecededWithin(detour, api, "EnterStage(CostStage::kEntryApi);", 1)) << file;
+        EXPECT_TRUE(PrecededWithin(detour, window, "EnterStage(CostStage::kEntryWindow);", 1)) << file;
+    }
+}
+
+// Under DLSS FG the PostSL draw runs inside the routing and read as `startup_routing` 89-165 us (20261104_144527).
+TEST(PresentStageCostSourceTest, ThePostSLDrawIsItsOwnStage) {
+    const std::string shared = ReadProjectSource("hook/present/dxgi_shared.cpp");
+    const std::string invoke = FunctionBody(shared, "void InvokePostSLCallbackForFinalOutputPresent(");
+    ASSERT_FALSE(invoke.empty());
+    const size_t call = invoke.find("callback(swapChain);");
+    ASSERT_NE(call, std::string::npos);
+    EXPECT_TRUE(PrecededWithin(invoke, call, "Stage::kPostSLOverlay", 1));
+
+    const std::string render = ReadProjectSource("hook/d3d12/dx12_hook_postsl_render.cpp");
+    const size_t record = render.find("flow = RecordOverlayDraw();");
+    const size_t submit = render.find("flow = SubmitAndConfirmOutput();");
+    ASSERT_NE(record, std::string::npos);
+    ASSERT_NE(submit, std::string::npos);
+    EXPECT_TRUE(PrecededWithin(render, record, "Stage::kOverlayRecord", 1));
+    EXPECT_TRUE(PrecededWithin(render, submit, "Stage::kOverlaySubmit", 1));
+}
+
+// DOOM Eternal presents on another queue family: the compute route's whole cost read as `overlay` 50-65 us, and
+// `overlay_record` counted only the frames that took the direct route (20261104_144527).
+TEST(PresentStageCostSourceTest, TheVulkanComputeRouteRecordsTheSameStagesAsTheDirectRoute) {
+    const std::string compute = ReadProjectSource("hook/vulkan_layer/layer_overlay_compute.cpp");
+    const std::string route = FunctionBody(compute, "bool RenderComputePresentOverlay(");
+    ASSERT_FALSE(route.empty());
+    const size_t record = route.find("Stage::kOverlayRecord");
+    const size_t draw = route.find("RenderOverlay(state.extent.width");
+    const size_t submit = route.find("Stage::kOverlaySubmit");
+    const size_t firstQueueSubmit = route.find("fp_vkQueueSubmit(");
+    ASSERT_NE(record, std::string::npos);
+    ASSERT_NE(draw, std::string::npos);
+    ASSERT_NE(submit, std::string::npos);
+    ASSERT_NE(firstQueueSubmit, std::string::npos);
+    EXPECT_LT(record, draw);
+    EXPECT_LT(draw, submit);
+    EXPECT_LT(submit, firstQueueSubmit);
+}
+
 // The recorder closes last, and the detour's own sequence advances through the
 // named stages in order around the calls they are named for.
 TEST(PresentStageCostSourceTest, DetourPresentAdvancesThroughItsStagesInOrder) {
