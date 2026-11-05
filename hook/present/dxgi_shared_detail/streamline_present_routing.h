@@ -320,11 +320,12 @@ inline const char* SelectTranslatedGraphicsAPIName(bool hasDxvkD3D11, bool hasDx
     if (hasDxvkD3D11) {
         return hasDX10 ? "DX10 -> Vk (DXVK)" : "DX11 -> Vk (DXVK)";
     }
-    if (hasDxvkD3D9) {
-        return "DX9 -> Vk (DXVK)";
-    }
+    // DXVK's D3D8 frontend loads its D3D9 backend too; the frontend names the game's API.
     if (hasDxvkD3D8) {
         return "DX8 -> Vk (DXVK)";
+    }
+    if (hasDxvkD3D9) {
+        return "DX9 -> Vk (DXVK)";
     }
     if (hasVkd3dD3D12) {
         return "DX12 -> Vk (VKD3D-Proton)";

@@ -17,6 +17,9 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   that created the active presentation surface. Successful application `IDirect3D3::CreateDevice` and
   `IDirect3D7::CreateDevice` evidence overrides that transport label with `DX6` or `DX7`.
 - D3D8 reports `DX8` from its active device.
+  The Vulkan layer's `SelectTranslatedGraphicsAPIName` checks DXVK's D3D8 frontend before its D3D9 backend:
+  both DLLs load for a D3D8 game. `DXGISharedTest.SelectTranslatedGraphicsAPINamePrefersDXVKD3D8OverItsD3D9Backend`
+  covers that module combination while preserving D3D11's priority over legacy helper DLLs (2026-11-05).
 - D3D9 records classic versus Ex identity at successful `CreateDevice` / `CreateDeviceEx`. Registered capture and
   overlay helper devices are excluded. A one-time interface query is only a fallback for a device first discovered
   after creation. DXVK suffixes are preserved.

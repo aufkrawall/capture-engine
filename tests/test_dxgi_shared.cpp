@@ -219,6 +219,11 @@ TEST(DXGISharedTest, SelectTranslatedGraphicsAPINamePrefersDXVKD3D11OverDXVKD3D9
     EXPECT_STREQ(DXGIShared::SelectTranslatedGraphicsAPIName(false, false, false, false), "Vulkan");
 }
 
+TEST(DXGISharedTest, SelectTranslatedGraphicsAPINamePrefersDXVKD3D8OverItsD3D9Backend) {
+    EXPECT_STREQ(DXGIShared::SelectTranslatedGraphicsAPIName(false, true, false, false, true), "DX8 -> Vk (DXVK)");
+    EXPECT_STREQ(DXGIShared::SelectTranslatedGraphicsAPIName(true, true, false, false, true), "DX11 -> Vk (DXVK)");
+}
+
 TEST(DXGISharedTest, SelectPrimarySwapChainAPITypePrefersHighestDeviceVersion) {
     constexpr unsigned kFL10_1 = 0xa100;
     EXPECT_EQ(DXGIShared::APIType::D3D12, DXGIShared::SelectPrimarySwapChainAPIType(true, true, true, true, kFL10_1));
