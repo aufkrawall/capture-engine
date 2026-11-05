@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-05 - 0.1.7423 run through every route: the CSV line fix validated; a stack shows the stall in DXGI's own submit
+
+- **Session `20261105_015452`, Talos only, exit 0, no device removal:** DLSS FG from the start, FSR 01:55:24.7, FSR off 01:55:31.4, Streamline's chain 01:55:37.7, DLSS FG 01:55:45.1, XeFG's chain 01:56:00.9 (generating 01:56:03.4), background 01:56:09.4 to 01:56:43.5 with Task Manager in front, XeFG destroyed and recreated by the game 01:56:45.7 (generating 01:56:46.1), exit 01:56:55. All four handoffs `endedWithoutOverlay=0 missing=0`, `uncovered=0` at the edges. XeFG -> XeFG had not run before: 668 ms gap, overlay drawn on the first present, 2x again at 01:56:47.
+- **CSV line fix (b957d0f9) validated:** five routes ran and each logged one `[PERF CSV]` line. `perf_row` on the post-FSR bypass 0.5/0.7 (n=360), was 7.8/10.2 on 0.1.7422.
+- **The stall inside DXGI's own submit, on the stack:** `stack #8` at 01:56:46.206, frame 10039, `present_call_us` 8739, `ExecuteCommandLists SLOW 8.6ms`: `NtGdiDdDDICreateAllocation` < D3D12Core+0x12a21 < +0x47869 < nvwgf2umx+0x2bef6a < +0x242e9c < +0x387fe8 < ... < D3D12Core+0x3f8cc < capture_hook+0xb3346 (CE's ECL detour, forwarding) < dxgi+0x524a < dxgi+0x415b6. Same driver frames as CE's overlay submit at 01:20:48 in `20261105_011907`, so whichever submit comes first pays. CE's overlay submits: 20.71 ms at 01:55:37.717 (`NtGdiDdDDIWaitForSynchronizationObjectFromCpu`, same stack as before), 10.43 ms at 01:56:46.299.
+- **Focus edges under XeFG, stall in DXGI's submit too:** 28.9 ms down-call at 01:56:09.470 (`stack #5`: `ZwWaitForSingleObject` < `WaitForSingleObjectEx` < nvwgf2umx+0xa55b3d, under dxgi+0x524a), 6.7 ms at 01:56:43.676 (169 ms gap). The game resized XeFG's chain first both times (`ResizeBuffers1` at 01:56:09.424, 01:56:43.645).
+- **A lead, not proven:** most stalls in the last three sessions follow a `ResizeBuffers` on that chain by under 50 ms (01:55:37.682, 01:56:09.424, 01:56:43.645, 01:47:03.751), which would fit the driver doing first-use work for new back buffers. Not every resize stalls: 01:55:41.936 did not. No change either way.
+- **Background 34 s under XeFG:** 81 presents/s against 87 in the foreground, `overlay_us` 106/229 against 103/210, jag 1543-1785 us while composed. No `presentability` line: `IsIconic` stayed false at every Present and the game kept rendering, so not a minimize.
+- **Cost:** bypass `own` 136.6/213.0, `overlay_us` 110/161; XeFG `overlay_us` 86-106 median.
+- **Still not run:** a real minimize, the hitch cap (no `DIVERGES` line).
+
 ### 2026-11-05 - 0.1.7423 run: XeFG straight after DLSS works; the stall's stack repeats; the CSV line fix not exercised
 
 - **Session `20261105_014611`, Talos only, exit 0, no device removal:** DLSS FG from the start, XeFG's chain 01:47:03.76 (generating 01:47:05.24), Alt+Tab away 01:47:15.3 and back 01:47:20.99 while generating, exit 01:47:29.6. The one handoff `endedWithoutOverlay=0 missing=0`.
