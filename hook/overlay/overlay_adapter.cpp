@@ -223,6 +223,8 @@ void OverlayAdapter::ResetStateLocked() {
     lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     layoutDirty = true;
     panelSensorColumns = 0;
+    panelRowMask = 0;
+    panelHardware = {};
     hdrPaperWhiteMonitor = nullptr;
     resolvedHdrPaperWhiteNits = 203.0f;
     graphScroll.Reset();

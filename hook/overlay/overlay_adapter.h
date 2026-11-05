@@ -265,7 +265,9 @@ private:
     // What the last full build drew, and which hardware columns have ever had a reading: a sensor dropping
     // out for a moment must not resize the panel. See overlay_panel.h.
     ce::overlay_panel::Scene panelScene;
+    ce::overlay_panel::HardwareHistory panelHardware;
     uint32_t panelSensorColumns = 0;
+    uint32_t panelRowMask = 0;
     ce::log_meter::ChangeGate panelLogGate;
 
     // Throttled frame time display values (updated every 2 seconds)

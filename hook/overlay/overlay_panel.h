@@ -37,6 +37,10 @@ public:
 struct Reading {
     bool valid = false;
     float value = 0.0f;
+    bool present = false;  // Remembered by HardwareHistory; missing samples keep their slot.
+    bool Shown() const {
+        return valid || present;
+    }
 };
 
 struct GpuValues {
@@ -131,6 +135,18 @@ struct Inputs {
     const char* benchmarkFps = "";
 
     GraphValue graph;
+};
+
+// One renderer's hardware layout lifetime. Learns only from visible rows, keeps unavailable fields and
+// clock rows in place, and resets when the renderer is replaced. It never retains a sensor value.
+class HardwareHistory {
+public:
+    void Apply(Inputs& inputs);
+
+private:
+    uint32_t gpu_ = 0;
+    uint32_t cpu_ = 0;
+    uint32_t columns_ = 0;
 };
 
 struct TextOp {

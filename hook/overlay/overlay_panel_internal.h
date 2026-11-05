@@ -107,9 +107,10 @@ private:
 // A row of quiet readings with even gaps: "mem 17001 MHz   0.920 V   769 RPM".
 class Line {
 public:
-    void Add(const Short& text, Tone tone = Tone::Unit) {
+    void Add(const Short& text, Tone tone = Tone::Unit, const Short& reserved = {}) {
         if (count_ < kCapacity) {
             items_[count_].text = text;
+            items_[count_].reserved = reserved.s[0] ? reserved : text;
             items_[count_].tone = tone;
             ++count_;
         }
@@ -125,17 +126,18 @@ private:
     static constexpr int kCapacity = 5;
     struct Item {
         Short text;
+        Short reserved;
         Tone tone = Tone::Unit;
     };
     Item items_[kCapacity];
     int count_ = 0;
 };
 
-// With reserve set, every number takes its widest form: the line's width for layout, not its content.
-Line GpuDetailLine(const Inputs& in, bool reserve);  // mem clock, voltage, fan: the core clock has a column
-Line CpuDetailLine(const Inputs& in, bool reserve);  // peak core load and clock
-Line GpuClocksLine(const Inputs& in, bool reserve, bool withFan);  // "2910 / 17001 MHz", "0.920 V"
-Line CpuClocksLine(const Inputs& in, bool reserve, bool withPeak);  // "4191 / 4569 MHz"
+// Lines carry their reserved field widths alongside the current text, including unavailable readings.
+Line GpuDetailLine(const Inputs& in);  // mem clock, voltage, fan: the core clock has a column
+Line CpuDetailLine(const Inputs& in);  // peak core load and clock
+Line GpuClocksLine(const Inputs& in, bool withFan);  // "2910 / 17001 MHz", "0.920 V"
+Line CpuClocksLine(const Inputs& in, bool withPeak);  // "4191 / 4569 MHz"
 
 // Sections more than one layout shares. Each Draw takes the row's top and returns the next free y.
 float NotificationWidth(const Composer& c);

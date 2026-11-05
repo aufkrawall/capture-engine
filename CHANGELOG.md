@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay movement when hardware readings drop out:** GPU memory clocks, voltage and fan readings, CPU peak clocks, and clock rows now keep their slots and show `--` until readings return. Missing samples no longer collapse Hero rows or change Strip wrapping.
+
 - **DXUP native D3D11 fallback label:** the overlay no longer claims a DirectX 12 backend just because DXUP's `d3d11.dll` remains loaded after falling back to Windows' DirectX 11. Native D3D12 output still reports the full DXUP translation chain.
 
 - **DXVK D3D8 overlay label:** DirectX 8 games now show `DX8 -> Vk (DXVK)` when DXVK's D3D9 backend is also loaded, instead of being mislabeled as DirectX 9.

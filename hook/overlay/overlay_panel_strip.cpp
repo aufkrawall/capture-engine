@@ -133,22 +133,22 @@ bool GpuShown(const Composer& c) {
     return c.Has(kRowGPU);
 }
 float GpuCellWidth(const Composer& c) {
-    return (std::max)(MeasureChip(c, c.in.gpu.name).total, GpuClocksLine(c.in, true, true).Width(c, Size::Small));
+    return (std::max)(MeasureChip(c, c.in.gpu.name).total, GpuClocksLine(c.in, true).Width(c, Size::Small));
 }
 void DrawGpuCell(Composer& c, float x, const CellRows& rows, float) {
     DrawChipMain(c, x, rows.main, c.in.gpu.name, c.in.gpu.load, c.in.gpu.temperatureC, c.in.gpu.powerW);
-    GpuClocksLine(c.in, false, true).Draw(c, x, rows.detail, Size::Small);
+    GpuClocksLine(c.in, true).Draw(c, x, rows.detail, Size::Small);
 }
 
 bool CpuShown(const Composer& c) {
     return c.Has(kRowCPU);
 }
 float CpuCellWidth(const Composer& c) {
-    return (std::max)(MeasureChip(c, c.in.cpu.name).total, CpuClocksLine(c.in, true, true).Width(c, Size::Small));
+    return (std::max)(MeasureChip(c, c.in.cpu.name).total, CpuClocksLine(c.in, true).Width(c, Size::Small));
 }
 void DrawCpuCell(Composer& c, float x, const CellRows& rows, float) {
     DrawChipMain(c, x, rows.main, c.in.cpu.name, CpuLoadReading(c), c.in.cpu.temperatureC, c.in.cpu.powerW);
-    CpuClocksLine(c.in, false, true).Draw(c, x, rows.detail, Size::Small);
+    CpuClocksLine(c.in, true).Draw(c, x, rows.detail, Size::Small);
 }
 
 bool MemoryShown(const Composer& c) {

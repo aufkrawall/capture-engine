@@ -219,9 +219,9 @@ float HwTableWidth(const Composer& c) {
         return 0.0f;
     float width = MaxNameWidth(c) + c.Px(kColumnGap) + SensorColumnsWidth(c, MeasureSensorColumns(c, true, true));
     if (c.Has(kRowGPU))
-        width = (std::max)(width, GpuDetailLine(c.in, true).Width(c, Size::Small));
+        width = (std::max)(width, GpuDetailLine(c.in).Width(c, Size::Small));
     if (c.Has(kRowCPU))
-        width = (std::max)(width, CpuDetailLine(c.in, true).Width(c, Size::Small));
+        width = (std::max)(width, CpuDetailLine(c.in).Width(c, Size::Small));
     return width;
 }
 
@@ -252,7 +252,7 @@ float DrawHwTable(Composer& c, float y, float width) {
         DrawSensorCells(c, columns, edges, baseline, c.in.gpu.load, c.in.gpu.coreMhz, c.in.gpu.temperatureC,
                         c.in.gpu.powerW);
         y += base;
-        detail(GpuDetailLine(c.in, false));
+        detail(GpuDetailLine(c.in));
     }
     if (c.Has(kRowCPU)) {
         const float baseline = c.Baseline(y, base);
@@ -260,7 +260,7 @@ float DrawHwTable(Composer& c, float y, float width) {
         DrawSensorCells(c, columns, edges, baseline, CpuLoad(c.in), c.in.cpu.coreMhz, c.in.cpu.temperatureC,
                         c.in.cpu.powerW);
         y += base;
-        detail(CpuDetailLine(c.in, false));
+        detail(CpuDetailLine(c.in));
     }
     return y;
 }
@@ -375,8 +375,8 @@ float ListHwWidth(const Composer& c) {
     const float last = ListLastColumnWidth(c);
     float width = nameWidth + c.Px(kColumnGap) + SensorColumnsWidth(c, MeasureSensorColumns(c, false, false)) +
                   (last > 0.0f ? c.Px(kColumnGap) + last : 0.0f);
-    const float clocks = (std::max)(c.Has(kRowGPUClocks) ? GpuClocksLine(c.in, true, false).Width(c, Size::Base) : 0.0f,
-                                    c.Has(kRowCPUClocks) ? CpuClocksLine(c.in, true, false).Width(c, Size::Base) : 0.0f);
+    const float clocks = (std::max)(c.Has(kRowGPUClocks) ? GpuClocksLine(c.in, false).Width(c, Size::Base) : 0.0f,
+                                    c.Has(kRowCPUClocks) ? CpuClocksLine(c.in, false).Width(c, Size::Base) : 0.0f);
     return (std::max)(width, c.W("Clocks") + c.Px(kLabelGap) + clocks);
 }
 
@@ -519,9 +519,9 @@ float MetersHwWidth(const Composer& c) {
     const float gap = c.Px(kColumnGap);
     float width = MetersNameWidth(c) + gap + c.Px(kBarWidth) + gap + MetersValueAreaWidth(c);
     if (c.Has(kRowGPU))
-        width = (std::max)(width, GpuClocksLine(c.in, true, true).Width(c, Size::Small));
+        width = (std::max)(width, GpuClocksLine(c.in, true).Width(c, Size::Small));
     if (c.Has(kRowCPU))
-        width = (std::max)(width, CpuClocksLine(c.in, true, true).Width(c, Size::Small));
+        width = (std::max)(width, CpuClocksLine(c.in, true).Width(c, Size::Small));
     return width;
 }
 
@@ -549,10 +549,10 @@ float DrawMetersHw(Composer& c, float y, float width) {
     };
     if (c.Has(kRowGPU))
         chip(c.in.gpu.name, c.in.gpu.load, c.in.gpu.temperatureC, c.in.gpu.powerW, -1.0f,
-             GpuClocksLine(c.in, false, true));
+             GpuClocksLine(c.in, true));
     if (c.Has(kRowCPU))
         chip(c.in.cpu.name, CpuLoad(c.in), c.in.cpu.temperatureC, c.in.cpu.powerW, c.in.cpu.peakCoreLoad,
-             CpuClocksLine(c.in, false, true));
+             CpuClocksLine(c.in, true));
 
     const auto memory = [&](const char* label, const MemoryValue& value) {
         const float baseline = c.Baseline(y, pitch);
@@ -627,13 +627,13 @@ void BuildList(Composer& c) {
         flow.Set(DrawListChip(c, flow.Y(), width, c.in.gpu.name, c.in.gpu.load, c.in.gpu.temperatureC, c.in.gpu.powerW,
                               true));
         if (c.Has(kRowGPUClocks))
-            flow.Set(DrawListClocks(c, flow.Y(), width, GpuClocksLine(c.in, false, false)));
+            flow.Set(DrawListClocks(c, flow.Y(), width, GpuClocksLine(c.in, false)));
     }
     if (flow.Group(c.Has(kRowCPU))) {
         flow.Set(DrawListChip(c, flow.Y(), width, c.in.cpu.name, CpuLoad(c.in), c.in.cpu.temperatureC, c.in.cpu.powerW,
                               false));
         if (c.Has(kRowCPUClocks))
-            flow.Set(DrawListClocks(c, flow.Y(), width, CpuClocksLine(c.in, false, false)));
+            flow.Set(DrawListClocks(c, flow.Y(), width, CpuClocksLine(c.in, false)));
     }
     if (flow.Group(c.Has(kRowVRAM) || c.Has(kRowRAM))) {
         if (c.Has(kRowVRAM))

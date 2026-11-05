@@ -104,76 +104,79 @@ void Composer::Finish(float contentWidth, float bottom) {
 float Line::Width(const Composer& c, Size size) const {
     float width = 0.0f;
     for (int i = 0; i < count_; ++i)
-        width += c.W(items_[i].text, size) + (i > 0 ? c.Px(kInlineGap) : 0.0f);
+        width += c.W(items_[i].reserved, size) + (i > 0 ? c.Px(kInlineGap) : 0.0f);
     return width;
 }
 
 void Line::Draw(Composer& c, float x, float baseline, Size size) const {
     for (int i = 0; i < count_; ++i) {
         c.Text(x, baseline, items_[i].text.c(), size, items_[i].tone);
-        x += c.W(items_[i].text, size) + c.Px(kInlineGap);
+        x += c.W(items_[i].reserved, size) + c.Px(kInlineGap);
     }
 }
 
 void Line::DrawRight(Composer& c, float right, float baseline, Size size) const {
     for (int i = count_ - 1; i >= 0; --i) {
         c.TextRight(right, baseline, items_[i].text.c(), size, items_[i].tone);
-        right -= c.W(items_[i].text, size) + c.Px(kInlineGap);
+        right -= c.W(items_[i].reserved, size) + c.Px(kInlineGap);
     }
 }
 
-Line GpuDetailLine(const Inputs& in, bool reserve) {
+Line GpuDetailLine(const Inputs& in) {
     Line line;
-    if (in.gpu.memoryMhz.valid)
-        line.Add(Fmt("mem %.0f MHz", reserve ? 99999.0f : in.gpu.memoryMhz.value));
-    if (in.gpu.voltageV.valid)
-        line.Add(Fmt("%.3f V", reserve ? 9.999f : in.gpu.voltageV.value));
-    if (in.gpu.fanRpm.valid)
-        line.Add(Fmt("%.0f RPM", reserve ? 9999.0f : in.gpu.fanRpm.value));
+    if (in.gpu.memoryMhz.Shown())
+        line.Add(in.gpu.memoryMhz.valid ? Fmt("mem %.0f MHz", in.gpu.memoryMhz.value) : Fmt("mem -- MHz"),
+                 Tone::Unit, Fmt("mem 99999 MHz"));
+    if (in.gpu.voltageV.Shown())
+        line.Add(in.gpu.voltageV.valid ? Fmt("%.3f V", in.gpu.voltageV.value) : Fmt("-- V"),
+                 Tone::Unit, Fmt("9.999 V"));
+    if (in.gpu.fanRpm.Shown())
+        line.Add(Fmt("%s RPM", Whole(in.gpu.fanRpm).c()), Tone::Unit, Fmt("9999 RPM"));
     return line;
 }
 
-Line CpuDetailLine(const Inputs& in, bool reserve) {
+Line CpuDetailLine(const Inputs& in) {
     Line line;
-    const float peak = reserve ? 100.0f : in.cpu.peakCoreLoad;
-    line.Add(Fmt("peak core %.0f%%", peak), LoadTone(in.cpu.peakCoreLoad) == Tone::Warn ? Tone::Warn : Tone::Unit);
-    if (in.cpu.peakCoreMhz.valid)
-        line.Add(Fmt("%.0f MHz", reserve ? 9999.0f : in.cpu.peakCoreMhz.value));
+    line.Add(Fmt("peak core %.0f%%", in.cpu.peakCoreLoad),
+             LoadTone(in.cpu.peakCoreLoad) == Tone::Warn ? Tone::Warn : Tone::Unit, Fmt("peak core 100%%"));
+    if (in.cpu.peakCoreMhz.Shown())
+        line.Add(Fmt("%s MHz", Whole(in.cpu.peakCoreMhz).c()), Tone::Unit, Fmt("9999 MHz"));
     return line;
 }
 
 namespace {
 
 Short TwoClocks(const Reading& first, const Reading& second, float firstReserve, float secondReserve, bool reserve) {
-    const float a = reserve ? firstReserve : first.value;
-    const float b = reserve ? secondReserve : second.value;
-    if (first.valid && second.valid)
-        return Fmt("%.0f / %.0f MHz", a, b);
-    if (first.valid)
-        return Fmt("%.0f MHz", a);
-    return Fmt("%.0f MHz", b);
+    const Short a = reserve ? Fmt("%.0f", firstReserve) : Whole(first);
+    const Short b = reserve ? Fmt("%.0f", secondReserve) : Whole(second);
+    if (first.Shown() && second.Shown())
+        return Fmt("%s / %s MHz", a.c(), b.c());
+    return Fmt("%s MHz", first.Shown() ? a.c() : b.c());
 }
 
 }  // namespace
 
-Line GpuClocksLine(const Inputs& in, bool reserve, bool withFan) {
+Line GpuClocksLine(const Inputs& in, bool withFan) {
     Line line;
-    if (in.gpu.coreMhz.valid || in.gpu.memoryMhz.valid)
-        line.Add(TwoClocks(in.gpu.coreMhz, in.gpu.memoryMhz, 9999.0f, 99999.0f, reserve));
-    if (in.gpu.voltageV.valid)
-        line.Add(Fmt("%.3f V", reserve ? 9.999f : in.gpu.voltageV.value));
-    if (withFan && in.gpu.fanRpm.valid)
-        line.Add(Fmt("%.0f RPM", reserve ? 9999.0f : in.gpu.fanRpm.value));
+    if (in.gpu.coreMhz.Shown() || in.gpu.memoryMhz.Shown())
+        line.Add(TwoClocks(in.gpu.coreMhz, in.gpu.memoryMhz, 9999.0f, 99999.0f, false), Tone::Unit,
+                 TwoClocks(in.gpu.coreMhz, in.gpu.memoryMhz, 9999.0f, 99999.0f, true));
+    if (in.gpu.voltageV.Shown())
+        line.Add(in.gpu.voltageV.valid ? Fmt("%.3f V", in.gpu.voltageV.value) : Fmt("-- V"),
+                 Tone::Unit, Fmt("9.999 V"));
+    if (withFan && in.gpu.fanRpm.Shown())
+        line.Add(Fmt("%s RPM", Whole(in.gpu.fanRpm).c()), Tone::Unit, Fmt("9999 RPM"));
     return line;
 }
 
-Line CpuClocksLine(const Inputs& in, bool reserve, bool withPeak) {
+Line CpuClocksLine(const Inputs& in, bool withPeak) {
     Line line;
-    if (in.cpu.coreMhz.valid || in.cpu.peakCoreMhz.valid)
-        line.Add(TwoClocks(in.cpu.coreMhz, in.cpu.peakCoreMhz, 9999.0f, 9999.0f, reserve));
+    if (in.cpu.coreMhz.Shown() || in.cpu.peakCoreMhz.Shown())
+        line.Add(TwoClocks(in.cpu.coreMhz, in.cpu.peakCoreMhz, 9999.0f, 9999.0f, false), Tone::Unit,
+                 TwoClocks(in.cpu.coreMhz, in.cpu.peakCoreMhz, 9999.0f, 9999.0f, true));
     if (withPeak) {
-        const float peak = reserve ? 100.0f : in.cpu.peakCoreLoad;
-        line.Add(Fmt("peak %.0f%%", peak), LoadTone(in.cpu.peakCoreLoad) == Tone::Warn ? Tone::Warn : Tone::Unit);
+        line.Add(Fmt("peak %.0f%%", in.cpu.peakCoreLoad),
+                 LoadTone(in.cpu.peakCoreLoad) == Tone::Warn ? Tone::Warn : Tone::Unit, Fmt("peak 100%%"));
     }
     return line;
 }
@@ -374,6 +377,48 @@ void DrawMemoryParts(Composer& c, float x, float baseline, const MemoryParts& pa
 }
 
 }  // namespace detail
+
+void HardwareHistory::Apply(Inputs& in) {
+    using namespace ce::overlay_layout;
+    const auto remember = [](Reading& reading, uint32_t& fields, uint32_t bit) {
+        if (reading.valid)
+            fields |= bit;
+        reading.present = (fields & bit) != 0;
+    };
+    if ((in.rowMask & kRowGPU) != 0) {
+        remember(in.gpu.temperatureC, gpu_, 1u << 0);
+        remember(in.gpu.powerW, gpu_, 1u << 1);
+        remember(in.gpu.coreMhz, gpu_, 1u << 2);
+        remember(in.gpu.memoryMhz, gpu_, 1u << 3);
+        remember(in.gpu.voltageV, gpu_, 1u << 4);
+        remember(in.gpu.fanRpm, gpu_, 1u << 5);
+        if (in.gpu.temperatureC.Shown())
+            columns_ |= kColumnTemperature;
+        if (in.gpu.powerW.Shown())
+            columns_ |= kColumnPower;
+        if (in.gpu.coreMhz.Shown())
+            columns_ |= kColumnClock;
+        if (in.gpu.fanRpm.Shown())
+            columns_ |= kColumnFan;
+        if (in.gpu.coreMhz.Shown() || in.gpu.memoryMhz.Shown() || in.gpu.voltageV.Shown())
+            in.rowMask |= kRowGPUClocks;
+    }
+    if ((in.rowMask & kRowCPU) != 0) {
+        remember(in.cpu.temperatureC, cpu_, 1u << 0);
+        remember(in.cpu.powerW, cpu_, 1u << 1);
+        remember(in.cpu.coreMhz, cpu_, 1u << 2);
+        remember(in.cpu.peakCoreMhz, cpu_, 1u << 3);
+        if (in.cpu.temperatureC.Shown())
+            columns_ |= kColumnTemperature;
+        if (in.cpu.powerW.Shown())
+            columns_ |= kColumnPower;
+        if (in.cpu.coreMhz.Shown())
+            columns_ |= kColumnClock;
+        if (in.cpu.coreMhz.Shown() || in.cpu.peakCoreMhz.Shown())
+            in.rowMask |= kRowCPUClocks;
+    }
+    in.sensorColumns |= columns_;
+}
 
 void Build(Layout layout, const Inputs& inputs, const TextMeasure& measure, Scene& scene) {
     scene.width = 0.0f;

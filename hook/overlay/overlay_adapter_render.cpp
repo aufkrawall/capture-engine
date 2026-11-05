@@ -107,10 +107,11 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // The size and the rows behind it on change, so a panel that keeps resizing shows in the log.
     const uint64_t panelKey = (static_cast<uint64_t>(cfg.layout) << 56) ^
                               (static_cast<uint64_t>(panelScene.width) << 40) ^
-                              (static_cast<uint64_t>(panelScene.height) << 24) ^ frameLayout.rowMask;
+                              (static_cast<uint64_t>(panelScene.height) << 24) ^ panelRowMask ^
+                              (static_cast<uint64_t>(panelSensorColumns) << 16);
     if (const auto verdict = panelLogGate.Observe(panelKey)) {
         HookLogImportant("[Overlay] Panel: layout=%d size=%.0fx%.0f at=%.0f,%.0f rows=0x%x columns=0x%x repeats=%llu",
-                         static_cast<int>(cfg.layout), panelScene.width, panelScene.height, x, y, frameLayout.rowMask,
+                         static_cast<int>(cfg.layout), panelScene.width, panelScene.height, x, y, panelRowMask,
                          panelSensorColumns, static_cast<unsigned long long>(verdict.suppressed));
     }
 
@@ -180,17 +181,9 @@ void OverlayAdapter::FillPanelInputs(const OverlayConfig& cfg, const FrameLayout
     in.cpu.coreMhz = {sensors.cpuCoreClockValid, sensors.cpuCoreClockMhz};
     in.cpu.peakCoreMhz = {sensors.cpuMaxCoreClockValid, sensors.cpuMaxCoreClockMhz};
 
-    const bool rowGPU = (frameLayout.rowMask & kRowGPU) != 0;
-    const bool rowCPU = (frameLayout.rowMask & kRowCPU) != 0;
-    if ((rowGPU && sensors.gpuTemperatureValid) || (rowCPU && sensors.cpuTemperatureValid))
-        panelSensorColumns |= panel::kColumnTemperature;
-    if ((rowGPU && sensors.gpuPackagePowerValid) || (rowCPU && sensors.cpuPackagePowerValid))
-        panelSensorColumns |= panel::kColumnPower;
-    if ((rowGPU && sensors.gpuCoreClockValid) || (rowCPU && sensors.cpuCoreClockValid))
-        panelSensorColumns |= panel::kColumnClock;
-    if (rowGPU && sensors.gpuFanValid)
-        panelSensorColumns |= panel::kColumnFan;
-    in.sensorColumns = panelSensorColumns;
+    panelHardware.Apply(in);
+    panelSensorColumns = in.sensorColumns;
+    panelRowMask = in.rowMask;
 
     const auto memory = [&](bool usageValid, uint64_t used, uint64_t total) {
         const MemoryValueMode mode = SelectMemoryValueMode(usageValid, used, total);
