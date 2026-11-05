@@ -16,6 +16,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DXUP native D3D11 fallback label:** the overlay no longer claims a DirectX 12 backend just because DXUP's `d3d11.dll` remains loaded after falling back to Windows' DirectX 11. Native D3D12 output still reports the full DXUP translation chain.
+
 - **DXVK D3D8 overlay label:** DirectX 8 games now show `DX8 -> Vk (DXVK)` when DXVK's D3D9 backend is also loaded, instead of being mislabeled as DirectX 9.
 
 - **Display timing and background-window recovery on busy systems:** trace-session cleanup no longer reads past its session array when Windows reports more active sessions than fit. Cleanup also preserves another CaptureEngine process's sessions when its owner cannot be queried, reclaiming them only when the owner is confirmed gone.

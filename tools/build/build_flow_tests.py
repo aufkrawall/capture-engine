@@ -37,6 +37,7 @@ FLOW_FAKE_MODULES = (
     ("third_party/capture_hook_x64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
     # One d3d9.dll file name, two translators told apart by version resource (FlowDX11OverlayApiLabel).
     ("dxup/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/dxup_version.rc")),
+    ("dxup/d3d11.dll", ("translators/frontend_stand_in.cpp", "translators/dxup_version.rc")),
     ("reshade/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/reshade_version.rc")),
     # A custom_dll_paths proxy named like the resident System32 dxgi.dll, with a translation layer's own
     # adapter, and an application module that imports dxgi.dll after the replacement is adopted

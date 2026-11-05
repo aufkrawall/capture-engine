@@ -2,6 +2,13 @@
 #include "hook/d3d12/dx12_api_label.h"
 #include "hook/pacing/pacing_trace.h"
 
+#ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) void CEFlow_DX12OverlayApiLabel(char* out, size_t size) {
+    if (out && size)
+        snprintf(out, size, "%s", Dx12OverlayApiLabel().c_str());
+}
+#endif
+
 
 bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
                               const char* phase, bool requireGameQueueDrain, bool listTouchesBackbuffer) {

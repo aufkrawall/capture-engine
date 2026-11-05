@@ -26,8 +26,8 @@ inline unsigned long long DxupLabelEvidence() {
            (static_cast<unsigned long long>(DX11Hook_HighestApplicationMinor() & 0xFF) << 24);
 }
 
-// "DX9 -> DX11 -> DX12 (DXUP)", "DX9 -> DX12 (DXUP)", "DX11.1 -> DX12 (DXUP)"; empty when no DXUP module is loaded. `d3d11Minor` is
-// the application's D3D11.x for a D3D11 game.
+// Empty when no DXUP module is loaded. `d3d11Minor` is the application's D3D11.x for a D3D11 game.
+// The caller supplies the rendering backend: DXUP's d3d11.dll stays loaded on native D3D11 fallback.
 inline std::string DxupOverlayApiLabel(unsigned d3d11Minor, bool isD3D12Backend = false) {
     using ce::api_translator::IsDxupModuleLoaded;
     namespace identity = ce::graphics_api_identity;
@@ -41,9 +41,8 @@ inline std::string DxupOverlayApiLabel(unsigned d3d11Minor, bool isD3D12Backend 
                                                        ddraw && WasDirectDrawInterfaceObserved(),
                                                        d3d9 && WasGameD3D9DeviceCreated());
     const bool intermediateDx11 = IsDxupModuleLoaded("d3d11.dll");
-    const bool dx12 = isD3D12Backend || intermediateDx11;
     return identity::DxupFrontendLabel(
         frontend, static_cast<identity::DirectDrawVersion>(DDrawHook_ActiveDirectDrawVersion()),
         DDrawHook_ActiveLegacyD3DVersion(), frontend == identity::DxupFrontend::kD3D9 && WasGameD3D9ExDeviceCreated(),
-        d3d11Minor, intermediateDx11, dx12);
+        d3d11Minor, intermediateDx11, isD3D12Backend);
 }

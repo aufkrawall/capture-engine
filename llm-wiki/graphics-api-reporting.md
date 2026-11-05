@@ -59,19 +59,27 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
 - D3D12 labels come from `Dx12OverlayApiLabel()` (`hook/d3d12/dx12_api_label.h`) on every D3D12 overlay path:
   `DX12 -> Vk (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 -> Vk (VKD3D)`
   for Wine's vkd3d, else `DX12`. DXUP games come first: DXUP (Oblivionevil fork; local clones
-  `build/diagnostics/dxup-source` at 0.8.1 and, current, `..\DXUP` next to this checkout at 94ab9e2 of
-  2026-10-25) translates DirectDraw+D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12
+  `build/diagnostics/dxup-source` at 0.8.1 and, current, `..\DXUP` next to this checkout at 7801b60 of
+  2026-11-02) translates DirectDraw+D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12
   swapchain that owns the overlay (`api-translation-overrides.md`); its legacy frontends render through `d3d11.dll`/
   `dxgi.dll` - DXUP's own when they sit next to the game, else Windows' (then there is no D3D12 below; `d3d8`/`ddraw`
   link the D3D9 core statically), and it has no D3D10 frontend (`src/d3d10` is a placeholder). Its DLLs carry
   `ProductName "DXUP"` (since DXUP 58752bd, 2026-10-04), cached per image in `hook/runtime/api_translator_modules.h`.
   `SelectDxupFrontend` prefers a frontend with CE evidence (`WasGameD3D9DeviceCreated`,
   `WasDirectDrawInterfaceObserved`), else the oldest loaded one; `DxupFrontendLabel` formats the explicit pipeline
-  to show the ultimate API/driver used: `DX11 -> DX12 (DXUP)`, `DX9 -> DX11 -> DX12 (DXUP)` (when DXUP's `d3d11.dll`
-  intermediate is present), `DX9 -> DX12 (DXUP)` (when direct D3D12 wrapping is used), or `DX9 -> DX11 (DXUP)`
+  to show the ultimate API/driver used: `DX11 -> DX12 (DXUP)`, `DX9 -> DX11 -> DX12 (DXUP)` (when native D3D12
+  output owns the overlay and DXUP's `d3d11.dll` intermediate is present), `DX9 -> DX12 (DXUP)` (when direct D3D12
+  wrapping is used), or `DX9 -> DX11 (DXUP)`
   (when running over Windows' D3D11 without D3D12 beneath). Both live in `DxupOverlayApiLabel`
   (`hook/runtime/dxup_api_label.h`). The D3D12 label and CE's D3D11 overlay both use it whenever any DXUP DLL is
-  loaded: the D3D11 swapchain also carries the D3D9/D3D8/DirectDraw games (x86 Mirror's Edge read `DX11.1 (DXUP)`,
+  loaded. The rendering path supplies the backend (`Dx12OverlayApiLabel` passes true, the D3D11 resolver false);
+  DLL presence only supplies the intermediate step. DXUP's `src/d3d11/d3d11_main.cpp::createNativeDevice` falls
+  back to Windows' D3D11 when its D3D12 device cannot be created, leaving DXUP's DLL loaded. A native D3D11 game
+  then keeps `DX11`/`DX11.1`, while its legacy frontends end at `DX11 (DXUP)` (2026-11-05).
+  Both resolvers are checked with that same loaded module set by
+  `FlowDX11OverlayApiLabel.LoadedDxupD3D11DoesNotOverrideTheRenderingBackend`, including frontend load/unload
+  cache invalidation; its translator DLLs are stand-ins, not a forced hardware device-creation failure. The
+  D3D11 swapchain also carries the D3D9/D3D8/DirectDraw games (x86 Mirror's Edge read `DX11.1 (DXUP)`,
   session 20261018_143747). Until 2026-10-22 the D3D11 overlay asked for DXUP's `d3d11`/`dxgi` only, so Mirror's
   Edge with DXUP's `d3d9.dll` alone (Windows' D3D11 below) read `DX11` (20261022_162106). Flow pins:
   `FlowDX11OverlayApiLabel` (stand-in `d3d9.dll`s under `tests/flow/fakes/translators`: DXUP's version resource ->
