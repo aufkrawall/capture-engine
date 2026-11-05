@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-05 - 0.1.7423 run: XeFG straight after DLSS works; the stall's stack repeats; the CSV line fix not exercised
+
+- **Session `20261105_014611`, Talos only, exit 0, no device removal:** DLSS FG from the start, XeFG's chain 01:47:03.76 (generating 01:47:05.24), Alt+Tab away 01:47:15.3 and back 01:47:20.99 while generating, exit 01:47:29.6. The one handoff `endedWithoutOverlay=0 missing=0`.
+- **XeFG straight after DLSS validated:** every cadence window 2x, application 43-44 fps, output 84-87, `published=2x`. `Pacing health` jag 1042-1243 us, stddev 980-1070 us. The switch's no-present gap is 1472 ms: CE logged nothing for its first 1.24 s, and the last 0.23 s is the game's XeFG create sequence, in which CE's swapchain create took 10 ms. No CE-off comparison exists.
+- **Alt+Tab during XeFG generation:** no slow overlay submit, largest gap 41 ms in that stretch, 82 presents/s, `overlay_us` 107/209 against 107/204 in the foreground. Not a minimize: no `presentability` line, so that case is still open.
+- **Stall again, same stack:** 10.96 ms, frame 4907, the second frame on the new chain after a 1469 ms gap, same frames as 01:20:33 (`NtGdiDdDDIWaitForSynchronizationObjectFromCpu` < D3D12Core+0x118dd < +0x12c61 < nvwgf2umx+0x2c38c9 ...). No stall on either focus edge.
+- **The CSV line fix did not run:** only two `[PERF CSV]` lines and `perf_row` 0.5, but this run used only two routes, which never overflowed the old gate either. The unit test stays the proof until a run with five routes (DLSS, FSR, XeFG, DLSS again).
+- **Correction to the 0.1.7422 entry:** XeFG's 6 ms `present_call_us` is only while it does not generate. Generating: 214/323 us here, 214/334 in `20261105_011907`. All 190 slow calls of the 01:47:09 window fit the 1.48 s before generation started, at the display rate with the vblank CE states. The 6006/6281 quoted there mixed the two phases.
+- **Not defects:** `ThreadQuiescence: 24 and 76 peer thread(s) suspended for 16 ms` are startup hook installs (`hook_clock::TickCount64`, so one 16 ms tick, not a measured 16 ms); `qpc_delta_us` alternating 0.5 and 22.5 ms on XeFG is its pairs, documented in `frame-generation/xefg.md`.
+- **Still not run:** the hitch cap, a minimize.
+
 ### 2026-11-05 - 0.1.7422 run: the early submit stall is NVIDIA's driver inside ECL; the next-run list validated; one CSV log line fires on every Present
 
 - **Session `20261105_011907`, Talos only, exit 0, no device removal:** DLSS FG from the start, FSR 01:20:21.8, FSR off 01:20:26.9, XeFG's chain 01:20:32.9 (generating 01:20:35.8), DLSS FG again 01:20:52.7. All three handoffs `endedWithoutOverlay=0 missing=0`. XeFG -> DLSS had not run before and works, through the post-FSR bypass. Still not run: the hitch cap, a minimize, XeFG straight after DLSS.
