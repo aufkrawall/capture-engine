@@ -4,9 +4,14 @@
 
 Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7159).
 
+### New
+
+- **Overlay font choice:** `[Overlay] font` picks any installed font and `font_weight` its weight; `font_size` now works too. A font that is not installed falls back to the default instead of whatever Windows substitutes. Font settings apply the next time the game starts.
+
 ### Improved
 
 - **Sharper, steadier overlay text:** numbers no longer twitch sideways as their digits change, whatever the font, and the overlay now uses Bahnschrift SemiBold when it is available, which needs less row height for the same digit size. A font that is not installed is now really detected, so the fallback to Segoe UI and Arial works.
+- **Overlay stays readable on bright scenes:** the default panel opacity rose from 50% to 72%. At 50% over a white scene the panel turned mid-grey, where red REC text all but vanished. An existing `config.ini` keeps its own `bg_alpha` until you change it.
 
 - **Graphics API translation reporting in the overlay:** when games run through 3D API translation layers or wrappers, the overlay now reports the complete translation chain ending in the underlying graphics driver rather than an ambiguous wrapper label. This clarifies the active presentation API and intermediate steps, reporting pipelines such as `DX9 -> Vk (DXVK)`, `DX12 -> Vk (VKD3D-Proton)`, `DX9 -> DX12 (DXUP)`, `DX9 -> DX11 -> DX12 (DXUP)`, and `DX11 -> DX12 (DXUP)`.
 

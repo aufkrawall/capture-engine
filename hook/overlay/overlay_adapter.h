@@ -123,6 +123,10 @@ public:
     uint64_t GraphOnlyFramesForTest() const {
         return frameKinds.graphOnly;
     }
+    std::string FontFaceForTest() const {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return renderer ? renderer->GetFont()->GetFaceName() : std::string{};
+    }
     // Initializes and replays the current draw list through an auxiliary
     // backend without replacing the adapter's primary backend. DirectDraw uses
     // this to keep its always-available CPU renderer while a D3D7 sidecar draws

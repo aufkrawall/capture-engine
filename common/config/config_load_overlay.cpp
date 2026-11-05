@@ -54,6 +54,36 @@ std::string ParseHardwareSensorSelector(ConfigReader& reader, const char* key, c
     return defaultValue;
 }
 
+OverlayLayout ParseOverlayLayout(std::string value) {
+    value = NormalizeConfigToken(value);
+    if (value == "list")
+        return OverlayLayout::List;
+    if (value == "meters")
+        return OverlayLayout::Meters;
+    if (value == "strip")
+        return OverlayLayout::Strip;
+    if (value != "hero")
+        LogInvalidConfigBoundary("Overlay", "layout", value, "hero");
+    return OverlayLayout::Hero;
+}
+
+// Stays empty for auto. The name reaches GDI, which reads it as a face name and nothing else, so the only
+// requirements are that it fits and carries no control characters.
+void ParseOverlayFontName(const std::string& value, char (&fontName)[sizeof(OverlayConfig::fontName)]) {
+    fontName[0] = '\0';
+    const std::string token = NormalizeConfigToken(value);
+    if (token.empty() || token == "auto")
+        return;
+    const bool printable =
+        std::all_of(value.begin(), value.end(), [](unsigned char ch) { return ch >= 0x20 && ch != 0x7F; });
+    if (!printable || value.size() >= sizeof(fontName)) {
+        LogInvalidConfigBoundary("Overlay", "font", value, "auto");
+        return;
+    }
+    value.copy(fontName, value.size());
+    fontName[value.size()] = '\0';
+}
+
 }  // namespace
 
 void LoadOverlay(ConfigReader& reader, AppConfig& config) {
@@ -106,17 +136,19 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
     config.overlay.showSystemLatency = reader.GetBool("Overlay", "show_system_latency", true);
 
     // Layout
-    config.overlay.compactMode = reader.GetBool("Overlay", "compact_mode", false);
-    config.overlay.horizontalMode = reader.GetBool("Overlay", "horizontal_mode", false);
+    config.overlay.layout = ParseOverlayLayout(reader.GetStr("Overlay", "layout", "hero"));
+    ParseOverlayFontName(reader.GetStr("Overlay", "font", "auto"), config.overlay.fontName);
+    config.overlay.fontWeight = ReadAutoOrBoundedInt(reader, "Overlay", "font_weight", 100, 900);
     config.overlay.fontSize = reader.GetBoundedFloat("Overlay", "font_size", 0.0f, 0.0f, 512.0f);
     config.overlay.roundedCorners = reader.GetBoundedFloat("Overlay", "rounded_corners", 8.0f, 0.0f, 1000.0f);
 
     // Visual Styling - MangoHud Inspired Defaults
     // 0xAABBGGRR format
 
-    // Background: Black with 0.5 Alpha
+    // Background: black at 72 %. Over a white scene 50 % leaves a #808080 panel, where pure red text has
+    // a contrast of 1.0:1 and white only 3.9:1; 72 % gives white 9.3:1 and the grey labels 5.0:1.
     config.overlay.bgColor = ParseColor("bg_color", reader.GetStr("Overlay", "bg_color", ""), 0xFF000000);
-    config.overlay.bgAlpha = reader.GetBoundedFloat("Overlay", "bg_alpha", 0.50f, 0.0f, 1.0f);
+    config.overlay.bgAlpha = reader.GetBoundedFloat("Overlay", "bg_alpha", 0.72f, 0.0f, 1.0f);
 
     // Colors: Using MangoHud's default palette
     // Green: 2E9762 -> ImGui: 0xFF62972E
@@ -130,7 +162,7 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
     config.overlay.ramColor = ParseColor("ram_color", reader.GetStr("Overlay", "ram_color", ""), 0xFF9366C2);
     config.overlay.vramColor = ParseColor("vram_color", reader.GetStr("Overlay", "vram_color", ""), 0xFF265FAD);
     config.overlay.frametimeColor =
-        ParseColor("frametime_color", reader.GetStr("Overlay", "frametime_color", ""), 0xFF00FF00);
+        ParseColor("frametime_color", reader.GetStr("Overlay", "frametime_color", ""), 0xFF05FAB8);
     config.overlay.textColor = ParseColor("text_color", reader.GetStr("Overlay", "text_color", ""), 0xFFFFFFFF);
 
     // Text Outline

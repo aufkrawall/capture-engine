@@ -138,8 +138,19 @@ bool OverlayAdapter::InitializeBackendLocked(CustomOverlay::RendererBackend* new
         return true;
     }
 
+    // The font is resolved once, like the DPI scale: the atlas is uploaded with the backend. Most routes
+    // initialize before they call SetIPCClient, so the process' own client stands in for a missing one.
+    CustomOverlay::FontRequest font;
+    OverlayConfig fontConfig{};
+    if (IPCClient* configSource = ipc ? ipc : g_IPC; configSource && configSource->GetSharedMem()) {
+        fontConfig = configSource->GetSharedMem()->ReadOverlayConfig();
+        font.face = fontConfig.fontName;
+        font.weight = fontConfig.fontWeight;
+        font.basePixelSize = fontConfig.fontSize;
+    }
+
     auto newRenderer = std::make_unique<CustomOverlay::Renderer>();
-    if (!newRenderer->Initialize(newBackend, dpiScale)) {
+    if (!newRenderer->Initialize(newBackend, dpiScale, font)) {
         HookLogImportant("[Overlay] Init%s: Renderer::Initialize FAILED (dpiScale=%.2f)", backendName, dpiScale);
         delete newBackend;
         return false;

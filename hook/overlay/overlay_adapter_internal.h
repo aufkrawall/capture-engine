@@ -65,9 +65,9 @@ inline bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) 
            a.showGPU == b.showGPU &&
            a.showRAM == b.showRAM && a.showVRAM == b.showVRAM && a.showRecording == b.showRecording &&
            a.warnNotRecording == b.warnNotRecording && a.showFG == b.showFG &&
-           a.showSystemLatency == b.showSystemLatency && a.position == b.position &&
-           a.padding == b.padding &&
-           a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode && a.fontSize == b.fontSize &&
+           a.showSystemLatency == b.showSystemLatency && a.position == b.position && a.layout == b.layout &&
+           a.padding == b.padding && a.fontSize == b.fontSize && a.fontWeight == b.fontWeight &&
+           std::strcmp(a.fontName, b.fontName) == 0 &&
            a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor && a.bgAlpha == b.bgAlpha &&
            a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor && a.gpuColor == b.gpuColor &&
            a.ramColor == b.ramColor && a.vramColor == b.vramColor && a.frametimeColor == b.frametimeColor &&

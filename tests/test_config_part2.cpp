@@ -277,7 +277,7 @@ TEST_F(ConfigTest, OverlayAndPseudoOverlayValuesRespectDocumentedBounds) {
     EXPECT_EQ(config.overlay.padding, 10);
     EXPECT_FLOAT_EQ(config.overlay.fontSize, 0.0f);
     EXPECT_FLOAT_EQ(config.overlay.roundedCorners, 8.0f);
-    EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.5f);
+    EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.72f);
     EXPECT_EQ(config.overlay.bgColor, 0xFF000000u);
     EXPECT_EQ(config.overlay.fpsColor, 0xFF332211u);
     EXPECT_FLOAT_EQ(config.overlay.textOutlineThickness, 1.5f);
@@ -287,6 +287,51 @@ TEST_F(ConfigTest, OverlayAndPseudoOverlayValuesRespectDocumentedBounds) {
     EXPECT_EQ(config.pseudoOverlay.pos, 0);
     EXPECT_EQ(config.pseudoOverlay.mode, 0);
     EXPECT_EQ(config.pseudoOverlay.foregroundAcquireGraceMs, 2000);
+}
+
+TEST_F(ConfigTest, OverlayLayoutNamesAndInvalidValues) {
+    const struct {
+        const char* value;
+        OverlayLayout expected;
+    } cases[] = {{"hero", OverlayLayout::Hero},   {"list", OverlayLayout::List},
+                 {"Meters", OverlayLayout::Meters}, {" STRIP ", OverlayLayout::Strip},
+                 {"horizontal", OverlayLayout::Hero}, {"", OverlayLayout::Hero}};
+    for (const auto& testCase : cases) {
+        WriteConfig(std::string("[Overlay]\nlayout=") + testCase.value + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_EQ(config.overlay.layout, testCase.expected) << testCase.value;
+    }
+}
+
+TEST_F(ConfigTest, OverlayFontNameAndWeight) {
+    {
+        WriteConfig("[Overlay]\nfont=Cascadia Mono SemiBold\nfont_weight=600\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_STREQ(config.overlay.fontName, "Cascadia Mono SemiBold") << "the name keeps its case";
+        EXPECT_EQ(config.overlay.fontWeight, 600);
+    }
+    for (const char* autoValue : {"auto", "AUTO", ""}) {
+        WriteConfig(std::string("[Overlay]\nfont=") + autoValue + "\nfont_weight=auto\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_STREQ(config.overlay.fontName, "") << autoValue;
+        EXPECT_EQ(config.overlay.fontWeight, 0);
+    }
+    {
+        WriteConfig("[Overlay]\nfont=" + std::string(64, 'x') + "\nfont_weight=950\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_STREQ(config.overlay.fontName, "") << "a name that does not fit is refused, not truncated";
+        EXPECT_EQ(config.overlay.fontWeight, 0);
+    }
+    {
+        WriteConfig("[Overlay]\nfont=" + std::string(63, 'y') + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_EQ(std::string(config.overlay.fontName), std::string(63, 'y'));
+    }
 }
 
 TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {

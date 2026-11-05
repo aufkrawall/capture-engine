@@ -461,11 +461,22 @@ show_fg=true
 ; markers, "Latency est." combines measured Present-to-display time with frame
 ; cadence. Neither value includes peripheral or physical display-scanout delay.
 show_system_latency=true
-; compact_mode reduces spacing. horizontal_mode puts metrics in a row instead of
-; a vertical list.
-compact_mode=false
-horizontal_mode=false
-; 0 chooses the size automatically.
+; How the values are arranged. Changes apply while a game runs.
+;   hero   - large FPS with its graph, GPU and CPU in one table
+;   list   - one row per value, grouped, with aligned columns
+;   meters - load and memory as bars
+;   strip  - a narrow band along the screen edge, for the least covered area
+layout=hero
+; Any installed font, by the name Windows lists. auto uses Bahnschrift SemiBold,
+; or Segoe UI if it is missing. Good alternatives: Segoe UI Semibold,
+; Bahnschrift SemiBold SemiCondensed (narrower, suits layout=strip),
+; Cascadia Mono SemiBold, Consolas, Tahoma. A font that is not installed falls
+; back to auto. Font settings apply the next time the game starts.
+font=auto
+; 100 (thin) to 900 (black). auto draws a font that names its weight as designed
+; and any other font bold.
+font_weight=auto
+; Size in pixels at 100% Windows display scale. 0 uses 14.
 font_size=0
 ; Corner radius in pixels. 0 makes square corners.
 rounded_corners=8
@@ -475,13 +486,13 @@ text_update_interval=500
 ; Colors use six RGB hex digits. A leading # is optional. bg_alpha uses 0 for a
 ; transparent background and 1 for an opaque one.
 bg_color=000000
-bg_alpha=0.50
+bg_alpha=0.72
 fps_color=B8FA05
 cpu_color=2E9762
 gpu_color=2E9762
 ram_color=C26693
 vram_color=AD5F26
-frametime_color=00FF00
+frametime_color=B8FA05
 text_color=FFFFFF
 text_outline=true
 text_outline_color=000000

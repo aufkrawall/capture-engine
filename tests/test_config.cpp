@@ -59,8 +59,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
     EXPECT_EQ(config.overlay.frameTimeSource, FrameTimeSource::DisplayChange);
     EXPECT_TRUE(config.overlay.showSystemLatency);
-    EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.5f);
+    EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.72f);
     EXPECT_EQ(config.overlay.fpsColor, 0xFF05FAB8u);
+    EXPECT_EQ(config.overlay.frametimeColor, 0xFF05FAB8u);
+    EXPECT_EQ(config.overlay.layout, OverlayLayout::Hero);
+    EXPECT_STREQ(config.overlay.fontName, "");
+    EXPECT_EQ(config.overlay.fontWeight, 0);
     EXPECT_TRUE(config.pseudoOverlay.enabled);
     EXPECT_EQ(config.pseudoOverlay.mode, 2);
     EXPECT_TRUE(config.pseudoOverlay.showEncoderOverloadWarn);
@@ -94,6 +98,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
     EXPECT_NE(generatedText.find("frametime_source=display_change"), std::string::npos);
     EXPECT_NE(generatedText.find("show_system_latency=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("layout=hero"), std::string::npos);
+    EXPECT_NE(generatedText.find("font=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("font_weight=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("bg_alpha=0.72"), std::string::npos);
+    EXPECT_EQ(generatedText.find("horizontal_mode"), std::string::npos);
+    EXPECT_EQ(generatedText.find("compact_mode"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=auto"), std::string::npos);
     EXPECT_EQ(generatedText.find("copy_queue_priority"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);

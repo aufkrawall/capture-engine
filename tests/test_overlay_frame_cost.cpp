@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "hook/metrics/performance_metrics.h"
@@ -170,6 +172,35 @@ void PublishDisplayLine(SharedDisplayTiming& timing, int samples) {
     const int64_t now = VirtualOverlayClock::NowUs();
     for (int i = 0; i <= samples; ++i)
         timing.Publish(now - 30'000 - (samples - i) * 7'000, now);
+}
+
+// The font is only ever read when the renderer is created, so it must already come from the config there.
+TEST(OverlayFontConfigTest, TheConfiguredFontReachesTheAtlasAndAMissingOneFallsBack) {
+    for (const auto& [configured, expected] :
+         {std::pair<const char*, const char*>{"Arial", "Arial"}, {"CE No Such Font Face", "Bahnschrift SemiBold"}}) {
+        auto shm = std::make_unique<SharedMemoryLayout>();
+        OverlayConfig cfg{};
+        cfg.showOverlay = true;
+        std::snprintf(cfg.fontName, sizeof(cfg.fontName), "%s", configured);
+        cfg.fontWeight = 400;
+        cfg.fontSize = 18.0f;
+        shm->BeginWriteOverlayConfig();
+        shm->overlayConfig = cfg;
+        shm->EndWriteOverlayConfig();
+        IPCClient ipc;
+        ipc.AttachIsolatedHostMemory(shm.get());
+        BackendCounts counts;
+        OverlayAdapter adapter;
+        adapter.SetIPCClient(&ipc);
+        ASSERT_TRUE(adapter.InitCustom(new CountingBackend(counts), OverlayBackendType::DX11));
+        const std::string face = adapter.FontFaceForTest();
+        adapter.Shutdown();
+        // A system without Bahnschrift falls through the same chain to Segoe UI.
+        if (std::string(expected) == "Arial")
+            EXPECT_EQ(face, expected);
+        else
+            EXPECT_NE(face, configured);
+    }
 }
 
 TEST(OverlayFrameCostTest, DisplayStartupWaitsWithoutPlottingWarmPresentationHistory) {
