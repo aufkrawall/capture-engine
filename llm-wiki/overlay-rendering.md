@@ -94,6 +94,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   with DLSS-G idle (`ON but NOT interpolating`); session `20261006_150600` had the same frozen values. Divergence is
   logged as `[Overlay] FG rates diverged from the runtime's figures` (state change, at most every 10 s); the latency
   sample line carries `reportedBaseFps=`/`reportedOutputFps=` beside the measured ones.
+- DLSS-G enabled and generating nothing (`IsDLSSGGenerationIdle`, the limiter's two proofs) publishes as inactive, so menus no longer read "DLSS FG 2x" with base = output (`PublishOverlayFGMetrics`, `FG: DLSS-G is enabled and generates nothing`). Only the published status changes: runtime mode and routes stay DLSS FG. Matches XeFG in the same menu. Hardware run pending.
 - Inactive FG never reserves phantom empty rows in `BuildOverlayRowMask`, and `OverlayAdapter::RenderContent` advances `cursorY` only when text is actually rendered. This prevents blank gap lines from appearing in the overlay when FG is toggled off or during teardown transitions.
 
 ## HDR presentation and color invariants

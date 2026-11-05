@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/fg/fg_detection.h"
 #include "hook/fg/fg_session_state.h"
 #include "hook/overlay/overlay_metrics_publisher.h"
 #include "hook/metrics/performance_metrics.h"
@@ -64,6 +65,53 @@ TEST(OverlayFGStatusPublicationTest, PublishesNoFGAsBaseline) {
     EXPECT_FLOAT_EQ(metrics.GetFGBaseFPS(), 0.0f);
     EXPECT_FLOAT_EQ(metrics.GetFGOutputFPS(), 0.0f);
     EXPECT_STREQ(metrics.GetFGTypeLabel(), LabelForMetricType(0));
+}
+
+// A menu with DLSS-G enabled and generating nothing: "DLSS FG 2x" with base and output both at 144 (20261104_221303).
+TEST(OverlayFGStatusPublicationTest, DLSSGEnabledButIdleReadsOffUntilItGeneratesAgain) {
+    using ce::fg_runtime::ApplicationFrameSource;
+    using ce::fg_runtime::OutputRatioWindow;
+    const auto runFrames = [](uint32_t frames, uint32_t outputsPerFrame) {
+        for (uint32_t frame = 0; frame < frames; ++frame) {
+            for (uint32_t output = 0; output < outputsPerFrame; ++output) {
+                g_FGCompat.NoteRuntimeOutput();
+            }
+            g_FGCompat.NoteApplicationFrame(ApplicationFrameSource::kPresentHook);
+        }
+    };
+    const auto resetIdleProofs = [] {
+        g_FGCompat.SetDLSSGHealthIdle(false);
+        const bool active = g_FGCompat.IsDLSSFGApiActive();
+        g_FGCompat.SetDLSSFGActive(!active);
+        g_FGCompat.SetDLSSFGActive(active);
+    };
+    PerformanceMetrics metrics;
+    resetIdleProofs();
+
+    Publish(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 72.0f);
+    EXPECT_TRUE(metrics.IsFGActive());
+
+    g_FGCompat.SetDLSSGHealthIdle(true);
+    Publish(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 72.0f);
+    EXPECT_TRUE(metrics.IsFGActive()) << "the health report alone is what flip-metered generation looks like";
+
+    runFrames(OutputRatioWindow::kWindowFrames, 1);
+    ASSERT_TRUE(g_FGCompat.IsDLSSGGenerationIdle());
+    Publish(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 144.0f);
+    EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+    EXPECT_FLOAT_EQ(metrics.GetFGBaseFPS(), 0.0f);
+    EXPECT_FLOAT_EQ(metrics.GetFGOutputFPS(), 0.0f);
+
+    Publish(metrics, true, ce::fg_runtime::RuntimeMode::kFSRFG, 2, 144.0f, 72.0f);
+    EXPECT_TRUE(metrics.IsFGActive()) << "the DLSS-G proofs say nothing about another runtime";
+
+    runFrames(OutputRatioWindow::kWindowFrames / 4 + 1, 2);
+    ASSERT_FALSE(g_FGCompat.IsDLSSGGenerationIdle());
+    Publish(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 72.0f);
+    EXPECT_TRUE(metrics.IsFGActive()) << "generation resumed";
+    EXPECT_EQ(metrics.GetFGMultiplier(), 2);
+    resetIdleProofs();
 }
 
 TEST(OverlayFGStatusPublicationTest, PublishesFSRAndDlssMultipliersConsistently) {
