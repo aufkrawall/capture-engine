@@ -647,7 +647,8 @@ bool ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard::InlineHandledFo
     return dx12_hook_s_forwardedCreateSwapchainForHwndInlineHandled;
 }
 
- ScopedCEOverlayECLSubmission::ScopedCEOverlayECLSubmission(const char* reason) : previousReason_(dx12_hook_s_insideCEOverlayECLReason) {
+ ScopedCEOverlayECLSubmission::ScopedCEOverlayECLSubmission(const char* reason)
+    : previousReason_(dx12_hook_s_insideCEOverlayECLReason), submitProbe_(reason) {
     ++dx12_hook_s_insideCEOverlayECLDepth;
     dx12_hook_s_insideCEOverlayECLReason = reason;
 }

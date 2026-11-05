@@ -81,9 +81,11 @@ size_t UnwindStackCopy(const StackCopy& copy, uint64_t* frames, size_t maxFrames
 // " module+0xoffset" per frame (" 0x..." when no module holds it).
 int FormatStackFrames(const uint64_t* frames, size_t count, char* buffer, size_t bufferSize);
 
-// Production wiring (present_stall_stack.cpp), present thread. Arm at the
-// down-call's entry while capture runs; Disarm right after it returns.
-void ArmStackSample();
+// Production wiring (present_stall_stack.cpp), present thread. Arm at a call's
+// entry; Disarm right after it returns. Arm's `what` (a string literal) names
+// the call in the log: the down-call while capture runs or after a presentation
+// change, CE's overlay submit after one (presentation_change.h).
+void ArmStackSample(const char* what = "down-call");
 void DisarmStackSample();
 
 }  // namespace ce::present_stall

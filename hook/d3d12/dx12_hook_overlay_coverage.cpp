@@ -164,6 +164,7 @@ double MicrosToMillis(uint64_t us) {
 void LogSwapchainPresentEvent(const ce::dx12_overlay_policy::SwapchainPresentEvent& event) {
     using ce::dx12_overlay_policy::PresentOverlayStateName;
     if (event.handoff) {
+        ce::present_stall::NotePresentationChange("swapchain handoff");
         static std::atomic<int> s_handoffLogCount{0};
         const int n = s_handoffLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (n <= 300 || (n % 50) == 0) {

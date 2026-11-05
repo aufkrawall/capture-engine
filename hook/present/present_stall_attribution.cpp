@@ -2,6 +2,7 @@
 #include "present_flip_timing.h"
 #include "present_stall_period.h"
 #include "present_stall_stack.h"
+#include "presentation_change.h"
 #include "hook/runtime/hook_clock.h"
 
 #include "hook/metrics/hook_cpu_cost.h"
@@ -249,6 +250,60 @@ void ReportPresentStallIfDue() {
     }
 }
 
+PresentationChangeWatch& PresentationChange() {
+    static PresentationChangeWatch watch;
+    return watch;
+}
+
+void NotePresentationChange(const char* why) {
+    PresentationChange().Note(why, HookQpcTicks());
+}
+
+int FormatSlowOverlaySubmit(double durationMs, const char* reason, bool sampled, const char* change, double sinceChangeMs,
+                            char* buffer, size_t bufferSize) {
+    if (buffer == nullptr || bufferSize == 0) {
+        return 0;
+    }
+    const int written =
+        change != nullptr
+            ? std::snprintf(buffer, bufferSize,
+                            "[OVERLAY SUBMIT] slow %.2fms reason=%s stackArmed=%d lastPresentationChange=%s %.1fms earlier",
+                            durationMs, reason != nullptr ? reason : "?", sampled ? 1 : 0, change, sinceChangeMs)
+            : std::snprintf(buffer, bufferSize,
+                            "[OVERLAY SUBMIT] slow %.2fms reason=%s stackArmed=%d lastPresentationChange=none", durationMs,
+                            reason != nullptr ? reason : "?", sampled ? 1 : 0);
+    return Clamp(written, bufferSize);
+}
+
+OverlaySubmitProbe::OverlaySubmitProbe(const char* reason)
+    : reason_(reason), startTicks_(HookQpcTicks()), sampled_(PresentationChange().TakeCall()) {
+    if (sampled_) {
+        ArmStackSample("overlay submit");
+    }
+}
+
+OverlaySubmitProbe::~OverlaySubmitProbe() {
+    if (sampled_) {
+        DisarmStackSample();
+    }
+    const int64_t nowTicks = HookQpcTicks();
+    const double elapsedUs = static_cast<double>(nowTicks - startTicks_) * HookQpcTicksToUs();
+    if (elapsedUs < static_cast<double>(kSlowOverlaySubmitUs)) {
+        return;
+    }
+    static std::atomic<uint32_t> s_slow{0};
+    const uint32_t slow = s_slow.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (slow > 32 && (slow % 64) != 0) {
+        return;
+    }
+    const PresentationChangeWatch& watch = PresentationChange();
+    char line[256];
+    FormatSlowOverlaySubmit(elapsedUs / 1000.0, reason_, sampled_, watch.Why(),
+                            static_cast<double>(nowTicks - watch.AtTicks()) * HookQpcTicksToUs() / 1000.0, line,
+                            sizeof(line));
+    HookLogImportant("%s", line);
+}
+
 DownCallProbe::DownCallProbe(bool d3d12) {
     if (!d3d12) {
         return;
@@ -256,9 +311,9 @@ DownCallProbe::DownCallProbe(bool d3d12) {
     armed_ = true;
     entry_ = InvokeDX12SampleCaptureCopyProgress();
     startTicks_ = HookQpcTicks();
-    // While capture runs, a call still inside after kStackSampleAfterUs gets
-    // its stack sampled (present_stall_stack.h).
-    if (entry_.valid) {
+    // While capture runs, or right after a presentation change, a call still inside after kStackSampleAfterUs gets its
+    // stack sampled (present_stall_stack.h, presentation_change.h).
+    if (entry_.valid || PresentationChange().TakeCall()) {
         ArmStackSample();
     }
 }
@@ -267,7 +322,7 @@ void DownCallProbe::Restart() {
     if (armed_) {
         entry_ = InvokeDX12SampleCaptureCopyProgress();
         startTicks_ = HookQpcTicks();
-        if (entry_.valid) {
+        if (entry_.valid || PresentationChange().TakeCall()) {
             ArmStackSample();
         }
     }

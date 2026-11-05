@@ -19,6 +19,7 @@
 
 #include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"
 #include "hook/d3d12/dx12_overlay_policy/protected_ffx_startup.h"
+#include "hook/present/presentation_change.h"
 
 // Type definitions moved out of dx12_hook_internal.h so every unit stays <= 800 lines.
 
@@ -344,6 +345,7 @@ ScopedCEOverlayECLSubmission(const char* reason);
 
 private:
     const char* previousReason_ = nullptr;
+    ce::present_stall::OverlaySubmitProbe submitProbe_;
 };
 
 struct ProgressResolvedOfficialFFXOverlayFallbackProof {

@@ -202,6 +202,7 @@ extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(const c
         const int prevState = s_lastForegroundState.exchange(fgState, std::memory_order_acq_rel);
         if (prevState != -1 && prevState != fgState) {
             dx12_hook_g_FocusTransitionHoldFrames.store(dx12_hook_kFocusTransitionHoldFrames, std::memory_order_release);
+            ce::present_stall::NotePresentationChange(fgState ? "foreground regained" : "foreground lost");
             HookLogImportant(
                 "DX12: Focus-change edge (%s) — holding overlay/capture backbuffer work for up to %d Presents to "
                 "clear the iflip<->composited mode switch (present=%s#%d game=%p)",

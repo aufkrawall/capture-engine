@@ -167,6 +167,7 @@ struct Sampler {
     StackSampleBudget budget;
     std::atomic<HANDLE> target{nullptr};
     std::atomic<DWORD> targetThreadId{0};
+    std::atomic<const char*> what{"down-call"};
     std::atomic<int64_t> armedQpc{0};
     std::atomic<uint64_t> armedCall{0};
     std::atomic<uint64_t> doneCall{0};
@@ -218,8 +219,8 @@ DWORD WINAPI SamplerThread(void* parameter) {
                 ? static_cast<double>(sampled.QuadPart - sampler.armedQpc.load(std::memory_order_relaxed)) * 1000.0 /
                       static_cast<double>(frequency.QuadPart)
                 : 0.0;
-        HookLogImportant("[PRESENT STALL] stack #%u down-call blocked %.2fms (tid=%lu frames=%zu stackBytes=%zu):%s",
-                         sampler.budget.taken(), blockedMs,
+        HookLogImportant("[PRESENT STALL] stack #%u %s blocked %.2fms (tid=%lu frames=%zu stackBytes=%zu):%s",
+                         sampler.budget.taken(), sampler.what.load(std::memory_order_relaxed), blockedMs,
                          static_cast<unsigned long>(sampler.targetThreadId.load(std::memory_order_relaxed)), count,
                          sampler.copy.bytes(), text);
     }
@@ -274,7 +275,7 @@ thread_local uint64_t t_armedCall = 0;
 
 }  // namespace
 
-void ArmStackSample() {
+void ArmStackSample(const char* what) {
 #if defined(_M_X64)
     t_armedCall = 0;
     Sampler* sampler = SamplerInstance();
@@ -291,6 +292,7 @@ void ArmStackSample() {
     const uint64_t call = sampler->nextCall.fetch_add(1, std::memory_order_relaxed) + 1;
     sampler->target.store(t_self, std::memory_order_relaxed);
     sampler->targetThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    sampler->what.store(what, std::memory_order_relaxed);
     sampler->armedQpc.store(now.QuadPart, std::memory_order_relaxed);
     sampler->armedCall.store(call, std::memory_order_release);
     LARGE_INTEGER due{};
@@ -298,6 +300,8 @@ void ArmStackSample() {
     if (SetWaitableTimer(sampler->timer, &due, 0, nullptr, nullptr, FALSE)) {
         t_armedCall = call;
     }
+#else
+    (void)what;
 #endif
 }
 
