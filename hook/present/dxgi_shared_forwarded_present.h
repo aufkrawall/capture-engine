@@ -29,9 +29,7 @@ HRESULT ExecuteStandaloneOutputBypass(IDXGISwapChain* pSwapChain, UINT SyncInter
     using CostScope = ce::present_stage_cost::StageScope;
     // Opened before the draw, so total_us covers it. PostSL logs no row of its own, so this one is the frame's.
     ForwardedPresentRecord record(true, route);
-    const int64_t drawStartUs = record.NowUs();
     InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
-    record.NoteOverlaySince(drawStartUs);
 
     RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, route);
 

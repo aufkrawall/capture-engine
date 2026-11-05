@@ -25,6 +25,17 @@ void LogRowOwner(const char* site, const FrameMetrics& metrics, RowOwner owner) 
     }
 }
 
+// overlay_us read 0 on every PostSL route and total_us about 8 us, with CE spending 116-172 us per Present
+// (20261104_221303), so the CSV showed DLSS FG as free. A draw that started before `totalSpanStartUs` is outside the span
+// total_us measures.
+void AddDrawOutsideRow(FrameMetrics& row, int64_t totalSpanStartUs) {
+    const PerfLogger::DrawOutsideRow draw = PerfLogger::TakeDrawOutsideRow();
+    row.overlayUs += draw.durationUs;
+    if (draw.startUs < totalSpanStartUs) {
+        row.totalUs += draw.durationUs;
+    }
+}
+
 }  // namespace
 
 DX11PresentPerfRow::DX11PresentPerfRow(bool enabled, const char* api, const char* site, bool holdsInnerRow)
@@ -78,6 +89,7 @@ DX11PresentPerfRow::~DX11PresentPerfRow() {
     // The CPU prerender wait of this present: the detour waits before the row of an inner present
     // opens, and inside the row of a wrapper present. Not part of total_us.
     metrics_.prerenderWaitUs = TakeD3D11PrerenderWaitUs();
+    AddDrawOutsideRow(metrics_, metrics_.qpcUs);
     PerfLogger::Get().LogFrame(metrics_);
     LogRowOwner(site_, metrics_, RowOwner::kLogged);
 }
@@ -97,6 +109,8 @@ void DX11PresentPerfRow::LogHeldRow() {
     if (fpsLimitNoted_) {
         row.fpsLimitWaitUs = metrics_.fpsLimitWaitUs;
     }
+    // A held row's total_us is its ProcessFrame's span, which a PostSL draw is never part of.
+    AddDrawOutsideRow(row, held_.filled ? INT64_MAX : metrics_.qpcUs);
     PerfLogger::Get().LogFrame(row);
     LogRowOwner(site_, row, held_.filled ? RowOwner::kHeldInnerRow : RowOwner::kLogged);
 }
@@ -115,12 +129,6 @@ void DX11PresentPerfRow::NoteFpsLimitWaitSince(int64_t startUs) {
     if (enabled_) {
         metrics_.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - startUs);
         fpsLimitNoted_ = true;
-    }
-}
-
-void DX11PresentPerfRow::NoteOverlaySince(int64_t startUs) {
-    if (enabled_) {
-        metrics_.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - startUs);
     }
 }
 

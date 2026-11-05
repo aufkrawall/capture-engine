@@ -139,7 +139,6 @@ TEST(ForwardedPresentRecordTest, AnInertRecordWritesNothing) {
         ForwardedPresentRecord record(false, "Streamline startup normal-route Present");
         record.TimeLimiter([] {});
         EXPECT_EQ(record.Forward([] { return E_FAIL; }), E_FAIL) << "the route's call still runs";
-        EXPECT_EQ(record.NowUs(), 0);
     }
     EXPECT_TRUE(csv.Rows().empty());
 }

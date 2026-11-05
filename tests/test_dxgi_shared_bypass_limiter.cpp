@@ -25,7 +25,6 @@ TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneBypassEndsLikeTheNormalRout
     size_t previous = route;
     for (const char* marker : {"ForwardedPresentRecord record(true, route);",
                                "InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);",
-                               "record.NoteOverlaySince(drawStartUs);",
                                "RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, route);",
                                "record.TimeLimiter(",
                                "ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, wrapperOwnsPresent,",

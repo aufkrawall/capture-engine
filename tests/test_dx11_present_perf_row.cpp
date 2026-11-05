@@ -87,28 +87,70 @@ int Column(const CsvRow& row, const char* name) {
 
 }  // namespace
 
-// DLSS FG after FSR FG with the Steam overlay wrote no row at all (20261104_210842). Its draw runs outside any
-// ProcessFrame, so the route times it itself, and the row still takes every column a frame's row has.
-TEST(DX11PresentPerfRowTest, ARouteThatTimesItsOwnDrawReportsItAsOverlay) {
+// DLSS FG after FSR FG with the Steam overlay wrote no row at all (20261104_210842). Its draw runs inside the route's own
+// row, whose span already covers it, and the row still takes every column a frame's row has.
+TEST(DX11PresentPerfRowTest, ADrawInsideTheRowsSpanCountsAsOverlayOnly) {
     PerfCsv csv("ce_dx12_bypass_perf_row");
     {
         DX11PresentPerfRow row(true, "DX12", "post-FSR confirmed standalone Present");
         ASSERT_TRUE(row.Enabled());
-        row.NoteOverlaySince(row.NowUs() - 5000);
+        PerfLogger::NoteDrawOutsideRow(row.NowUs(), 5000);
         row.NoteFpsLimitWaitSince(row.NowUs() - 3000);
         row.BeginPresentCall();
         row.EndPresentCall();
     }
     {
         DX11PresentPerfRow off(false, "DX12", "post-FSR confirmed standalone Present");
-        off.NoteOverlaySince(off.NowUs());
+        (void)off;
     }
     const std::vector<CsvRow> rows = csv.Rows();
     ASSERT_EQ(rows.size(), 1u) << "one row per Present, none while the CSV is off";
     EXPECT_EQ(rows[0].at("api"), "DX12");
-    EXPECT_GE(Column(rows[0], "overlay_us"), 5000);
+    EXPECT_EQ(Column(rows[0], "overlay_us"), 5000);
     EXPECT_GE(Column(rows[0], "fps_limit_wait_us"), 3000);
-    EXPECT_GE(Column(rows[0], "total_us"), 0);
+    EXPECT_LT(Column(rows[0], "total_us"), 5000) << "this span measured no such draw";
+}
+
+// DLSS FG's normal route draws in the routing, before the row opens, and the row is ProcessFrame's: overlay_us read 0 and
+// total_us about 8 us while CE spent 116-172 us per Present (20261104_221303).
+TEST(DX11PresentPerfRowTest, ADrawBeforeTheRowCountsInAHeldRow) {
+    PerfCsv csv("ce_dx12_postsl_held_perf_row");
+    PerfLogger::NoteDrawOutsideRow(PerfLogger::GetQpcUs(), 90);
+    {
+        DX11PresentPerfRow row(true, "DX12", "DXGIShared::DetourPresent", /*holdsInnerRow=*/true);
+        FrameMetrics inner{};
+        inner.qpcUs = PerfLogger::GetQpcUs();
+        inner.totalUs = 8;
+        inner.overlayUs = 3;
+        strncpy(inner.api, "DX12", sizeof(inner.api) - 1);
+        PerfLogger::Get().LogFrame(inner);
+    }
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(Column(rows[0], "overlay_us"), 93);
+    EXPECT_EQ(Column(rows[0], "total_us"), 98);
+}
+
+TEST(DX11PresentPerfRowTest, ADrawBeforeACatchAllRowAddsToItsTotal) {
+    PerfCsv csv("ce_dx12_postsl_catchall_perf_row");
+    PerfLogger::NoteDrawOutsideRow(PerfLogger::GetQpcUs() - 1, 1000000);
+    { DX11PresentPerfRow row(true, "DX12", "test", /*holdsInnerRow=*/true); }
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(Column(rows[0], "overlay_us"), 1000000);
+    EXPECT_GE(Column(rows[0], "total_us"), 1000000);
+}
+
+// One draw, one row: the next Present on this thread does not report it again.
+TEST(DX11PresentPerfRowTest, ADrawGoesToOneRow) {
+    PerfCsv csv("ce_dx12_postsl_once_perf_row");
+    PerfLogger::NoteDrawOutsideRow(PerfLogger::GetQpcUs(), 70);
+    { DX11PresentPerfRow first(true, "DX12", "test"); }
+    { DX11PresentPerfRow second(true, "DX12", "test"); }
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(Column(rows[0], "overlay_us"), 70);
+    EXPECT_EQ(Column(rows[1], "overlay_us"), 0);
 }
 
 TEST(DX11PresentPerfRowTest, LogsOneRowWithCEsPhasesAndTheDownCallSplit) {

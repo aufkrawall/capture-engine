@@ -195,6 +195,18 @@ bool PerfLogger::HasInnerRowSink() {
     return t_innerRowSink != nullptr;
 }
 
+static thread_local PerfLogger::DrawOutsideRow t_drawOutsideRow;
+
+void PerfLogger::NoteDrawOutsideRow(int64_t startUs, int32_t durationUs) {
+    t_drawOutsideRow = {startUs, durationUs};
+}
+
+PerfLogger::DrawOutsideRow PerfLogger::TakeDrawOutsideRow() {
+    const DrawOutsideRow draw = t_drawOutsideRow;
+    t_drawOutsideRow = {};
+    return draw;
+}
+
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
     ce::pacing_trace::Record(ce::pacing_trace::Kind::Frame, metrics.frameNum, nullptr,
         metrics.totalUs, metrics.overlayUs, metrics.fenceWaitUs, 0, metrics.qpcUs);

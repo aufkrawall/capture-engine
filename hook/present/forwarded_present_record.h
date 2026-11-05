@@ -32,10 +32,6 @@ public:
     ForwardedPresentRecord(const ForwardedPresentRecord&) = delete;
     ForwardedPresentRecord& operator=(const ForwardedPresentRecord&) = delete;
 
-    // overlay_us: a draw the route times itself.
-    int64_t NowUs() const { return row_->NowUs(); }
-    void NoteOverlaySince(int64_t startUs) { row_->NoteOverlaySince(startUs); }
-
     // fps_limit_wait_us: the limiter's pre-present wait.
     template <typename Wait>
     void TimeLimiter(Wait&& wait) {

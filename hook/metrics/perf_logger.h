@@ -154,6 +154,16 @@ public:
     // A hook further out on this thread holds its present's row, so a nested route's row would be a second one.
     static bool HasInnerRowSink();
 
+    // A PostSL overlay draw on this thread, which no ProcessFrame row covers: the draw runs in the routing before the
+    // present's row opens, or inside a row that has no frame work of its own. The present's row takes it once. Only the
+    // last draw is kept, so a thread that draws without ever writing a row cannot build up a false total.
+    struct DrawOutsideRow {
+        int64_t startUs = 0;
+        int32_t durationUs = 0;
+    };
+    static void NoteDrawOutsideRow(int64_t startUs, int32_t durationUs);
+    static DrawOutsideRow TakeDrawOutsideRow();
+
     static int64_t GetQpcUs();
     static int64_t GetQpcFrequency();
 
