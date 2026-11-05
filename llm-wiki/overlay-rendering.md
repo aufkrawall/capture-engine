@@ -50,6 +50,7 @@ Primary sources:
 - `hook/vulkan_layer/shaders/overlay_{solid,textured}.frag`
 - `hook/metrics/system_metrics.{h,cpp}`
 - `hook/overlay/overlay_layout_policy.h`
+- `hook/overlay/overlay_panel{,_internal,_draw}.h`, `overlay_panel{,_layouts,_strip,_draw}.cpp`, `overlay_font_policy.h`
 - `hook/overlay/legacy_overlay_cache.h`
 - `hook/overlay/custom_overlay_dx{8,9,10}.{h,cpp}`
 - `hook/overlay/custom_overlay_gl.{h,cpp}`
@@ -82,7 +83,20 @@ Primary sources:
 
 The inject overlay deliberately keeps the existing compact appearance and shared CPU-generated draw format. Solid geometry and textured glyphs remain batched into the existing small command set; the 2026-07-16 polish is a local visual-quality, layout-consistency, and legacy-hot-path change rather than a renderer redesign. The entire overlay stack — text, metrics, the PC-latency row, and the frame-time graph — is first-party code: API-native custom renderers, a GDI-rasterized custom font atlas, and in-repo precompiled shaders, with no Dear ImGui or other third-party overlay/UI library.
 
-## Layout and row invariants (`overlay_layout_policy.h`, `overlay_adapter_render.cpp`)
+## Layouts and the panel module (`overlay_panel.h`, 2026-11-05)
+
+- `[Overlay] layout=hero|list|meters|strip` applies live; hero is the default. `OverlayAdapter::RenderContent` fills `overlay_panel::Inputs` from its cached values, `Build` returns a `Scene` of positioned rectangles, text and one graph box in panel coordinates, `DrawScene` is the only place tones become colors. `Build` knows no graphics API, so every layout rule is tested with a fake font (`test_overlay_panel.cpp`).
+- Invariants: all layouts show the same values; the row mask alone decides what shows; every value has a column reserved for its widest form, so digit counts move nothing; GPU and CPU readings share columns. A hardware column appears with its first reading and then stays for the renderer's life (`panelSensorColumns`), so a dropped sensor reads `--` instead of resizing. Nothing shown means no panel at all.
+- Draw order is background, rectangles, text, then the graph as the tail: a backend without `DrawsShapesWithFontTexture` stays at three draw calls (`TheRowsStayInFewDrawCalls`), and the graph-only path is unchanged in all layouts.
+- Color means state. Load is amber from 85%, never red, because 99% GPU load is normal in a GPU-limited game; memory is amber from 90% and red from 97% of its total; temperature stays neutral because a safe limit differs per chip. Recording is white on a filled red chip, full width only with a warning.
+- Why 72% `bg_alpha`: over a white scene 50% gives a #808080 panel, where pure red has 1.0:1 contrast, green labels 1.8:1, white 3.9:1. At 72% (#474747) white is 9.3:1, labels 5.0:1. Existing config files keep their own value.
+- The atlas holds Base, Small (0.82x) and Hero (2.3x, digits only) in one texture, each rasterized at its own size, and sizes itself to fit instead of dropping glyphs. Digits share one advance in every font because GDI cannot select OpenType tabular figures (Segoe UI Semibold's run 8-12 px at 21 px, Bahnschrift's 7-12 px). The degree sign sits in the DEL slot.
+- `[Overlay] font`, `font_weight`, `font_size` are read once when a renderer is created, like the DPI scale, because the atlas is uploaded with the backend. Most routes initialize before `SetIPCClient`, hence the `g_IPC` fallback in `InitializeBackendLocked`. `CreateFont` substitutes silently, so only `GetTextFace` proves a font exists; GDI reads 31 characters of a name. Default chain: Bahnschrift SemiBold, Segoe UI Semibold, Segoe UI, Arial. Bahnschrift has the same digit height as Segoe UI in a 25 px instead of 30 px line at 21 px.
+- To look at a change without a game: set `CE_OVERLAY_PREVIEW_DIR` (optional `CE_OVERLAY_PREVIEW_FONT`, `CE_OVERLAY_PREVIEW_SCALE`) and run `unit_tests.exe --gtest_filter=OverlayPanelPreview*`. It writes BMPs through the real renderer, atlas and CPU rasterizer.
+- Rejected: keeping the old row renderer as a fifth layout (list is its successor, and two renderers of the same rows drift apart). Still parsed and unused: `rounded_corners`, `text_outline_thickness`, `cpu/gpu/ram/vram_color`, `load_color_*`.
+- Log: `[Overlay] Font:` at renderer creation, `[Overlay] Panel:` when layout, size or rows change. Hardware validation pending (2026-11-05).
+
+## Row invariants (`overlay_layout_policy.h`)
 
 - Frame Generation rows (`Base/Display` rates and `FG Status`) appear atomically when frame generation is active (`fgActive == true`).
 - `Base/Display` under DLSS/FSR FG is **measured** (`PerformanceMetrics::RefreshMeasuredFGRates`, 2026-10-06): output
@@ -95,7 +109,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   logged as `[Overlay] FG rates diverged from the runtime's figures` (state change, at most every 10 s); the latency
   sample line carries `reportedBaseFps=`/`reportedOutputFps=` beside the measured ones.
 - DLSS-G enabled and generating nothing (`IsDLSSGGenerationIdle`, the limiter's two proofs) publishes as inactive, so menus no longer read "DLSS FG 2x" with base = output (`PublishOverlayFGMetrics`, `FG: DLSS-G is enabled and generates nothing`). Only the published status changes: runtime mode and routes stay DLSS FG. Matches XeFG in the same menu. Hardware run pending.
-- Inactive FG never reserves phantom empty rows in `BuildOverlayRowMask`, and `OverlayAdapter::RenderContent` advances `cursorY` only when text is actually rendered. This prevents blank gap lines from appearing in the overlay when FG is toggled off or during teardown transitions.
+- Inactive FG never reserves phantom empty rows in `BuildOverlayRowMask`, and the panel gives a row space only when its mask bit is set. This prevents blank gap lines from appearing in the overlay when FG is toggled off or during teardown transitions.
 
 ## HDR presentation and color invariants
 
@@ -140,7 +154,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - OFF/DLSS/FSR transitions, DLSS-to-FSR identity changes, 2x-to-4x changes, row configuration changes, recording changes, notifications, and temporary FG-space reservation changes invalidate the cached frame immediately. OFF stays compact; the two FG rows appear or disappear atomically.
 - Pending/live recording-state transitions invalidate the frame cache. Layout measurement reserves the widest ordinary and pending recording labels, plus all known FG labels, 4x, four-digit Base/Display and FPS values, percentages, memory values/capacities, recording warnings, and notifications. Encoder warnings remain suppressed until established recording. Changing digit counts must not resize or clip an already-present row.
 - The frame-time graph retains all 180 raw samples. Its vertical ceiling is dynamic: at least 50% headroom above the recent average, at least 2x the minimum, a 33 ms floor so the 30 FPS threshold stays visible, and about 15% padding below the lowest sample; the ceiling label refreshes at most every two seconds. X positions use exact endpoint interpolation instead of a rounded step plus edge clamping. The line uses bounded miter joins with a bevel fallback and a one-physical-pixel transparent AA fringe in the existing solid draw command.
-- Glyph cells use measured GDI ink extents, two transparent texels around each cell, clipped rasterization, and `GdiFlush` before atlas reads. Text and shadow derive from one snapped physical-pixel origin. Font, colors, metrics, linear sampling, and the x86 DX12 solid-glyph-span path are unchanged.
+- Glyph cells use measured GDI ink extents, two transparent texels around each cell, clipped rasterization, and `GdiFlush` before atlas reads. Text and shadow derive from one snapped physical-pixel origin. Linear sampling and the x86 DX12 solid-glyph-span path apply to every atlas size.
 - A DX12 overlay command allocator and the persistently mapped VB/IB storage recorded through it have one GPU lifetime. Normal and PostSL draws therefore force upload slot `N` to the already-proven-complete allocator slot `N`; both pools derive their ordinary 16-slot count from `kAllocatorCoupledUploadSlotCount`. PostSL additionally guards that slot with the exact `g_State.fence` value signaled after its ECL. Never rotate the descriptor-free uploads through a smaller independent ring or publish guard zero merely because DLSS-G is active: four uploads can wrap while any of the other allocator slots remain in flight, letting the CPU mix old and new glyph vertices. The `33 ms` scale-label capture from 2026-09-13 showed the first `3` as a box while the adjacent identical `3` remained correct, which rules out the source string and atlas entry and is the characteristic per-instance geometry tear.
 - Inject-overlay scale is resolved once when its font atlas/backend is initialized from the nearest display's
   effective DPI (`GetDpiForMonitor(MDT_EFFECTIVE_DPI)`), with the shared legacy-DPI fallback. The target game

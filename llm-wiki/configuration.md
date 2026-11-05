@@ -231,6 +231,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - `[Overlay] copy_queue_priority` controls the injected D3D12 overlay's DIRECT queue priority, not a copy queue. The key name is retained for compatibility.
 - `[Overlay] frametime_source=display_change|presentation` selects the injected overlay's frame-time/FPS/variance source. `display_change` is the shipped default and includes generated output plus variable-refresh screen cadence; it falls back to presentation timing while the out-of-process timestamp stream is unavailable. `presentation` preserves the former application-presentation measurement.
 - `[Overlay] show_system_latency=true` enables the injected PC-latency row. `PC Latency~` uses Reflex/PCL frame markers but still estimates average input wait; `Latency est.` is the marker-free Present-to-display plus frame-cadence fallback. Neither includes peripherals or physical display scanout, and unsupported/stale measurements render unavailable.
+- `[Overlay] layout=hero|list|meters|strip` arranges the injected overlay and applies live; an unknown name falls back to `hero`. `font` (any installed font, `auto` or empty for Bahnschrift SemiBold with fallbacks), `font_weight` (`auto` or 100-900) and `font_size` (0 = 14 px at 100% scale) apply when the overlay is next created. A font name that does not fit its 63 bytes is refused, not truncated. `compact_mode` and `horizontal_mode` were never implemented and are gone; a config that still has them is unaffected. See `overlay-rendering.md`.
 
 ## Validation boundary
 

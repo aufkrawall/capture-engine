@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-11-05 - Overlay layouts: hero, list, meters, strip; the old row renderer is gone
+
+- **Why:** the user found the overlay crowded and slow to search. FPS sat on row 7 of 10, one bold size carried everything, seven hues signalled nothing, and values had no columns.
+- **What:** `overlay_panel` builds a positioned scene per `[Overlay] layout`; hero is the default. The atlas gained real sizes, fixed digit cells, a degree glyph and working font detection, and `font`, `font_weight`, `font_size` now work. Current rules in `overlay-rendering.md`.
+- **Verified:** unit tests plus BMPs from the real renderer, atlas and CPU rasterizer at 150% on dark and white backgrounds, in the recording, FG and stress states. Not run in a game or on any GPU backend.
+- **Config:** `bg_alpha` now defaults to 0.72 and `frametime_color` to `fps_color`, but a config.ini written from the old template keeps 0.50 and 00FF00.
+
 ### 2026-11-05 - 0.1.7423 run through every route: the CSV line fix validated; a stack shows the stall in DXGI's own submit
 
 - **Session `20261105_015452`, Talos only, exit 0, no device removal:** DLSS FG from the start, FSR 01:55:24.7, FSR off 01:55:31.4, Streamline's chain 01:55:37.7, DLSS FG 01:55:45.1, XeFG's chain 01:56:00.9 (generating 01:56:03.4), background 01:56:09.4 to 01:56:43.5 with Task Manager in front, XeFG destroyed and recreated by the game 01:56:45.7 (generating 01:56:46.1), exit 01:56:55. All four handoffs `endedWithoutOverlay=0 missing=0`, `uncovered=0` at the edges. XeFG -> XeFG had not run before: 668 ms gap, overlay drawn on the first present, 2x again at 01:56:47.
