@@ -11,6 +11,7 @@
 #include "hook/d3d11/dx11_frame_phases.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/present/dx11_present_perf_row.h"
+#include "hook/present/present_row_owner_log.h"
 
 // The perf CSV row of one DX11/DX10 present (hook/present/dx11_present_perf_row.h), the row CE's DX11
 // present hooks share, written to a real CSV. The hooks' use of it is pinned in
@@ -86,6 +87,55 @@ int Column(const CsvRow& row, const char* name) {
 }
 
 }  // namespace
+
+// A session through DLSS FG, FSR FG, XeFG and DLSS FG again runs five routes in one process (20261105_011907), and each of
+// the 15 that exist may log only its first row and its changes. The fifth used to log every row.
+TEST(PresentRowOwnerLogTest, EveryRouteLogsItsFirstRowOnlyHoweverManyRan) {
+    using DXGIShared::PresentRowOwner;
+    using DXGIShared::PresentRowOwnerLog;
+    const char* const routes[] = {"DXGIShared::DetourPresent",
+                                  "DXGIShared::DetourPresent1",
+                                  "CWrapDXGISwapChain::Present",
+                                  "CWrapDXGISwapChain::Present1",
+                                  "DXGIShared::RuntimeOwnedOutputPresent",
+                                  "Streamline startup-handoff Present",
+                                  "Streamline startup-handoff Present1",
+                                  "Streamline startup normal-route Present",
+                                  "Streamline startup normal-route Present1",
+                                  "FFX startup-handoff Present",
+                                  "FFX startup-handoff Present1",
+                                  "app-thread post-FSR Streamline startup handoff",
+                                  "app-thread post-FSR Streamline startup handoff Present1",
+                                  "post-FSR confirmed standalone Present",
+                                  "post-FSR confirmed standalone Present1"};
+    FrameMetrics row{};
+    std::strcpy(row.api, "DX12");
+    PresentRowOwnerLog log;
+    for (const char* route : routes) {
+        EXPECT_TRUE(log.Observe(route, row, PresentRowOwner::kLogged).log) << route;
+        EXPECT_FALSE(log.Observe(route, row, PresentRowOwner::kLogged).log) << route << " logged a second row";
+    }
+    for (int present = 0; present < 3; ++present) {
+        for (const char* route : routes) {
+            EXPECT_FALSE(log.Observe(route, row, PresentRowOwner::kLogged).log) << route;
+        }
+    }
+}
+
+TEST(PresentRowOwnerLogTest, ARouteLogsWhenWhatItWritesChangesAndCountsWhatItSwallowed) {
+    using DXGIShared::PresentRowOwner;
+    FrameMetrics row{};
+    std::strcpy(row.api, "DX12");
+    DXGIShared::PresentRowOwnerLog log;
+    const char* const route = "DXGIShared::DetourPresent";
+    EXPECT_TRUE(log.Observe(route, row, PresentRowOwner::kHeldInnerRow).log);
+    EXPECT_FALSE(log.Observe(route, row, PresentRowOwner::kHeldInnerRow).log);
+    const auto changed = log.Observe(route, row, PresentRowOwner::kLogged);
+    EXPECT_TRUE(changed.log) << "the catch-all replaced the frame's own row";
+    EXPECT_EQ(changed.suppressed, 1u);
+    std::strcpy(row.api, "DX11");
+    EXPECT_TRUE(log.Observe(route, row, PresentRowOwner::kLogged).log) << "another API on the same hook";
+}
 
 // DLSS FG after FSR FG with the Steam overlay wrote no row at all (20261104_210842). Its draw runs inside the route's own
 // row, whose span already covers it, and the row still takes every column a frame's row has.

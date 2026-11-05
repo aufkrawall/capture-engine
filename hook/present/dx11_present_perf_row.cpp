@@ -3,6 +3,7 @@
 #include "dxgi_shared_internal.h"
 #include "common/logging/log_meter.h"
 #include "hook/d3d11/dx11_frame_phases.h"
+#include "hook/present/present_row_owner_log.h"
 #include "hook/metrics/perf_row_source_stats.h"
 #include "hook/metrics/performance_metrics.h"
 
@@ -11,15 +12,13 @@
 namespace DXGIShared {
 namespace {
 
-enum class RowOwner : uint8_t { kLogged, kReplacedByInnerRow, kHeldInnerRow };
-
-void LogRowOwner(const char* site, const FrameMetrics& metrics, RowOwner owner) {
-    static ce::log_meter::StreamChangeGate<4> s_ownerGate;
-    const auto verdict = s_ownerGate.Observe(ce::log_meter::FieldKey(site), ce::log_meter::FieldKey(metrics.api, owner));
+void LogRowOwner(const char* site, const FrameMetrics& metrics, PresentRowOwner owner) {
+    static PresentRowOwnerLog s_ownerLog;
+    const auto verdict = s_ownerLog.Observe(site, metrics, owner);
     if (verdict) {
-        const char* const how = owner == RowOwner::kReplacedByInnerRow ? "the forwarded present logged its own row"
-                                : owner == RowOwner::kHeldInnerRow    ? "the frame's own row, with the down-call split"
-                                                                      : "logged";
+        const char* const how = owner == PresentRowOwner::kReplacedByInnerRow ? "the forwarded present logged its own row"
+                                : owner == PresentRowOwner::kHeldInnerRow ? "the frame's own row, with the down-call split"
+                                                                          : "logged";
         HookLog("[PERF CSV] present row of %s (api=%s): %s%s", site, metrics.api, how,
                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
@@ -78,7 +77,7 @@ DX11PresentPerfRow::~DX11PresentPerfRow() {
         return;
     }
     if (PerfLogger::InnerRowLoggedInPresentRowScope()) {
-        LogRowOwner(site_, metrics_, RowOwner::kReplacedByInnerRow);
+        LogRowOwner(site_, metrics_, PresentRowOwner::kReplacedByInnerRow);
         return;
     }
     const int64_t endUs = PerfLogger::GetQpcUs();
@@ -91,7 +90,7 @@ DX11PresentPerfRow::~DX11PresentPerfRow() {
     metrics_.prerenderWaitUs = TakeD3D11PrerenderWaitUs();
     AddDrawOutsideRow(metrics_, metrics_.qpcUs);
     PerfLogger::Get().LogFrame(metrics_);
-    LogRowOwner(site_, metrics_, RowOwner::kLogged);
+    LogRowOwner(site_, metrics_, PresentRowOwner::kLogged);
 }
 
 void DX11PresentPerfRow::LogHeldRow() {
@@ -112,7 +111,7 @@ void DX11PresentPerfRow::LogHeldRow() {
     // A held row's total_us is its ProcessFrame's span, which a PostSL draw is never part of.
     AddDrawOutsideRow(row, held_.filled ? INT64_MAX : metrics_.qpcUs);
     PerfLogger::Get().LogFrame(row);
-    LogRowOwner(site_, row, held_.filled ? RowOwner::kHeldInnerRow : RowOwner::kLogged);
+    LogRowOwner(site_, row, held_.filled ? PresentRowOwner::kHeldInnerRow : PresentRowOwner::kLogged);
 }
 
 void DX11PresentPerfRow::TakeFramePhases() {
