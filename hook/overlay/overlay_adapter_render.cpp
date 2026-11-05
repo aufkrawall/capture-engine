@@ -110,9 +110,11 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                               (static_cast<uint64_t>(panelScene.height) << 24) ^ panelRowMask ^
                               (static_cast<uint64_t>(panelSensorColumns) << 16);
     if (const auto verdict = panelLogGate.Observe(panelKey)) {
-        HookLogImportant("[Overlay] Panel: layout=%d size=%.0fx%.0f at=%.0f,%.0f rows=0x%x columns=0x%x repeats=%llu",
-                         static_cast<int>(cfg.layout), panelScene.width, panelScene.height, x, y, panelRowMask,
-                         panelSensorColumns, static_cast<unsigned long long>(verdict.suppressed));
+        HookLogImportant("[Overlay] Panel: layout=%d size=%.0fx%.0f at=%.0f,%.0f viewport=%dx%d available=%.0f "
+                         "rows=0x%x columns=0x%x repeats=%llu",
+                         static_cast<int>(cfg.layout), panelScene.width, panelScene.height, x, y,
+                         viewportWidth, viewportHeight, static_cast<float>(viewportWidth) - padding * 2.0f,
+                         panelRowMask, panelSensorColumns, static_cast<unsigned long long>(verdict.suppressed));
     }
 
     // The graph line last, after everything that stays between text updates: a frame whose only

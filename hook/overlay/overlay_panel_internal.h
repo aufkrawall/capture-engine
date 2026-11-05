@@ -20,6 +20,7 @@ inline constexpr float kLabelGap = 18.0f;
 inline constexpr float kInlineGap = 8.0f;
 inline constexpr float kChipPadX = 6.0f;
 inline constexpr float kGraphHeight = 30.0f;
+inline constexpr float kBarHeight = 7.0f;
 inline constexpr float kMinContentWidth = 210.0f;
 
 // 85% is the threshold the load colors always used. It is amber, never red: 99% GPU load is normal in a
@@ -29,7 +30,7 @@ inline constexpr float kMemoryWarnRatio = 0.90f;
 inline constexpr float kMemoryCritRatio = 0.97f;
 
 struct Short {
-    char s[48] = "";
+    char s[80] = "";
     const char* c() const {
         return s;
     }
@@ -81,6 +82,10 @@ public:
         return measure_.Width(text.c(), size);
     }
     float Pitch(Size size) const;
+    float FitWidth(float desired) const;
+    // Wraps at word boundaries, then glyph boundaries for a long word. Returns the next free y.
+    float WrappedText(float x, float top, float width, const char* text, Size size, Tone tone);
+    float WrappedHeight(float width, const char* text, Size size) const;
     // Where text sits in a row: the row centers on digit ink, because line height varies a lot by font.
     float Baseline(float top, float pitch, Size size = Size::Base) const {
         return top + std::round((pitch + Font(size).digitHeight) * 0.5f);
@@ -121,6 +126,7 @@ public:
     float Width(const Composer& c, Size size) const;
     void Draw(Composer& c, float x, float baseline, Size size) const;
     void DrawRight(Composer& c, float right, float baseline, Size size) const;
+    float DrawWrapped(Composer& c, float x, float top, float width, Size size) const;
 
 private:
     static constexpr int kCapacity = 5;
@@ -141,7 +147,7 @@ Line CpuClocksLine(const Inputs& in, bool withPeak);  // "4191 / 4569 MHz"
 
 // Sections more than one layout shares. Each Draw takes the row's top and returns the next free y.
 float NotificationWidth(const Composer& c);
-float DrawNotification(Composer& c, float y);
+float DrawNotification(Composer& c, float y, float width);
 
 // The slot for recording state: a filled chip when live, amber text while starting.
 float RecordingSlotWidth(const Composer& c);
@@ -150,7 +156,7 @@ bool HasRecordingWarning(const Composer& c);
 void DrawRecordingSlotRight(Composer& c, float right, float top);
 float DrawRecordingFullRow(Composer& c, float y, float width);  // The chip across the panel, with any warning.
 Short RecordingChipText(const Composer& c);
-void DrawChip(Composer& c, float x, float top, float width, const char* text);
+float DrawChip(Composer& c, float x, float top, float width, const char* text);
 
 float FgRowWidth(const Composer& c);
 float DrawFgRow(Composer& c, float y, float width);
@@ -174,6 +180,10 @@ struct MemoryParts {
 MemoryParts MakeMemoryParts(const Composer& c, const MemoryValue& memory, Size size);
 float MemoryPartsWidth(const Composer& c, const MemoryParts& parts, Size size);
 void DrawMemoryParts(Composer& c, float x, float baseline, const MemoryParts& parts, Size size);
+float DrawWrappedMemory(Composer& c, float y, float width, const char* label, const MemoryValue& memory);
+float DrawWrappedHardware(Composer& c, float y, float width, bool gpu, Layout layout);
+float DrawWrappedFrame(Composer& c, float y, float width, bool list);
+void DrawBar(Composer& c, float x, float baseline, float width, float percent, Tone tone, float mark = -1.0f);
 
 void BuildHero(Composer& c);
 void BuildList(Composer& c);

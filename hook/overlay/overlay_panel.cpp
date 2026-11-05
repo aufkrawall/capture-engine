@@ -28,6 +28,33 @@ Short Whole(const Reading& reading) {
     return reading.valid ? Fmt("%.0f", reading.value) : Fmt("--");
 }
 
+Fill BarFill(Tone tone) {
+    switch (tone) {
+        case Tone::Warn:
+            return Fill::BarWarn;
+        case Tone::Crit:
+            return Fill::BarCrit;
+        default:
+            return Fill::BarValue;
+    }
+}
+
+// mark is the tick for the busiest core, as a percentage; negative draws none.
+void DrawBar(Composer& c, float x, float baseline, float width, float percent, Tone tone, float mark) {
+    const float height = c.Px(kBarHeight);
+    const float y = std::round(baseline - c.Font(Size::Base).digitHeight * 0.5f - height * 0.5f);
+    c.Rect(x, y, width, height, Fill::BarTrack);
+    const float fill = std::round(width * std::clamp(percent, 0.0f, 100.0f) / 100.0f);
+    if (fill > 0.0f)
+        c.Rect(x, y, fill, height, BarFill(tone));
+    if (mark >= 0.0f) {
+        const float tick = (std::max)(2.0f, c.Px(2.0f));
+        const float overhang = c.Px(2.0f);
+        c.Rect(x + std::round((width - tick) * std::clamp(mark, 0.0f, 100.0f) / 100.0f), y - overhang, tick,
+               height + overhang * 2.0f, Fill::BarMark);
+    }
+}
+
 Tone MemoryTone(const MemoryValue& memory) {
     if (!memory.available)
         return Tone::Unit;
@@ -40,9 +67,72 @@ Tone MemoryTone(const MemoryValue& memory) {
 }
 
 Composer::Composer(const Inputs& inputs, const TextMeasure& measure, Scene& scene)
-    : in(inputs), left(std::round(kPadX * inputs.unit)), measure_(measure), scene_(scene) {
+    : in(inputs),
+      left(inputs.maxWidth > 0.0f ? (std::min)(std::round(kPadX * inputs.unit), std::floor(inputs.maxWidth / 4.0f))
+                                  : std::round(kPadX * inputs.unit)),
+      measure_(measure), scene_(scene) {
     for (const Size size : {Size::Base, Size::Small, Size::Hero})
         fonts_[static_cast<int>(size)] = measure.Font(size);
+}
+
+float Composer::FitWidth(float desired) const {
+    return in.maxWidth > 0.0f ? (std::min)(desired, (std::max)(1.0f, in.maxWidth - left * 2.0f)) : desired;
+}
+
+namespace {
+
+// Measuring and drawing take the same breaks. No clipping, scaled glyphs, or new atlas is involved.
+template <typename Width, typename Emit>
+int WrapLines(const char* text, float width, Width measure, Emit emit) {
+    int lines = 0;
+    while (text && *text) {
+        char part[80];
+        size_t count = 0;
+        size_t space = 0;
+        while (text[count] && count < sizeof(part) - 1) {
+            part[count] = text[count];
+            part[count + 1] = '\0';
+            if (count > 0 && measure(part) > width)
+                break;
+            if (text[count] == ' ')
+                space = count;
+            ++count;
+        }
+        if (text[count] && space > 0)
+            count = space;
+        part[count] = '\0';
+        emit(part, lines++);
+        text += count;
+        while (*text == ' ')
+            ++text;
+    }
+    return lines;
+}
+
+}  // namespace
+
+float Composer::WrappedHeight(float width, const char* text, Size size) const {
+    if (!text || !text[0])
+        return 0.0f;
+    if (W(text, size) <= width)
+        return Pitch(size);
+    return Pitch(size) * WrapLines(text, width, [&](const char* part) { return W(part, size); },
+                                  [](const char*, int) {});
+}
+
+float Composer::WrappedText(float x, float top, float width, const char* text, Size size, Tone tone) {
+    if (!text || !text[0])
+        return top;
+    const float pitch = Pitch(size);
+    if (W(text, size) <= width) {
+        Text(x, Baseline(top, pitch, size), text, size, tone);
+        return top + pitch;
+    }
+    const int lines = WrapLines(text, width, [&](const char* part) { return W(part, size); },
+                                [&](const char* part, int line) {
+                                    Text(x, Baseline(top + line * pitch, pitch, size), part, size, tone);
+                                });
+    return top + lines * pitch;
 }
 
 float Composer::Pitch(Size size) const {
@@ -122,6 +212,25 @@ void Line::DrawRight(Composer& c, float right, float baseline, Size size) const 
     }
 }
 
+float Line::DrawWrapped(Composer& c, float x, float top, float width, Size size) const {
+    float cursor = x;
+    float height = 0.0f;
+    const float gap = c.Px(kInlineGap);
+    for (int i = 0; i < count_; ++i) {
+        const Item& item = items_[i];
+        const float slot = (std::min)(width, c.W(item.reserved, size));
+        if (cursor > x && cursor + slot > x + width) {
+            top += height;
+            cursor = x;
+            height = 0.0f;
+        }
+        const float bottom = c.WrappedText(cursor, top, slot, item.text.c(), size, item.tone);
+        height = (std::max)({height, bottom - top, c.WrappedHeight(slot, item.reserved.c(), size)});
+        cursor += slot + gap;
+    }
+    return top + height;
+}
+
 Line GpuDetailLine(const Inputs& in) {
     Line line;
     if (in.gpu.memoryMhz.Shown())
@@ -187,12 +296,10 @@ float NotificationWidth(const Composer& c) {
     return (std::max)(c.in.notificationMinWidth, c.W(c.in.notification));
 }
 
-float DrawNotification(Composer& c, float y) {
+float DrawNotification(Composer& c, float y, float width) {
     if (!c.Has(kRowNotification))
         return y;
-    const float pitch = c.Pitch(Size::Base);
-    c.Text(c.left, c.Baseline(y, pitch), c.in.notification, Size::Base, c.in.notificationTone);
-    return y + pitch;
+    return c.WrappedText(c.left, y, width, c.in.notification, Size::Base, c.in.notificationTone);
 }
 
 float RecordingSlotWidth(const Composer& c) {
@@ -226,10 +333,11 @@ Short RecordingChipText(const Composer& c) {
                                   : Fmt("%s", c.in.recording.text);
 }
 
-void DrawChip(Composer& c, float x, float top, float width, const char* text) {
-    const float pitch = c.Pitch(Size::Small);
-    c.Rect(x, top, width, pitch, Fill::Chip);
-    c.Text(x + c.Px(kChipPadX), c.Baseline(top, pitch, Size::Small), text, Size::Small, Tone::OnChip);
+float DrawChip(Composer& c, float x, float top, float width, const char* text) {
+    const float pad = (std::min)(c.Px(kChipPadX), width / 4.0f);
+    const float bottom = c.WrappedText(x + pad, top, width - pad * 2.0f, text, Size::Small, Tone::OnChip);
+    c.Rect(x, top, width, bottom - top, Fill::Chip);
+    return bottom;
 }
 
 void DrawRecordingSlotRight(Composer& c, float right, float top) {
@@ -246,14 +354,19 @@ void DrawRecordingSlotRight(Composer& c, float right, float top) {
 
 float DrawRecordingFullRow(Composer& c, float y, float width) {
     const float pitch = c.Pitch(Size::Small);
+    if (!c.in.recording.visible) {
+        const float pad = (std::min)(c.Px(kChipPadX), width / 4.0f);
+        return y + (std::max)(pitch, c.WrappedHeight(width - pad * 2.0f, RecordingChipText(c).c(), Size::Small));
+    }
     if (c.in.recording.visible) {
         if (c.in.recording.kind == RecordingKind::Starting) {
-            c.Text(c.left, c.Baseline(y, pitch, Size::Small), c.in.recording.text, Size::Small, Tone::Warn);
+            return c.WrappedText(c.left, y, width, c.in.recording.text, Size::Small, Tone::Warn);
         } else if (c.in.recording.kind != RecordingKind::None) {
             // Only a warning earns the whole width; a plain timer stays the size of its text.
             const Short text = RecordingChipText(c);
-            DrawChip(c, c.left, y, HasRecordingWarning(c) ? width : c.W(text, Size::Small) + c.Px(kChipPadX) * 2.0f,
-                     text.c());
+            return DrawChip(c, c.left, y,
+                            (std::min)(width, HasRecordingWarning(c) ? width : c.W(text, Size::Small) +
+                                                                                 c.Px(kChipPadX) * 2.0f), text.c());
         }
     }
     return y + pitch;
@@ -280,6 +393,14 @@ float FgRowWidth(const Composer& c) {
 float DrawFgRow(Composer& c, float y, float width) {
     if (!c.Has(kRowFGStatus))
         return y;
+    if (width < FgRowWidth(c)) {
+        Line line;
+        line.Add(FgStatusText(c), Tone::FgStatus, Fmt("NVIDIA SM 4x"));
+        if (c.Has(kRowFGRates))
+            line.Add(Fmt("base %.0f / display %.0f FPS", c.in.fgBaseFps, c.in.fgOutputFps), Tone::Label,
+                     Fmt("base 9999 / display 9999 FPS"));
+        return line.DrawWrapped(c, c.left, y, width, Size::Base);
+    }
     const float pitch = c.Pitch(Size::Base);
     const float baseline = c.Baseline(y, pitch);
     c.Text(c.left, baseline, FgStatusText(c).c(), Size::Base, Tone::FgStatus);
@@ -300,10 +421,15 @@ float DrawGraphSection(Composer& c, float y, float width) {
     if (!c.in.graph.shown)
         return y;
     const float pitch = c.Pitch(Size::Small);
-    const float baseline = c.Baseline(y, pitch, Size::Small);
-    c.Text(c.left, baseline, c.in.graph.scaleLabel, Size::Small, Tone::Label);
-    c.TextRight(c.left + width, baseline, c.in.graph.peakLabel, Size::Small, c.in.graph.peakTone);
-    y += pitch;
+    if (width < GraphSectionWidth(c)) {
+        y = c.WrappedText(c.left, y, width, c.in.graph.scaleLabel, Size::Small, Tone::Label);
+        y = c.WrappedText(c.left, y, width, c.in.graph.peakLabel, Size::Small, c.in.graph.peakTone);
+    } else {
+        const float baseline = c.Baseline(y, pitch, Size::Small);
+        c.Text(c.left, baseline, c.in.graph.scaleLabel, Size::Small, Tone::Label);
+        c.TextRight(c.left + width, baseline, c.in.graph.peakLabel, Size::Small, c.in.graph.peakTone);
+        y += pitch;
+    }
     // The rule is the height the scale label names.
     c.Rect(c.left, y, width, (std::max)(1.0f, std::floor(c.in.unit)), Fill::Rule);
     GraphBox& box = c.MutableScene().graph;
@@ -329,6 +455,21 @@ float BenchmarkWidth(const Composer& c) {
 }
 
 float DrawBenchmark(Composer& c, float y, float width) {
+    if (width < BenchmarkWidth(c)) {
+        if (c.Has(kRowBenchmarkTimer)) {
+            Line line;
+            line.Add(Fmt("BENCHMARK"), c.in.benchmarkTone);
+            line.Add(Fmt("%s", c.in.benchmarkTimer), c.in.benchmarkTone, Fmt("00:00 / 00:00"));
+            y = line.DrawWrapped(c, c.left, y, width, Size::Base);
+        }
+        if (c.Has(kRowBenchmarkFPS)) {
+            Line line;
+            line.Add(Fmt("BENCH FPS"));
+            line.Add(Fmt("%s", c.in.benchmarkFps), Tone::Value, Fmt("9999.9 / 9999.9 / 9999.9"));
+            y = line.DrawWrapped(c, c.left, y, width, Size::Base);
+        }
+        return y;
+    }
     const float pitch = c.Pitch(Size::Base);
     const float right = c.left + width;
     if (c.Has(kRowBenchmarkTimer)) {
@@ -374,6 +515,65 @@ void DrawMemoryParts(Composer& c, float x, float baseline, const MemoryParts& pa
     c.TextRight(x + parts.usedSlot, baseline, parts.used.c(), size, parts.usedTone);
     if (parts.rest.s[0])
         c.Text(x + parts.usedSlot + parts.spaceWidth, baseline, parts.rest.c(), size, Tone::Unit);
+}
+
+float DrawWrappedMemory(Composer& c, float y, float width, const char* label, const MemoryValue& memory) {
+    const MemoryParts parts = MakeMemoryParts(c, memory, Size::Base);
+    Line line;
+    line.Add(Fmt("%s", label));
+    line.Add(parts.used, parts.usedTone, memory.hasTotal ? Fmt("%.2f", memory.totalGb) : Fmt("999.99"));
+    if (parts.rest.s[0])
+        line.Add(parts.rest);
+    return line.DrawWrapped(c, c.left, y, width, Size::Base);
+}
+
+float DrawWrappedHardware(Composer& c, float y, float width, bool gpu, Layout layout) {
+    y = c.WrappedText(c.left, y, width, gpu ? c.in.gpu.name : c.in.cpu.name, Size::Base, Tone::Value);
+    const Reading load = gpu ? c.in.gpu.load : Reading{true, c.in.cpu.load};
+    if (layout == Layout::Meters) {
+        const float pitch = c.Pitch(Size::Base);
+        DrawBar(c, c.left, c.Baseline(y, pitch), width, load.valid ? load.value : 0.0f,
+                LoadReadingTone(load), gpu ? -1.0f : c.in.cpu.peakCoreLoad);
+        y += pitch;
+    }
+    Line line;
+    line.Add(Fmt("LOAD %s", Percent(load).c()), LoadReadingTone(load), Fmt("LOAD 100%%"));
+    const Reading clock = gpu ? c.in.gpu.coreMhz : c.in.cpu.coreMhz;
+    if (layout == Layout::Hero && c.Column(kColumnClock))
+        line.Add(Fmt("%s MHz", Whole(clock).c()), ReadingTone(clock), Fmt("9999 MHz"));
+    if (c.Column(kColumnTemperature))
+        line.Add(Degrees(gpu ? c.in.gpu.temperatureC : c.in.cpu.temperatureC),
+                 ReadingTone(gpu ? c.in.gpu.temperatureC : c.in.cpu.temperatureC), Fmt("100\xB0"));
+    if (c.Column(kColumnPower))
+        line.Add(Fmt("%s W", Whole(gpu ? c.in.gpu.powerW : c.in.cpu.powerW).c()),
+                 ReadingTone(gpu ? c.in.gpu.powerW : c.in.cpu.powerW), Fmt("999 W"));
+    y = line.DrawWrapped(c, c.left, y, width, Size::Base);
+    const Line details = layout == Layout::Hero ? (gpu ? GpuDetailLine(c.in) : CpuDetailLine(c.in))
+                                               : (gpu ? GpuClocksLine(c.in, true) : CpuClocksLine(c.in, true));
+    return details.DrawWrapped(c, c.left, y, width, Size::Small);
+}
+
+float DrawWrappedFrame(Composer& c, float y, float width, bool list) {
+    const auto row = [&](const char* label, const Short& value, const Short& reserved, Tone tone) {
+        Line line;
+        line.Add(Fmt("%s", label));
+        line.Add(value, tone, reserved);
+        y = line.DrawWrapped(c, c.left, y, width, Size::Base);
+    };
+    if (c.Has(kRowFPS))
+        row(list && c.in.api[0] ? c.in.api : "FPS", Fmt("%.0f FPS", c.in.fps), Fmt("9999 FPS"), Tone::Fps);
+    if (list && c.Has(kRowFGRates))
+        row("Base / Display", Fmt("%.0f / %.0f FPS", c.in.fgBaseFps, c.in.fgOutputFps),
+            Fmt("9999 / 9999 FPS"), Tone::Value);
+    if (c.Has(kRowFPSAverages))
+        row("Avg / 1% / 0.1%", Fmt("%.0f / %.0f / %.0f", c.in.averageFps, c.in.low1Fps, c.in.low01Fps),
+            Fmt("9999 / 9999 / 9999"), Tone::Value);
+    if (c.Has(kRowSystemLatency))
+        row(c.in.latencyLabel, c.in.latencyValid ? Fmt("%.1f ms", c.in.latencyMs) : Fmt("--"),
+            Fmt("500.0 ms"), c.in.latencyValid ? Tone::Value : Tone::Unit);
+    if (list && c.Has(kRowFGStatus))
+        row("Frame generation", FgStatusText(c), Fmt("NVIDIA SM 4x"), Tone::FgStatus);
+    return y;
 }
 
 }  // namespace detail

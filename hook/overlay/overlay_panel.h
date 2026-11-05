@@ -99,7 +99,7 @@ enum SensorColumn : uint32_t {
 struct Inputs {
     uint32_t rowMask = 0;
     float unit = 1.0f;      // Physical pixels per layout pixel: DPI scale and font size together.
-    float maxWidth = 0.0f;  // The strip wraps into another band beyond this. 0 is unlimited.
+    float maxWidth = 0.0f;  // Available panel width. Sections wrap at this limit; 0 is unlimited.
 
     const char* api = "";
     float fps = 0.0f;

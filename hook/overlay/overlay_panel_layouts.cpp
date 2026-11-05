@@ -1,5 +1,7 @@
 #include "overlay_panel_internal.h"
 
+#include <utility>
+
 namespace ce::overlay_panel::detail {
 
 namespace {
@@ -124,6 +126,11 @@ float DrawHeader(Composer& c, float y, float width, Size size) {
     const bool slot = c.Has(kRowRecording) && !HasRecordingWarning(c);
     if (!api && !slot)
         return y;
+    if (width < HeaderWidth(c, size)) {
+        if (api)
+            y = c.WrappedText(c.left, y, width, c.in.api, size, Tone::Label);
+        return slot ? DrawRecordingFullRow(c, y, width) : y;
+    }
     const float pitch = c.Pitch(size);
     if (api)
         c.Text(c.left, c.Baseline(y, pitch, size), c.in.api, size, Tone::Label);
@@ -193,6 +200,27 @@ float DrawHeroBand(Composer& c, float y, float width, const Stats& stats) {
     const bool fps = c.Has(kRowFPS);
     if (!fps && stats.count == 0)
         return y;
+    if (width < HeroBandWidth(c, stats)) {
+        if (fps) {
+            y = c.WrappedText(c.left, y, width, Fmt("%.0f", c.in.fps).c(), Size::Hero, Tone::Fps);
+            y = c.WrappedText(c.left, y, width, "FPS", Size::Small, Tone::Label);
+        }
+        float x = c.left;
+        float bottom = y;
+        for (int i = 0; i < stats.count; ++i) {
+            const StatColumn& column = stats.columns[i];
+            const float slot = (std::min)(width, column.width);
+            if (x > c.left && x + slot > c.left + width) {
+                y = bottom;
+                x = c.left;
+            }
+            const float valueTop = c.WrappedText(x, y, slot, column.head, Size::Small, Tone::Label);
+            const Short value = Fmt("%s%s%s", column.value.c(), column.unit[0] ? " " : "", column.unit);
+            bottom = (std::max)(bottom, c.WrappedText(x, valueTop, slot, value.c(), Size::Base, column.tone));
+            x += slot + c.Px(12.0f);
+        }
+        return bottom;
+    }
     const float statsHeight = stats.count > 0 ? c.Pitch(Size::Small) + c.Pitch(Size::Base) : 0.0f;
     const float height = (std::max)(fps ? c.Pitch(Size::Hero) : 0.0f, statsHeight);
     // Everything in the band stands on the value row's baseline.
@@ -226,6 +254,13 @@ float HwTableWidth(const Composer& c) {
 }
 
 float DrawHwTable(Composer& c, float y, float width) {
+    if (width < HwTableWidth(c)) {
+        if (c.Has(kRowGPU))
+            y = DrawWrappedHardware(c, y, width, true, Layout::Hero);
+        if (c.Has(kRowCPU))
+            y = DrawWrappedHardware(c, y, width, false, Layout::Hero);
+        return y;
+    }
     const SensorColumns columns = MeasureSensorColumns(c, true, true);
     const Edges edges = ComputeEdges(c, c.left + width, columns);
     const float small = c.Pitch(Size::Small);
@@ -282,6 +317,13 @@ float MemoryRowWidth(const Composer& c) {
 }
 
 float DrawMemoryRow(Composer& c, float y, float width) {
+    if (width < MemoryRowWidth(c)) {
+        if (c.Has(kRowVRAM))
+            y = DrawWrappedMemory(c, y, width, "VRAM", c.in.vram);
+        if (c.Has(kRowRAM))
+            y = DrawWrappedMemory(c, y, width, "RAM", c.in.ram);
+        return y;
+    }
     const float pitch = c.Pitch(Size::Base);
     const float baseline = c.Baseline(y, pitch);
     if (c.Has(kRowVRAM))
@@ -320,6 +362,8 @@ float ListFrameWidth(const Composer& c) {
 }
 
 float DrawListFrame(Composer& c, float y, float width) {
+    if (width < ListFrameWidth(c))
+        return DrawWrappedFrame(c, y, width, true);
     const float pitch = c.Pitch(Size::Base);
     const float right = c.left + width;
     const auto label = [&](const char* text) {
@@ -382,6 +426,8 @@ float ListHwWidth(const Composer& c) {
 
 float DrawListChip(Composer& c, float y, float width, const char* name, const Reading& load, const Reading& temperature,
                    const Reading& power, bool gpu) {
+    if (width < ListHwWidth(c))
+        return DrawWrappedHardware(c, y, width, gpu, Layout::List);
     const float pitch = c.Pitch(Size::Base);
     const float baseline = c.Baseline(y, pitch);
     const float right = c.left + width;
@@ -402,6 +448,8 @@ float DrawListChip(Composer& c, float y, float width, const char* name, const Re
 }
 
 float DrawListClocks(Composer& c, float y, float width, const Line& line) {
+    if (width < ListHwWidth(c))
+        return y;  // The wrapped hardware group already includes these readings.
     const float pitch = c.Pitch(Size::Base);
     const float baseline = c.Baseline(y, pitch);
     c.Text(c.left, baseline, "Clocks", Size::Base, Tone::Label);
@@ -410,10 +458,12 @@ float DrawListClocks(Composer& c, float y, float width, const Line& line) {
 }
 
 float DrawListMemory(Composer& c, float y, float width, const char* label, const MemoryValue& memory) {
+    const MemoryParts parts = MakeMemoryParts(c, memory, Size::Base);
+    if (width < c.W(label) + c.Px(kLabelGap) + MemoryPartsWidth(c, parts, Size::Base))
+        return DrawWrappedMemory(c, y, width, label, memory);
     const float pitch = c.Pitch(Size::Base);
     const float baseline = c.Baseline(y, pitch);
     c.Text(c.left, baseline, label, Size::Base, Tone::Label);
-    const MemoryParts parts = MakeMemoryParts(c, memory, Size::Base);
     DrawMemoryParts(c, c.left + width - MemoryPartsWidth(c, parts, Size::Base), baseline, parts, Size::Base);
     return y + pitch;
 }
@@ -421,34 +471,6 @@ float DrawListMemory(Composer& c, float y, float width, const char* label, const
 // ---- Meters -------------------------------------------------------------------------------------------------------
 
 inline constexpr float kBarWidth = 104.0f;
-inline constexpr float kBarHeight = 7.0f;
-
-Fill BarFill(Tone tone) {
-    switch (tone) {
-        case Tone::Warn:
-            return Fill::BarWarn;
-        case Tone::Crit:
-            return Fill::BarCrit;
-        default:
-            return Fill::BarValue;
-    }
-}
-
-// mark is the tick for the busiest core, as a percentage; negative draws none.
-void DrawBar(Composer& c, float x, float baseline, float width, float percent, Tone tone, float mark = -1.0f) {
-    const float height = c.Px(kBarHeight);
-    const float y = std::round(baseline - c.Font(Size::Base).digitHeight * 0.5f - height * 0.5f);
-    c.Rect(x, y, width, height, Fill::BarTrack);
-    const float fill = std::round(width * std::clamp(percent, 0.0f, 100.0f) / 100.0f);
-    if (fill > 0.0f)
-        c.Rect(x, y, fill, height, BarFill(tone));
-    if (mark >= 0.0f) {
-        const float tick = (std::max)(2.0f, c.Px(2.0f));
-        const float overhang = c.Px(2.0f);
-        c.Rect(x + std::round((width - tick) * std::clamp(mark, 0.0f, 100.0f) / 100.0f), y - overhang, tick,
-               height + overhang * 2.0f, Fill::BarMark);
-    }
-}
 
 float MetersFrameWidth(const Composer& c) {
     float width = 0.0f;
@@ -469,6 +491,8 @@ float MetersFrameWidth(const Composer& c) {
 }
 
 float DrawMetersFrame(Composer& c, float y, float width) {
+    if (width < MetersFrameWidth(c))
+        return DrawWrappedFrame(c, y, width, false);
     const float pitch = c.Pitch(Size::Base);
     const float right = c.left + width;
     if (c.Has(kRowFPS)) {
@@ -526,6 +550,22 @@ float MetersHwWidth(const Composer& c) {
 }
 
 float DrawMetersHw(Composer& c, float y, float width) {
+    if (width < MetersHwWidth(c)) {
+        if (c.Has(kRowGPU))
+            y = DrawWrappedHardware(c, y, width, true, Layout::Meters);
+        if (c.Has(kRowCPU))
+            y = DrawWrappedHardware(c, y, width, false, Layout::Meters);
+        for (const auto& memory : {std::pair{"VRAM", kRowVRAM}, std::pair{"RAM", kRowRAM}}) {
+            if (c.Has(memory.second)) {
+                const MemoryValue& value = memory.second == kRowVRAM ? c.in.vram : c.in.ram;
+                const float percent = value.available && value.hasTotal && value.totalGb > 0.0f
+                                          ? value.usedGb / value.totalGb * 100.0f : 0.0f;
+                DrawBar(c, c.left, c.Baseline(y, c.Pitch(Size::Base)), width, percent, MemoryTone(value));
+                y = DrawWrappedMemory(c, y + c.Pitch(Size::Base), width, memory.first, value);
+            }
+        }
+        return y;
+    }
     const float gap = c.Px(kColumnGap);
     const float pitch = c.Pitch(Size::Base);
     const float small = c.Pitch(Size::Small);
@@ -582,8 +622,10 @@ void BuildHero(Composer& c) {
         width = (std::max)(width, section);
     }
 
+    width = c.FitWidth(width);
+
     Flow flow(c, c.Px(kPadTop));
-    flow.Set(DrawNotification(c, flow.Y()));
+    flow.Set(DrawNotification(c, flow.Y(), width));
     flow.Set(DrawHeader(c, flow.Y(), width, Size::Small));
     flow.Set(DrawWarningRow(c, flow.Y(), width));
     flow.Set(DrawFgRow(c, flow.Y(), width));
@@ -615,9 +657,11 @@ void BuildList(Composer& c) {
         width = (std::max)(width, section);
     }
 
+    width = c.FitWidth(width);
+
     Flow flow(c, c.Px(kPadTop));
     const bool frame = c.Has(kRowFPS) || c.Has(kRowSystemLatency) || c.Has(kRowFGStatus);
-    flow.Set(DrawNotification(c, flow.Y()));
+    flow.Set(DrawNotification(c, flow.Y(), width));
     flow.Group(c.Has(kRowNotification));
     if (flow.Group(frame || c.in.graph.shown)) {
         flow.Set(DrawListFrame(c, flow.Y(), width));
@@ -655,8 +699,10 @@ void BuildMeters(Composer& c) {
         width = (std::max)(width, section);
     }
 
+    width = c.FitWidth(width);
+
     Flow flow(c, c.Px(kPadTop));
-    flow.Set(DrawNotification(c, flow.Y()));
+    flow.Set(DrawNotification(c, flow.Y(), width));
     flow.Set(DrawHeader(c, flow.Y(), width, Size::Base));
     flow.Set(DrawWarningRow(c, flow.Y(), width));
     flow.Set(DrawFgRow(c, flow.Y(), width));

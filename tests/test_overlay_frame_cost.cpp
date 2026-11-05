@@ -81,10 +81,10 @@ struct OverlayHarness {
         }
     }
     // Present-to-present at 625 FPS, then one overlay frame.
-    void Frame() {
+    void Frame(int width = 3840, int height = 2160) {
         clockUs += 1600;
         metrics.Update(clockUs);
-        adapter.RenderOverlay(3840, 2160);
+        adapter.RenderOverlay(width, height);
     }
 
     std::unique_ptr<SharedMemoryLayout> shm = std::make_unique<SharedMemoryLayout>();
@@ -250,6 +250,37 @@ TEST(OverlayLayoutSelectionTest, TheRowsStayInFewDrawCalls) {
         harness.Frame();
         EXPECT_EQ(harness.counts.lastCommands.size(), 3u)
             << static_cast<int>(layout) << ": rectangles, text and the graph";
+    }
+}
+
+TEST(OverlayLayoutSelectionTest, NarrowViewportsKeepTheGraphTailAndHonorEveryCorner) {
+    OverlayHarness harness(true);
+    ASSERT_TRUE(harness.initialized);
+    harness.Feed(300);
+    harness.shm->runtimeState.isRecording.store(true, std::memory_order_release);
+    for (OverlayLayout layout : {OverlayLayout::Hero, OverlayLayout::List, OverlayLayout::Meters}) {
+        for (OverlayPosition corner : {OverlayPosition::TopLeft, OverlayPosition::TopRight,
+                                       OverlayPosition::BottomLeft, OverlayPosition::BottomRight}) {
+            auto cfg = harness.shm->ReadOverlayConfig();
+            cfg.layout = layout;
+            cfg.position = corner;
+            cfg.padding = 10;
+            harness.shm->BeginWriteOverlayConfig();
+            harness.shm->overlayConfig = cfg;
+            harness.shm->EndWriteOverlayConfig();
+            harness.Frame(320, 2160);
+            ASSERT_FALSE(harness.counts.lastVertices.empty());
+            for (const auto& vertex : harness.counts.lastVertices) {
+                EXPECT_GE(vertex.x, 0) << static_cast<int>(layout);
+                EXPECT_LE(vertex.x, 320) << static_cast<int>(layout);
+            }
+            const uint64_t full = harness.adapter.FullFramesForTest();
+            const uint64_t graphOnly = harness.adapter.GraphOnlyFramesForTest();
+            harness.Frame(320, 2160);
+            EXPECT_EQ(harness.adapter.FullFramesForTest(), full);
+            EXPECT_EQ(harness.adapter.GraphOnlyFramesForTest(), graphOnly + 1);
+            EXPECT_EQ(harness.counts.lastCommands.size(), 3u);
+        }
     }
 }
 

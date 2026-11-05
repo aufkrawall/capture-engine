@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay text cut off in small windows or at high display scale:** Hero, List and Meters now wrap oversized sections to the available viewport width, keeping the configured font size, hardware readings, recording warnings, graph and meter bars visible.
+
 - **Overlay movement when hardware readings drop out:** GPU memory clocks, voltage and fan readings, CPU peak clocks, and clock rows now keep their slots and show `--` until readings return. Missing samples no longer collapse Hero rows or change Strip wrapping.
 
 - **DXUP native D3D11 fallback label:** the overlay no longer claims a DirectX 12 backend just because DXUP's `d3d11.dll` remains loaded after falling back to Windows' DirectX 11. Native D3D12 output still reports the full DXUP translation chain.
