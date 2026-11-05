@@ -316,15 +316,18 @@ inline bool ShouldKeepPostSLCallbackInstalledDuringTransition(bool streamlineFGR
 // Vulkan-layer label selection for translated APIs should prefer the active DXVK
 // D3D11 path over a merely-present DXVK D3D9 helper DLL in the same folder.
 inline const char* SelectTranslatedGraphicsAPIName(bool hasDxvkD3D11, bool hasDxvkD3D9, bool hasVkd3dD3D12,
-                                                   bool hasDX10) {
+                                                   bool hasDX10, bool hasDxvkD3D8 = false) {
     if (hasDxvkD3D11) {
-        return hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
+        return hasDX10 ? "DX10 -> Vk (DXVK)" : "DX11 -> Vk (DXVK)";
     }
     if (hasDxvkD3D9) {
-        return "DX9 (DXVK)";
+        return "DX9 -> Vk (DXVK)";
+    }
+    if (hasDxvkD3D8) {
+        return "DX8 -> Vk (DXVK)";
     }
     if (hasVkd3dD3D12) {
-        return "DX12 (VKD3D-Proton)";
+        return "DX12 -> Vk (VKD3D-Proton)";
     }
     return "Vulkan";
 }

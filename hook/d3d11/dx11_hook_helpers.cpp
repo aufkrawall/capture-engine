@@ -224,9 +224,9 @@ const char* GetDX11HookOverlayAPIName(DXGIShared::APIType api) {
     const bool isDxvk = IsDXVKD3D10OrD3D11Loaded();
     switch (api) {
         case DXGIShared::APIType::D3D10:
-            return isDxvk ? "DX10 (DXVK)" : "DX10";
+            return isDxvk ? "DX10 -> Vk (DXVK)" : "DX10";
         case DXGIShared::APIType::D3D11:
-            return isDxvk ? "DX11 (DXVK)" : "DX11";
+            return isDxvk ? "DX11 -> Vk (DXVK)" : "DX11";
         case DXGIShared::APIType::D3D12:
             return "DX12";
         default:

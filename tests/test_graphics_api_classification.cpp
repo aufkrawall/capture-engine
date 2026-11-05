@@ -230,8 +230,8 @@ TEST(GraphicsApiClassificationTest, WindowsModulesAreThoseUnderTheWindowsDirecto
 TEST(GraphicsApiClassificationTest, D3D12LabelNamesTheTranslator) {
     using ce::graphics_api_identity::D3D12Label;
     EXPECT_STREQ(D3D12Label(false, false), "DX12");
-    EXPECT_STREQ(D3D12Label(true, false), "DX12 (VKD3D-Proton)");
-    EXPECT_STREQ(D3D12Label(false, true), "DX12 (VKD3D)");
+    EXPECT_STREQ(D3D12Label(true, false), "DX12 -> Vk (VKD3D-Proton)");
+    EXPECT_STREQ(D3D12Label(false, true), "DX12 -> Vk (VKD3D)");
     // The same name as the Vulkan layer's label for vkd3d-proton.
     EXPECT_STREQ(DXGIShared::SelectTranslatedGraphicsAPIName(false, false, true, false), D3D12Label(true, false));
 }
@@ -254,18 +254,32 @@ TEST(GraphicsApiClassificationTest, DxupGamesNameTheApplicationsApi) {
     EXPECT_EQ(SelectDxupFrontend(true, false, true, true, false, true), DxupFrontend::kD3D9);
     EXPECT_EQ(SelectDxupFrontend(false, false, false, false, false, false), DxupFrontend::kNone);
 
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D11, DirectDrawVersion::Unknown, 0, false, 0), "DX11 (DXUP)");
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D11, DirectDrawVersion::Unknown, 0, false, 1), "DX11.1 (DXUP)");
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, false, 1), "DX9 (DXUP)");
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, true, 0), "DX9Ex (DXUP)");
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D8, DirectDrawVersion::Unknown, 0, false, 0), "DX8 (DXUP)");
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 7, false, 0), "DX7 (DXUP)");
-    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw4, 0, false, 0),
-              "DirectDraw4 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D11, DirectDrawVersion::Unknown, 0, false, 0), "DX11 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D11, DirectDrawVersion::Unknown, 0, false, 1), "DX11.1 -> DX12 (DXUP)");
+    // Direct wrapping to DX12 (intermediateDx11 = false, isD3D12Backend = true):
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, false, 1, false, true), "DX9 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, true, 0, false, true), "DX9Ex -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D8, DirectDrawVersion::Unknown, 0, false, 0, false, true), "DX8 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 7, false, 0, false, true), "DX7 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw4, 0, false, 0, false, true),
+              "DirectDraw4 -> DX12 (DXUP)");
+    // Wrapping with an intermediate DX11 step (intermediateDx11 = true, isD3D12Backend = true):
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, false, 1, true, true), "DX9 -> DX11 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, true, 0, true, true), "DX9Ex -> DX11 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D8, DirectDrawVersion::Unknown, 0, false, 0, true, true), "DX8 -> DX11 -> DX12 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 7, false, 0, true, true), "DX7 -> DX11 -> DX12 (DXUP)");
+    // Wrapping over D3D11 backend (isD3D12Backend = false):
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, false, 1, false, false), "DX9 -> DX11 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, true, 0, false, false), "DX9Ex -> DX11 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D8, DirectDrawVersion::Unknown, 0, false, 0, false, false), "DX8 -> DX11 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 7, false, 0, false, false), "DX7 -> DX11 (DXUP)");
+
     EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kNone, DirectDrawVersion::Unknown, 0, false, 0), "");
-    EXPECT_EQ(ce::graphics_api_identity::WithDxup("DX9Ex"), "DX9Ex (DXUP)");
+    EXPECT_EQ(ce::graphics_api_identity::WithDxup("DX9Ex", false, true), "DX9Ex -> DX12 (DXUP)");
+    EXPECT_EQ(ce::graphics_api_identity::WithDxup("DX9Ex", true, true), "DX9Ex -> DX11 -> DX12 (DXUP)");
+    EXPECT_EQ(ce::graphics_api_identity::WithDxup("DX9Ex", false, false), "DX9Ex -> DX11 (DXUP)");
     // The overlay's label buffer holds the longest one.
-    EXPECT_LT(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 0, false, 0).size(), 32u);
+    EXPECT_LT(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 0, false, 0, true, true).size(), 64u);
 }
 
 TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedDecision) {

@@ -38,6 +38,18 @@ inline bool IsDxupModuleLoaded(const char* dllName) {
     return false;
 }
 
+// DXVK's DLLs: d3d8.dll, d3d9.dll, d3d10.dll, d3d10_1.dll, d3d11.dll, dxgi.dll.
+inline bool IsDxvkModuleLoaded(const char* dllName) {
+    static const char* const kNames[] = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d11.dll", "dxgi.dll"};
+    static std::atomic<uintptr_t> s_cache[6] = {~uintptr_t{0}, ~uintptr_t{0}, ~uintptr_t{0},
+                                                ~uintptr_t{0}, ~uintptr_t{0}, ~uintptr_t{0}};
+    for (size_t i = 0; i < 6; ++i) {
+        if (_stricmp(kNames[i], dllName) == 0)
+            return IsProjectModuleCached(dllName, "dxvk", s_cache[i]);
+    }
+    return false;
+}
+
 // Which runtime the process's d3d9.dll is. Any d3d9.dll outside System32 is a translation runtime
 // CE must not probe with a synthetic device (ShouldBootstrapD3D9Hooks in vulkan_renderer_policy.h);
 // which one is for the log and the label. Until 2026-10-18 every such DLL was called DXVK: DXUP's

@@ -38,8 +38,8 @@ TEST(FlowDX11OverlayApiLabel, DxupD3D9OverWindowsD3D11NamesTheGamesApi) {
     const HMODULE frontend = LoadLibraryA("dxup\\d3d9.dll");
     ASSERT_NE(frontend, nullptr) << GetLastError();
     EXPECT_EQ(D3D9RuntimeKindNow(), static_cast<int>(D3D9RuntimeKind::kDXUP));
-    EXPECT_EQ(OverlayLabel(0), "DX9 (DXUP)");
-    EXPECT_EQ(OverlayLabel(1), "DX9 (DXUP)") << "the game's API, not the revision of DXUP's own D3D11 use";
+    EXPECT_EQ(OverlayLabel(0), "DX9 -> DX11 (DXUP)");
+    EXPECT_EQ(OverlayLabel(1), "DX9 -> DX11 (DXUP)") << "the game's API, not the revision of DXUP's own D3D11 use";
     FreeLibrary(frontend);
 }
 

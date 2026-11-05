@@ -1,7 +1,8 @@
 # Graphics API reporting
 
-Last verified: 2026-10-22 (DXUP frontend over Windows' D3D11; 2026-10-19: swapchain API verdict kept on the
-swapchain; 2026-10-18: classifier, D3D11 evidence callers, D3D12 translator labels)
+Last verified: 2026-11-05 (explicit API translation pipelines showing driver/API target: DXVK -> Vk, VKD3D -> Vk,
+DXUP -> DX12 / DX11 -> DX12 / DX11; 2026-10-22: DXUP frontend over Windows' D3D11; 2026-10-19: swapchain API verdict
+kept on the swapchain; 2026-10-18: classifier, D3D11 evidence callers, D3D12 translator labels)
 
 ## Summary
 
@@ -37,9 +38,9 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   a feature level below 11_0. Native D3D10-on-D3D11 and DXVK's D3D10 meet both; a DXVK D3D11 device answers the
   D3D10 interfaces on every device (DXVK `D3D11DXGIDevice::QueryInterface`, swapchain `GetDevice` forwards there,
   checked upstream 2026-10-18) and meets neither. From 3a41978e (2026-05-02) to 2026-10-18 both answering always
-  meant D3D10, so DXVK D3D11 games ran CE's D3D10 paths as "DX10 (DXVK)" whenever CE's DXGI hooks owned them. The
+  meant D3D10, so DXVK D3D11 games ran CE's D3D10 paths as "DX10 -> Vk (DXVK)" whenever CE's DXGI hooks owned them. The
   Vulkan layer's label (`SelectTranslatedGraphicsAPIName`) uses the same runtime-module check without a feature
-  level, so a DXVK D3D11 game that also loads a D3D10 runtime still shows "DX10 (DXVK)" there.
+  level, so a DXVK D3D11 game that also loads a D3D10 runtime still shows "DX10 -> Vk (DXVK)" there.
 - **The verdict is kept on the swapchain, not by its address** (`ClassifySwapChainAPICached`, 2026-10-19). A
   classification is four `GetDevice` calls through the swapchain's runtime and the D3D11 overlay asked every Present
   (Mirror's Edge on DXUP, 20261018_151515), so it is cached - in the chain's DXGI private data
@@ -53,7 +54,7 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   swapchain=... is a new object at a classified chain's address: A -> B` and `... keeps no private data`
   (`ChangeGate`).
 - D3D12 labels come from `Dx12OverlayApiLabel()` (`hook/d3d12/dx12_api_label.h`) on every D3D12 overlay path:
-  `DX12 (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 (VKD3D)`
+  `DX12 -> Vk (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 -> Vk (VKD3D)`
   for Wine's vkd3d, else `DX12`. DXUP games come first: DXUP (Oblivionevil fork; local clones
   `build/diagnostics/dxup-source` at 0.8.1 and, current, `..\DXUP` next to this checkout at 94ab9e2 of
   2026-10-25) translates DirectDraw+D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12
@@ -62,16 +63,18 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   link the D3D9 core statically), and it has no D3D10 frontend (`src/d3d10` is a placeholder). Its DLLs carry
   `ProductName "DXUP"` (since DXUP 58752bd, 2026-10-04), cached per image in `hook/runtime/api_translator_modules.h`.
   `SelectDxupFrontend` prefers a frontend with CE evidence (`WasGameD3D9DeviceCreated`,
-  `WasDirectDrawInterfaceObserved`), else the oldest loaded one; `DxupFrontendLabel` adds CE's detail (D3D6/7 over
-  DirectDraw, D3D9Ex, `DX11Hook_HighestApplicationMinor`); both live in `DxupOverlayApiLabel`
+  `WasDirectDrawInterfaceObserved`), else the oldest loaded one; `DxupFrontendLabel` formats the explicit pipeline
+  to show the ultimate API/driver used: `DX11 -> DX12 (DXUP)`, `DX9 -> DX11 -> DX12 (DXUP)` (when DXUP's `d3d11.dll`
+  intermediate is present), `DX9 -> DX12 (DXUP)` (when direct D3D12 wrapping is used), or `DX9 -> DX11 (DXUP)`
+  (when running over Windows' D3D11 without D3D12 beneath). Both live in `DxupOverlayApiLabel`
   (`hook/runtime/dxup_api_label.h`). The D3D12 label and CE's D3D11 overlay both use it whenever any DXUP DLL is
   loaded: the D3D11 swapchain also carries the D3D9/D3D8/DirectDraw games (x86 Mirror's Edge read `DX11.1 (DXUP)`,
   session 20261018_143747). Until 2026-10-22 the D3D11 overlay asked for DXUP's `d3d11`/`dxgi` only, so Mirror's
   Edge with DXUP's `d3d9.dll` alone (Windows' D3D11 below) read `DX11` (20261022_162106). Flow pins:
   `FlowDX11OverlayApiLabel` (stand-in `d3d9.dll`s under `tests/flow/fakes/translators`: DXUP's version resource ->
-  `DX9 (DXUP)`, ReShade's -> `DX11`/`DX11.1`, D3D9 runtime kind `kOtherReplacement`). CE's D3D9 hooks never see a
+  `DX9 -> DX11 (DXUP)`, ReShade's -> `DX11`/`DX11.1`, D3D9 runtime kind `kOtherReplacement`). CE's D3D9 hooks never see a
   DXUP device (non-system runtime), so D3D9 evidence is absent for DXUP. Where CE's own D3D8/D3D9/DirectDraw overlay draws on a DXUP
-  device, that path appends ` (DXUP)`. A DXUP DLL querying its own d3d11 for a newer interface (`d3d9.dll` asked for
+  device, that path appends the explicit target pipeline with `(DXUP)`. A DXUP DLL querying its own d3d11 for a newer interface (`d3d9.dll` asked for
   `ID3D11DeviceContext1`) is `kDeviceRuntime` evidence (`IsDxupModuleHandle`), not the game's. Until 2026-10-18
   every DXUP game showed `DX12`.
 - D3D9 runtime identity: `ResolveD3D9RuntimeKind` (`dx9_hook.cpp`, cached per d3d9.dll image) -> `kSystem`, `kDXVK`,

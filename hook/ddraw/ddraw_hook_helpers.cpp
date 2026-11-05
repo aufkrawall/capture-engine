@@ -476,10 +476,15 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
         ddraw_hook_g_ActiveDirectDrawVersion.load(std::memory_order_acquire));
     const unsigned d3dVersion = ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
     const char* legacyLabel = ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion);
-    g_OverlayAdapter.SetGraphicsAPI(ce::api_translator::IsDxupModuleLoaded("ddraw.dll")
-                                        ? ce::graphics_api_identity::WithDxup(legacyLabel).c_str()
-                                        : legacyLabel,
-                                    "active DirectDraw presentation surface");
+    std::string finalLabel;
+    if (ce::api_translator::IsDxupModuleLoaded("ddraw.dll")) {
+        const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
+        const bool isDx12 = intermediateDx11 || (GetModuleHandleA("d3d12.dll") != nullptr);
+        finalLabel = ce::graphics_api_identity::WithDxup(legacyLabel, intermediateDx11, isDx12);
+    } else {
+        finalLabel = legacyLabel;
+    }
+    g_OverlayAdapter.SetGraphicsAPI(finalLabel.c_str(), "active DirectDraw presentation surface");
     return EnsureOverlayRouteBackend(DDrawOverlayRoute::HelperComposite, nullptr);
 }
 

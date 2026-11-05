@@ -13,7 +13,7 @@
 #include "hook/runtime/module_replacement.h"
 
 // A DXUP game's native D3D12 output carries the overlay: name the application's API with the
-// translator ("DX9 (DXUP)", "DX11.1 (DXUP)"), not the output's "DX12".
+// translator ("DX9 -> DX11 -> DX12 (DXUP)", "DX11.1 -> DX12 (DXUP)"), not the output's "DX12".
 inline std::string Dx12OverlayApiLabel() {
     std::string dxup = DxupOverlayApiLabel(DX11Hook_HighestApplicationMinor());
     if (!dxup.empty())

@@ -219,7 +219,7 @@ private:
     IPCClient* ipc = nullptr;
     void* hwnd = nullptr;
     void* latencyDevice = nullptr;
-    char graphicsAPI[32] = "";
+    char graphicsAPI[64] = "";
     uint32_t droppedFrames = 0;
     bool isHDR = false;
     int renderTargetFormat = 0;

@@ -105,14 +105,14 @@ inline const char* LegacyDirectXLabel(DirectDrawVersion directDrawVersion, unsig
 
 inline const char* D3D9Label(bool isEx, bool isDxvk) {
     if (isEx)
-        return isDxvk ? "DX9Ex (DXVK)" : "DX9Ex";
-    return isDxvk ? "DX9 (DXVK)" : "DX9";
+        return isDxvk ? "DX9Ex -> Vk (DXVK)" : "DX9Ex";
+    return isDxvk ? "DX9 -> Vk (DXVK)" : "DX9";
 }
 
 inline const char* D3D10Label(bool is10_1, bool isDxvk) {
     if (is10_1)
-        return isDxvk ? "DX10.1 (DXVK)" : "DX10.1";
-    return isDxvk ? "DX10 (DXVK)" : "DX10";
+        return isDxvk ? "DX10.1 -> Vk (DXVK)" : "DX10.1";
+    return isDxvk ? "DX10 -> Vk (DXVK)" : "DX10";
 }
 
 // Who asked a D3D11 device or context for a newer interface (ID3D11Device1-5, ID3D11DeviceContext1-4).
@@ -179,18 +179,30 @@ inline bool IsPathUnderDirectory(const char* path, const char* directory) {
 #endif
 
 // A D3D12 swapchain's label. vkd3d-proton's d3d12.dll names itself in its version resource (the
-// check the Vulkan layer's label uses, "DX12 (VKD3D-Proton)"); Wine's vkd3d is libvkd3d-1.dll behind
+// check the Vulkan layer's label uses, "DX12 -> Vk (VKD3D-Proton)"); Wine's vkd3d is libvkd3d-1.dll behind
 // d3d12core.dll. Until 2026-10-18 the D3D12 overlay knew only the Wine form and one of its paths
 // always said "DX12".
 inline const char* D3D12Label(bool vkd3dProtonD3D12, bool wineVkd3d) {
     if (vkd3dProtonD3D12)
-        return "DX12 (VKD3D-Proton)";
-    return wineVkd3d ? "DX12 (VKD3D)" : "DX12";
+        return "DX12 -> Vk (VKD3D-Proton)";
+    return wineVkd3d ? "DX12 -> Vk (VKD3D)" : "DX12";
 }
 
 // A label of an API that DXUP translates, when CE's own hook for that API draws on DXUP's device.
-inline std::string WithDxup(const char* label) {
-    return std::string(label ? label : "") + " (DXUP)";
+inline std::string WithDxup(const char* label, bool intermediateDx11 = false, bool dx12Backend = true) {
+    if (!label || !*label)
+        return {};
+    std::string result = label;
+    if (dx12Backend) {
+        if (intermediateDx11) {
+            result += " -> DX11 -> DX12 (DXUP)";
+        } else {
+            result += " -> DX12 (DXUP)";
+        }
+    } else {
+        result += " -> DX11 (DXUP)";
+    }
+    return result;
 }
 
 inline unsigned MergeD3D11Minor(unsigned currentMinor, unsigned observedMinor) {
@@ -199,8 +211,8 @@ inline unsigned MergeD3D11Minor(unsigned currentMinor, unsigned observedMinor) {
 
 inline const char* D3D11Label(unsigned minorVersion, bool isDxvk) {
     static constexpr const char* kNativeLabels[] = {"DX11", "DX11.1", "DX11.2", "DX11.3", "DX11.4"};
-    static constexpr const char* kDxvkLabels[] = {"DX11 (DXVK)", "DX11.1 (DXVK)", "DX11.2 (DXVK)", "DX11.3 (DXVK)",
-                                                  "DX11.4 (DXVK)"};
+    static constexpr const char* kDxvkLabels[] = {"DX11 -> Vk (DXVK)", "DX11.1 -> Vk (DXVK)", "DX11.2 -> Vk (DXVK)",
+                                                  "DX11.3 -> Vk (DXVK)", "DX11.4 -> Vk (DXVK)"};
     const unsigned clampedVersion = (std::min)(minorVersion, 4u);
     return isDxvk ? kDxvkLabels[clampedVersion] : kNativeLabels[clampedVersion];
 }
@@ -235,7 +247,8 @@ inline DxupFrontend SelectDxupFrontend(bool ddrawLoaded, bool d3d8Loaded, bool d
 // The overlay label of a DXUP game: the application's API with the translator, at the detail CE's
 // own hooks recorded for that API (D3D6/7 over DirectDraw, D3D9Ex, the D3D11 revision).
 inline std::string DxupFrontendLabel(DxupFrontend frontend, DirectDrawVersion directDrawVersion,
-                                     unsigned legacyD3DVersion, bool d3d9Ex, unsigned d3d11Minor) {
+                                     unsigned legacyD3DVersion, bool d3d9Ex, unsigned d3d11Minor,
+                                     bool intermediateDx11 = false, bool isD3D12Backend = true) {
     std::string label;
     switch (frontend) {
         case DxupFrontend::kDirectDraw:
@@ -249,11 +262,11 @@ inline std::string DxupFrontendLabel(DxupFrontend frontend, DirectDrawVersion di
             break;
         case DxupFrontend::kD3D11:
             label = D3D11Label(d3d11Minor, false);
-            break;
+            return isD3D12Backend ? (label + " -> DX12 (DXUP)") : label;
         default:
             return {};
     }
-    return label + " (DXUP)";
+    return WithDxup(label.c_str(), intermediateDx11, isD3D12Backend);
 }
 
 inline bool ParseOpenGLVersion(const char* versionString, int* major, int* minor) {

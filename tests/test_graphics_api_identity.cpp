@@ -33,15 +33,15 @@ TEST(GraphicsApiIdentityTest, Direct3DUseOutranksDirectDrawTransport) {
 TEST(GraphicsApiIdentityTest, FormatsClassicAndExD3D9WithTranslationSuffix) {
     EXPECT_STREQ(D3D9Label(false, false), "DX9");
     EXPECT_STREQ(D3D9Label(true, false), "DX9Ex");
-    EXPECT_STREQ(D3D9Label(false, true), "DX9 (DXVK)");
-    EXPECT_STREQ(D3D9Label(true, true), "DX9Ex (DXVK)");
+    EXPECT_STREQ(D3D9Label(false, true), "DX9 -> Vk (DXVK)");
+    EXPECT_STREQ(D3D9Label(true, true), "DX9Ex -> Vk (DXVK)");
 }
 
 TEST(GraphicsApiIdentityTest, FormatsD3D10AndD3D101WithTranslationSuffix) {
     EXPECT_STREQ(D3D10Label(false, false), "DX10");
     EXPECT_STREQ(D3D10Label(true, false), "DX10.1");
-    EXPECT_STREQ(D3D10Label(false, true), "DX10 (DXVK)");
-    EXPECT_STREQ(D3D10Label(true, true), "DX10.1 (DXVK)");
+    EXPECT_STREQ(D3D10Label(false, true), "DX10 -> Vk (DXVK)");
+    EXPECT_STREQ(D3D10Label(true, true), "DX10.1 -> Vk (DXVK)");
 }
 
 TEST(GraphicsApiIdentityTest, D3D11MinorUseIsMonotonicAndBounded) {
@@ -53,7 +53,7 @@ TEST(GraphicsApiIdentityTest, D3D11MinorUseIsMonotonicAndBounded) {
     EXPECT_STREQ(D3D11Label(2, false), "DX11.2");
     EXPECT_STREQ(D3D11Label(3, false), "DX11.3");
     EXPECT_STREQ(D3D11Label(4, false), "DX11.4");
-    EXPECT_STREQ(D3D11Label(4, true), "DX11.4 (DXVK)");
+    EXPECT_STREQ(D3D11Label(4, true), "DX11.4 -> Vk (DXVK)");
 }
 
 TEST(GraphicsApiIdentityTest, ScopedIdentityRegistryIsolatesDevicesAndNoOpsUnchangedEvidence) {

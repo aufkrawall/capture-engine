@@ -1,5 +1,6 @@
 #include "dx8_hook_internal.h"
 #include "hook/runtime/api_translator_modules.h"
+#include "hook/runtime/graphics_api_identity.h"
 
 
 DWORD ParseD3D8MSAA(const char* msaa) {
@@ -349,8 +350,15 @@ void DrawDX8Overlay(IDirect3DDevice8* device,  HWND hwnd) {
     g_OverlayAdapter.SetMetrics(&dx8_hook_g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(dx8_hook_g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI(ce::api_translator::IsDxupModuleLoaded("d3d8.dll") ? "DX8 (DXUP)" : "DX8",
-                                    "active IDirect3DDevice8");
+    std::string apiLabel = "DX8";
+    if (ce::api_translator::IsDxupModuleLoaded("d3d8.dll")) {
+        const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
+        const bool isDx12 = intermediateDx11 || (GetModuleHandleA("d3d12.dll") != nullptr);
+        apiLabel = ce::graphics_api_identity::WithDxup("DX8", intermediateDx11, isDx12);
+    } else if (ce::api_translator::IsDxvkModuleLoaded("d3d8.dll")) {
+        apiLabel = "DX8 -> Vk (DXVK)";
+    }
+    g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active IDirect3DDevice8");
 
     {
         DX8StateHookBypassScope bypassScope;

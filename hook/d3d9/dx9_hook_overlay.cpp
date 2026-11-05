@@ -81,10 +81,15 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     if (device != s_lastApiDevice || deviceVTable != s_lastDeviceVTable) {
         const bool isEx = ResolveD3D9DeviceIsEx(device);
         namespace identity = ce::graphics_api_identity;
-        const std::string finalApi = ce::api_translator::IsDxupModuleLoaded("d3d9.dll")
-                                         ? identity::WithDxup(identity::D3D9Label(isEx, false))
-                                         : identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
-                                                                         ce::api_translator::D3D9RuntimeKind::kDXVK);
+        std::string finalApi;
+        if (ce::api_translator::IsDxupModuleLoaded("d3d9.dll")) {
+            const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
+            const bool isDx12 = intermediateDx11 || (GetModuleHandleA("d3d12.dll") != nullptr);
+            finalApi = identity::WithDxup(identity::D3D9Label(isEx, false), intermediateDx11, isDx12);
+        } else {
+            finalApi = identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
+                                                     ce::api_translator::D3D9RuntimeKind::kDXVK);
+        }
         g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
         s_lastApiDevice = device;
         s_lastDeviceVTable = deviceVTable;
