@@ -34,23 +34,41 @@ struct GlyphSpan {
     uint8_t alpha;
 };
 
+// The sizes one atlas holds, so text of any size shares one texture and one draw call. Each is rasterized
+// at its own pixel size rather than scaled, which keeps it sharp. Base and Small hold every printable
+// character plus the degree sign; Hero holds digits only, because the layouts draw nothing else that large.
+enum class TextSize : uint8_t { Base = 0, Small = 1, Hero = 2 };
+inline constexpr int kTextSizeCount = 3;
+
+// The degree sign in overlay text. Its glyph sits in the unused DEL slot of the 128 entry tables.
+inline constexpr char kDegreeChar = static_cast<char>(0xB0);
+
+struct TextSizeMetrics {
+    int pixelSize = 0;
+    int lineHeight = 0;
+    int ascent = 0;
+    int digitHeight = 0;  // Ink height of a digit, what rows center on: line height varies a lot by font.
+};
+
 // Font atlas containing bitmap font data
 class FontAtlas {
 public:
     FontAtlas();
     ~FontAtlas();
 
-    // Initialize font atlas with a specific size
-    // Uses Windows GDI to rasterize a system font
-    bool Initialize(const char* fontName = "Segoe UI", int fontSize = 14, float dpiScale = 1.0f);
+    // Rasterizes a system font with Windows GDI. False when the font is not installed, because GDI would
+    // silently substitute another one; acceptSubstitute takes whatever GDI selects instead. A weight of 0
+    // applies ce::overlay_font::ResolveWeight.
+    bool Initialize(const char* fontName = "Segoe UI", int fontSize = 14, float dpiScale = 1.0f, int weight = 0,
+                    bool acceptSubstitute = false);
     void Shutdown();
     bool IsInitialized() const {
         return initialized;
     }
 
-    // Get glyph info for a character (ASCII only for now)
-    const Glyph* GetGlyph(char c) const;
-    const std::vector<GlyphSpan>& GetGlyphSpans(char c) const;
+    // Get glyph info for a character
+    const Glyph* GetGlyph(char c, TextSize size = TextSize::Base) const;
+    const std::vector<GlyphSpan>& GetGlyphSpans(char c, TextSize size = TextSize::Base) const;
 
     // Get atlas texture data (RGBA)
     const uint8_t* GetTextureData() const {
@@ -73,35 +91,53 @@ public:
     }
 
     // Font metrics
-    int GetLineHeight() const {
-        return lineHeight;
+    int GetLineHeight(TextSize size = TextSize::Base) const {
+        return sets[static_cast<int>(size)].metrics.lineHeight;
+    }
+    const TextSizeMetrics& GetMetrics(TextSize size) const {
+        return sets[static_cast<int>(size)].metrics;
     }
     float GetDpiScale() const {
         return dpiScale;
     }
+    // The face GDI selected, as UTF-8.
+    const std::string& GetFaceName() const {
+        return faceName;
+    }
+    int GetWeight() const {
+        return weight;
+    }
 
     // Calculate text dimensions
-    void CalcTextSize(const char* text, float* outWidth, float* outHeight) const;
+    void CalcTextSize(const char* text, float* outWidth, float* outHeight, TextSize size = TextSize::Base) const;
 
     // Process-wide count of atlases rasterized with GDI; cache hits do not add to it.
     static uint32_t RasterizedAtlasCount();
+
+    // One size's glyph tables, indexed by slot: the character code, the degree sign in the DEL slot.
+    struct GlyphSet {
+        TextSizeMetrics metrics;
+        Glyph glyphs[128] = {};
+        std::vector<GlyphSpan> spans[128];
+    };
 
 private:
     // In the bottom-left corner, the part of the atlas glyph packing reaches last.
     static constexpr int kWhiteBlockSize = 4;
 
-    void BuildGlyphSpans();
+    bool Rasterize(const wchar_t* face, int fontSize, float scale, int resolvedWeight, bool acceptSubstitute);
+    void BuildGlyphSpans(GlyphSet& set);
     // Shares the finished atlas with later renderers (see the cache in custom_font.cpp).
     void PublishSnapshot(const char* fontName, int fontSize, float scale) const;
 
     std::vector<uint8_t> textureData;  // RGBA pixel data
     int textureWidth = 0;
     int textureHeight = 0;
-    int lineHeight = 0;
     float dpiScale = 1.0f;
+    int weight = 0;
+    std::string faceName;
 
-    Glyph glyphs[128];  // ASCII glyphs
-    std::vector<GlyphSpan> glyphSpans[128];
+    GlyphSet sets[kTextSizeCount];
     bool initialized = false;
 };
 

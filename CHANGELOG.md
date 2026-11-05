@@ -6,6 +6,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Sharper, steadier overlay text:** numbers no longer twitch sideways as their digits change, whatever the font, and the overlay now uses Bahnschrift SemiBold when it is available, which needs less row height for the same digit size. A font that is not installed is now really detected, so the fallback to Segoe UI and Arial works.
+
 - **Graphics API translation reporting in the overlay:** when games run through 3D API translation layers or wrappers, the overlay now reports the complete translation chain ending in the underlying graphics driver rather than an ambiguous wrapper label. This clarifies the active presentation API and intermediate steps, reporting pipelines such as `DX9 -> Vk (DXVK)`, `DX12 -> Vk (VKD3D-Proton)`, `DX9 -> DX12 (DXUP)`, `DX9 -> DX11 -> DX12 (DXUP)`, and `DX11 -> DX12 (DXUP)`.
 
 - **WindowHeartbeat presentation-stall recovery works without the elevation service:** when CaptureEngine has sufficient rights to create an ETW session itself (such as running as administrator), background window stall recovery (`[WindowHeartbeat] enabled=true`) now opens its own dedicated trace session (`CE_PresentProgress_<pid>`) enabling only Microsoft-Windows-DXGI Present start and return events when the elevation service is disabled, unreachable, or refuses the display lease. Unelevated runs continue to require the elevation service.

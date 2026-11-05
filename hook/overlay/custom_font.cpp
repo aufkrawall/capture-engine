@@ -5,8 +5,10 @@
  */
 
 #include "custom_font.h"
+#include "overlay_font_policy.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -15,19 +17,19 @@ namespace CustomOverlay {
 
 namespace {
 
-// A rasterized atlas depends only on (font, size, DPI scale). Rendering it is ~4 ms of GDI work, and
-// CE builds a renderer per route: GTA's FSR FG start built two on AMD's presenter thread inside one
+// A rasterized atlas depends only on (font, size, DPI scale, weight). Rendering it is a few ms of GDI work,
+// and CE builds a renderer per route: GTA's FSR FG start built two on AMD's presenter thread inside one
 // ExecuteCommandLists (session 20260925_225006). Later renderers copy the finished atlas instead.
 struct AtlasSnapshot {
     std::string fontName;
+    std::string faceName;
     int fontSize = 0;
     float dpiScale = 1.0f;
+    int weight = 0;
     std::vector<uint8_t> textureData;
     int textureWidth = 0;
     int textureHeight = 0;
-    int lineHeight = 0;
-    Glyph glyphs[128] = {};
-    std::vector<GlyphSpan> glyphSpans[128];
+    FontAtlas::GlyphSet sets[kTextSizeCount];
 };
 
 std::atomic<uint32_t> g_RasterizedAtlasCount{0};
@@ -42,97 +44,272 @@ std::vector<std::shared_ptr<const AtlasSnapshot>>& AtlasCache() {
     return cache;
 }
 
-std::shared_ptr<const AtlasSnapshot> FindAtlasSnapshot(const char* fontName, int fontSize, float scale) {
+std::shared_ptr<const AtlasSnapshot> FindAtlasSnapshot(const char* fontName, int fontSize, float scale, int weight) {
     std::lock_guard<std::mutex> lock(AtlasCacheMutex());
     for (const auto& snapshot : AtlasCache()) {
-        if (snapshot->fontSize == fontSize && snapshot->dpiScale == scale && snapshot->fontName == fontName) {
+        if (snapshot->fontSize == fontSize && snapshot->dpiScale == scale && snapshot->weight == weight &&
+            snapshot->fontName == fontName) {
             return snapshot;
         }
     }
     return nullptr;
 }
 
+constexpr int kDegreeSlot = 127;
+// Keep a transparent gutter around every glyph. Linear filtering can then never sample coverage from an
+// adjacent cell when a glyph lands between pixels at fractional DPI scales.
+constexpr int kGlyphPadding = 2;
+constexpr float kSmallTextRatio = 0.82f;
+constexpr float kHeroTextRatio = 2.3f;
+constexpr int kMinSmallPixelSize = 8;
+
+int GlyphSlot(char c) {
+    if (c == kDegreeChar)
+        return kDegreeSlot;
+    const unsigned char code = static_cast<unsigned char>(c);
+    return code >= 32 && code <= 126 ? code : static_cast<int>('?');
+}
+
+struct PendingGlyph {
+    int sizeIndex = 0;
+    int slot = 0;
+    wchar_t character = 0;
+    int advance = 0;
+    int cellLeft = 0;
+    int cellTop = 0;
+    int cellWidth = 0;
+    int cellHeight = 0;
+    int atlasX = 0;
+    int atlasY = 0;
+    bool placed = false;
+};
+
+// Rows of glyphs from the top left. Returns how many fit; the bottom edge stays clear of the white block.
+size_t PackGlyphs(std::vector<PendingGlyph>& pending, int atlasWidth, int atlasHeight, int whiteBlockSize) {
+    int cursorX = kGlyphPadding;
+    int cursorY = kGlyphPadding;
+    int rowHeight = 0;
+    size_t placed = 0;
+    for (PendingGlyph& glyph : pending) {
+        glyph.placed = false;
+        if (cursorX + glyph.cellWidth + kGlyphPadding >= atlasWidth) {
+            cursorX = kGlyphPadding;
+            cursorY += rowHeight + kGlyphPadding * 2;
+            rowHeight = 0;
+        }
+        if (cursorY + glyph.cellHeight + kGlyphPadding >= atlasHeight - whiteBlockSize)
+            continue;
+        glyph.atlasX = cursorX;
+        glyph.atlasY = cursorY;
+        glyph.placed = true;
+        ++placed;
+        cursorX += glyph.cellWidth + kGlyphPadding * 2;
+        rowHeight = (std::max)(rowHeight, glyph.cellHeight);
+    }
+    return placed;
+}
+
+// GDI's advance rectangle is not the glyph's ink rectangle: characters such as 'j', '/', '4', and 'R' can
+// paint one or more pixels outside it. The cell is the union, so overhangs remain part of this glyph while
+// the original advance and baseline placement stay unchanged.
+void MeasureGlyph(HDC hdc, const TEXTMETRICW& tm, PendingGlyph& glyph) {
+    SIZE charSize = {};
+    GetTextExtentPoint32W(hdc, &glyph.character, 1, &charSize);
+    MAT2 identityTransform = {};
+    identityTransform.eM11.value = 1;
+    identityTransform.eM22.value = 1;
+    int cellLeft = 0;
+    int cellTop = 0;
+    int cellRight = charSize.cx;
+    int cellBottom = charSize.cy;
+    GLYPHMETRICS glyphMetrics = {};
+    if (GetGlyphOutlineW(hdc, glyph.character, GGO_METRICS, &glyphMetrics, 0, nullptr, &identityTransform) !=
+            GDI_ERROR &&
+        glyphMetrics.gmBlackBoxX > 0 && glyphMetrics.gmBlackBoxY > 0) {
+        const int inkLeft = glyphMetrics.gmptGlyphOrigin.x;
+        const int inkTop = tm.tmAscent - glyphMetrics.gmptGlyphOrigin.y;
+        cellLeft = (std::min)(cellLeft, inkLeft);
+        cellTop = (std::min)(cellTop, inkTop);
+        cellRight = (std::max)(cellRight, inkLeft + static_cast<int>(glyphMetrics.gmBlackBoxX));
+        cellBottom = (std::max)(cellBottom, inkTop + static_cast<int>(glyphMetrics.gmBlackBoxY));
+    }
+    glyph.advance = charSize.cx;
+    glyph.cellLeft = cellLeft;
+    glyph.cellTop = cellTop;
+    glyph.cellWidth = (std::max)(1, cellRight - cellLeft);
+    glyph.cellHeight = (std::max)(1, cellBottom - cellTop);
+}
+
+int DigitInkHeight(HDC hdc) {
+    MAT2 identityTransform = {};
+    identityTransform.eM11.value = 1;
+    identityTransform.eM22.value = 1;
+    GLYPHMETRICS glyphMetrics = {};
+    if (GetGlyphOutlineW(hdc, L'0', GGO_METRICS, &glyphMetrics, 0, nullptr, &identityTransform) == GDI_ERROR)
+        return 0;
+    return static_cast<int>(glyphMetrics.gmBlackBoxY);
+}
+
+std::wstring WideFromUtf8(const char* text) {
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, nullptr, 0);
+    if (length <= 1)
+        return {};
+    std::wstring wide(static_cast<size_t>(length - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide.data(), length);
+    return wide;
+}
+
+std::string Utf8FromWide(const wchar_t* text) {
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+    if (length <= 1)
+        return {};
+    std::string narrow(static_cast<size_t>(length - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, narrow.data(), length, nullptr, nullptr);
+    return narrow;
+}
+
 }  // namespace
 
-FontAtlas::FontAtlas() {
-    memset(glyphs, 0, sizeof(glyphs));
-}
+FontAtlas::FontAtlas() = default;
 
 FontAtlas::~FontAtlas() {
     Shutdown();
 }
 
-bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
+bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale, int requestedWeight,
+                           bool acceptSubstitute) {
     if (initialized)
         return true;
     if (!fontName)
         return false;
 
-    if (const auto snapshot = FindAtlasSnapshot(fontName, fontSize, scale)) {
+    const int resolvedWeight = ce::overlay_font::ResolveWeight(fontName, requestedWeight);
+    if (const auto snapshot = FindAtlasSnapshot(fontName, fontSize, scale, resolvedWeight)) {
         textureData = snapshot->textureData;
         textureWidth = snapshot->textureWidth;
         textureHeight = snapshot->textureHeight;
-        lineHeight = snapshot->lineHeight;
         dpiScale = snapshot->dpiScale;
-        memcpy(glyphs, snapshot->glyphs, sizeof(glyphs));
-        for (int c = 0; c < 128; ++c) {
-            glyphSpans[c] = snapshot->glyphSpans[c];
-        }
+        weight = snapshot->weight;
+        faceName = snapshot->faceName;
+        for (int size = 0; size < kTextSizeCount; ++size)
+            sets[size] = snapshot->sets[size];
         initialized = true;
         return true;
     }
 
-    memset(glyphs, 0, sizeof(glyphs));
-    for (auto& spans : glyphSpans) {
-        spans.clear();
-    }
+    const std::wstring wideName = WideFromUtf8(fontName);
+    if (wideName.empty() || !Rasterize(wideName.c_str(), fontSize, scale, resolvedWeight, acceptSubstitute))
+        return false;
 
-    dpiScale = scale;
+    initialized = true;
+    g_RasterizedAtlasCount.fetch_add(1, std::memory_order_relaxed);
+    PublishSnapshot(fontName, fontSize, scale);
+    return true;
+}
+
+bool FontAtlas::Rasterize(const wchar_t* face, int fontSize, float scale, int resolvedWeight, bool acceptSubstitute) {
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    int scaledSize = (int)(fontSize * scale);
+    const int basePixels = (std::max)(1, (int)(fontSize * scale));
+    const int pixelSizes[kTextSizeCount] = {
+        basePixels,
+        (std::max)(kMinSmallPixelSize, static_cast<int>(std::lround(static_cast<float>(basePixels) * kSmallTextRatio))),
+        static_cast<int>(std::lround(static_cast<float>(basePixels) * kHeroTextRatio)),
+    };
 
-    // Create DC for font metrics
     HDC hdc = CreateCompatibleDC(nullptr);
     if (!hdc)
         return false;
+    const HGDIOBJ originalFont = GetCurrentObject(hdc, OBJ_FONT);
 
-    // Create font
-    HFONT hFont = CreateFontA(-scaledSize,          // Height (negative = character height)
-                              0,                    // Width
-                              0, 0,                 // Escapement, Orientation
-                              FW_BOLD,              // Weight - Bold for better visibility
-                              FALSE, FALSE, FALSE,  // Italic, Underline, Strikeout
-                              ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                              DEFAULT_PITCH | FF_DONTCARE, fontName);
-
-    if (!hFont) {
+    HFONT fonts[kTextSizeCount] = {};
+    const auto releaseFonts = [&]() {
+        SelectObject(hdc, originalFont);
+        for (HFONT font : fonts) {
+            if (font)
+                DeleteObject(font);
+        }
         DeleteDC(hdc);
+    };
+    for (int size = 0; size < kTextSizeCount; ++size) {
+        fonts[size] = CreateFontW(-pixelSizes[size], 0, 0, 0, resolvedWeight, FALSE, FALSE, FALSE, ANSI_CHARSET,
+                                  OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                                  DEFAULT_PITCH | FF_DONTCARE, face);
+        if (!fonts[size]) {
+            releaseFonts();
+            return false;
+        }
+    }
+
+    SelectObject(hdc, fonts[0]);
+    wchar_t selectedFace[LF_FACESIZE * 2] = {};
+    GetTextFaceW(hdc, static_cast<int>(std::size(selectedFace)), selectedFace);
+    if (!acceptSubstitute && !ce::overlay_font::FaceMatches(face, selectedFace)) {
+        releaseFonts();
         return false;
     }
 
-    HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
+    std::vector<PendingGlyph> pending;
+    pending.reserve(220);
+    for (int size = 0; size < kTextSizeCount; ++size) {
+        SelectObject(hdc, fonts[size]);
+        TEXTMETRICW tm = {};
+        GetTextMetricsW(hdc, &tm);
+        TextSizeMetrics& metrics = sets[size].metrics;
+        metrics.pixelSize = pixelSizes[size];
+        metrics.lineHeight = tm.tmHeight + tm.tmExternalLeading;
+        metrics.ascent = tm.tmAscent;
+        metrics.digitHeight = DigitInkHeight(hdc);
 
-    // Get font metrics
-    TEXTMETRICA tm;
-    GetTextMetricsA(hdc, &tm);
-    lineHeight = tm.tmHeight + tm.tmExternalLeading;
+        const size_t firstOfSize = pending.size();
+        const auto add = [&](int slot, wchar_t character) {
+            PendingGlyph glyph;
+            glyph.sizeIndex = size;
+            glyph.slot = slot;
+            glyph.character = character;
+            MeasureGlyph(hdc, tm, glyph);
+            pending.push_back(glyph);
+        };
+        if (static_cast<TextSize>(size) == TextSize::Hero) {
+            for (const wchar_t character : {L' ', L'-', L'.'})
+                add(static_cast<int>(character), character);
+            for (wchar_t digit = L'0'; digit <= L'9'; ++digit)
+                add(static_cast<int>(digit), digit);
+        } else {
+            for (int code = 32; code < 127; ++code)
+                add(code, static_cast<wchar_t>(code));
+            add(kDegreeSlot, L'\u00B0');
+        }
 
-    // Calculate atlas size needed
-    // For ASCII printable chars (32-126), estimate ~16 chars per row
-    int atlasWidth = 512;
-    int atlasHeight = 256;
-
-    // Scale atlas for high DPI
-    if (scale > 1.5f) {
-        atlasWidth = 1024;
-        atlasHeight = 512;
+        // One advance for all digits, whatever the font does: GDI cannot select OpenType tabular figures,
+        // and proportional ones make a right-aligned column twitch with every value. Each digit stays
+        // centered in the shared cell.
+        int digitAdvance = 0;
+        for (size_t i = firstOfSize; i < pending.size(); ++i) {
+            if (pending[i].character >= L'0' && pending[i].character <= L'9')
+                digitAdvance = (std::max)(digitAdvance, pending[i].advance);
+        }
+        for (size_t i = firstOfSize; i < pending.size(); ++i) {
+            PendingGlyph& glyph = pending[i];
+            if (glyph.character >= L'0' && glyph.character <= L'9') {
+                glyph.cellLeft += (digitAdvance - glyph.advance) / 2;
+                glyph.advance = digitAdvance;
+            }
+        }
     }
 
-    textureWidth = atlasWidth;
-    textureHeight = atlasHeight;
-    const size_t atlasByteSize = static_cast<size_t>(atlasWidth) * static_cast<size_t>(atlasHeight) * 4u;
+    // The smallest texture that holds everything; a size beyond the largest keeps what fits.
+    constexpr int kAtlasSizes[][2] = {{512, 256},   {512, 512},   {1024, 512},  {1024, 1024},
+                                      {2048, 1024}, {2048, 2048}, {4096, 2048}, {4096, 4096}};
+    int atlasWidth = 0;
+    int atlasHeight = 0;
+    for (const auto& candidate : kAtlasSizes) {
+        atlasWidth = candidate[0];
+        atlasHeight = candidate[1];
+        if (PackGlyphs(pending, atlasWidth, atlasHeight, kWhiteBlockSize) == pending.size())
+            break;
+    }
 
-    // Create DIB section for rendering
+    const size_t atlasByteSize = static_cast<size_t>(atlasWidth) * static_cast<size_t>(atlasHeight) * 4u;
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = atlasWidth;
@@ -144,90 +321,42 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     void* bits = nullptr;
     HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!hBitmap) {
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
-        DeleteDC(hdc);
+        releaseFonts();
         return false;
     }
-
     HBITMAP oldBitmap = (HBITMAP)SelectObject(hdc, hBitmap);
-
-    // Clear to black
     memset(bits, 0, atlasByteSize);
-
-    // Set text rendering
     SetTextColor(hdc, RGB(255, 255, 255));
     SetBkMode(hdc, TRANSPARENT);
 
-    // Keep a transparent gutter around every glyph. Linear filtering can then
-    // never sample coverage from an adjacent cell when a glyph lands between
-    // pixels at fractional DPI scales.
-    constexpr int kGlyphPadding = 2;
-    int cursorX = kGlyphPadding;
-    int cursorY = kGlyphPadding;
-    int maxRowHeight = 0;
-    MAT2 identityTransform = {};
-    identityTransform.eM11.value = 1;
-    identityTransform.eM22.value = 1;
-
-    for (int c = 32; c < 127; c++) {
-        char ch = (char)c;
-
-        SIZE charSize;
-        GetTextExtentPoint32A(hdc, &ch, 1, &charSize);
-
-        // GDI's advance rectangle is not the glyph's ink rectangle: characters
-        // such as 'j', '/', '4', and 'R' can paint one or more pixels outside
-        // it. Pack the union so overhangs remain part of this glyph while the
-        // original advance and baseline placement stay unchanged.
-        int cellLeft = 0;
-        int cellTop = 0;
-        int cellRight = charSize.cx;
-        int cellBottom = charSize.cy;
-        GLYPHMETRICS glyphMetrics = {};
-        if (GetGlyphOutlineA(hdc, (UINT)(unsigned char)ch, GGO_METRICS, &glyphMetrics, 0, nullptr,
-                             &identityTransform) != GDI_ERROR &&
-            glyphMetrics.gmBlackBoxX > 0 && glyphMetrics.gmBlackBoxY > 0) {
-            const int inkLeft = glyphMetrics.gmptGlyphOrigin.x;
-            const int inkTop = tm.tmAscent - glyphMetrics.gmptGlyphOrigin.y;
-            const int inkRight = inkLeft + (int)glyphMetrics.gmBlackBoxX;
-            const int inkBottom = inkTop + (int)glyphMetrics.gmBlackBoxY;
-            cellLeft = (std::min)(cellLeft, inkLeft);
-            cellTop = (std::min)(cellTop, inkTop);
-            cellRight = (std::max)(cellRight, inkRight);
-            cellBottom = (std::max)(cellBottom, inkBottom);
-        }
-        const int cellWidth = (std::max)(1, cellRight - cellLeft);
-        const int cellHeight = (std::max)(1, cellBottom - cellTop);
-
-        // Check if we need to wrap to next row
-        if (cursorX + cellWidth + kGlyphPadding >= atlasWidth) {
-            cursorX = kGlyphPadding;
-            cursorY += maxRowHeight + kGlyphPadding * 2;
-            maxRowHeight = 0;
-        }
-
-        // Skip glyph if it would overflow the atlas vertically, or come near the white block
-        if (cursorY + cellHeight + kGlyphPadding >= atlasHeight - kWhiteBlockSize)
+    int selectedSize = -1;
+    for (const PendingGlyph& glyph : pending) {
+        if (!glyph.placed)
             continue;
+        if (glyph.sizeIndex != selectedSize) {
+            selectedSize = glyph.sizeIndex;
+            SelectObject(hdc, fonts[selectedSize]);
+        }
+        // Undo the digit cell's shift for the drawing origin: the atlas holds the ink at the cell's left.
+        SIZE charSize = {};
+        GetTextExtentPoint32W(hdc, &glyph.character, 1, &charSize);
+        const int digitShift = glyph.character >= L'0' && glyph.character <= L'9'
+                                   ? (glyph.advance - charSize.cx) / 2
+                                   : 0;
+        // Clip to the measured cell as a final isolation boundary. This guards against driver/font rasterizer
+        // overdraw without touching the two transparent texels between adjacent cells.
+        RECT cellRect = {glyph.atlasX, glyph.atlasY, glyph.atlasX + glyph.cellWidth, glyph.atlasY + glyph.cellHeight};
+        ExtTextOutW(hdc, glyph.atlasX - (glyph.cellLeft - digitShift), glyph.atlasY - glyph.cellTop, ETO_CLIPPED,
+                    &cellRect, &glyph.character, 1, nullptr);
 
-        // Clip to the measured cell as a final isolation boundary. This guards
-        // against driver/font rasterizer overdraw without touching the two
-        // transparent texels between adjacent cells.
-        RECT cellRect = {cursorX, cursorY, cursorX + cellWidth, cursorY + cellHeight};
-        ExtTextOutA(hdc, cursorX - cellLeft, cursorY - cellTop, ETO_CLIPPED, &cellRect, &ch, 1, nullptr);
-
-        // Store glyph info
-        glyphs[c].x = (uint16_t)cursorX;
-        glyphs[c].y = (uint16_t)cursorY;
-        glyphs[c].width = (uint16_t)cellWidth;
-        glyphs[c].height = (uint16_t)cellHeight;
-        glyphs[c].xOffset = (int16_t)cellLeft;
-        glyphs[c].yOffset = (int16_t)cellTop;
-        glyphs[c].xAdvance = (uint16_t)charSize.cx;
-
-        cursorX += cellWidth + kGlyphPadding * 2;
-        maxRowHeight = (std::max)(maxRowHeight, cellHeight);
+        Glyph& out = sets[glyph.sizeIndex].glyphs[glyph.slot];
+        out.x = static_cast<uint16_t>(glyph.atlasX);
+        out.y = static_cast<uint16_t>(glyph.atlasY);
+        out.width = static_cast<uint16_t>(glyph.cellWidth);
+        out.height = static_cast<uint16_t>(glyph.cellHeight);
+        out.xOffset = static_cast<int16_t>(glyph.cellLeft);
+        out.yOffset = static_cast<int16_t>(glyph.cellTop);
+        out.xAdvance = static_cast<uint16_t>(glyph.advance);
     }
 
     // TextOut can be queued by GDI. Flush before consuming the DIB bits so an
@@ -235,6 +364,8 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     GdiFlush();
 
     // Convert bitmap to RGBA texture data
+    textureWidth = atlasWidth;
+    textureHeight = atlasHeight;
     textureData.resize(atlasByteSize);
     uint8_t* src = (uint8_t*)bits;
     uint8_t* dst = textureData.data();
@@ -261,18 +392,16 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
                static_cast<size_t>(kWhiteBlockSize) * 4u);
     }
 
-    BuildGlyphSpans();
+    for (GlyphSet& set : sets)
+        BuildGlyphSpans(set);
 
-    // Cleanup
     SelectObject(hdc, oldBitmap);
-    SelectObject(hdc, oldFont);
     DeleteObject(hBitmap);
-    DeleteObject(hFont);
-    DeleteDC(hdc);
+    releaseFonts();
 
-    initialized = true;
-    g_RasterizedAtlasCount.fetch_add(1, std::memory_order_relaxed);
-    PublishSnapshot(fontName, fontSize, scale);
+    dpiScale = scale;
+    weight = resolvedWeight;
+    faceName = Utf8FromWide(selectedFace);
     return true;
 }
 
@@ -283,19 +412,19 @@ uint32_t FontAtlas::RasterizedAtlasCount() {
 void FontAtlas::PublishSnapshot(const char* fontName, int fontSize, float scale) const {
     auto snapshot = std::make_shared<AtlasSnapshot>();
     snapshot->fontName = fontName;
+    snapshot->faceName = faceName;
     snapshot->fontSize = fontSize;
     snapshot->dpiScale = scale;
+    snapshot->weight = weight;
     snapshot->textureData = textureData;
     snapshot->textureWidth = textureWidth;
     snapshot->textureHeight = textureHeight;
-    snapshot->lineHeight = lineHeight;
-    memcpy(snapshot->glyphs, glyphs, sizeof(glyphs));
-    for (int c = 0; c < 128; ++c) {
-        snapshot->glyphSpans[c] = glyphSpans[c];
-    }
+    for (int size = 0; size < kTextSizeCount; ++size)
+        snapshot->sets[size] = sets[size];
     std::lock_guard<std::mutex> lock(AtlasCacheMutex());
     for (const auto& existing : AtlasCache()) {
-        if (existing->fontSize == fontSize && existing->dpiScale == scale && existing->fontName == fontName) {
+        if (existing->fontSize == fontSize && existing->dpiScale == scale && existing->weight == weight &&
+            existing->fontName == fontName) {
             return;
         }
     }
@@ -306,35 +435,29 @@ void FontAtlas::Shutdown() {
     textureData.clear();
     textureWidth = 0;
     textureHeight = 0;
-    lineHeight = 0;
-    memset(glyphs, 0, sizeof(glyphs));
-    for (auto& spans : glyphSpans) {
-        spans.clear();
-    }
+    weight = 0;
+    faceName.clear();
+    for (GlyphSet& set : sets)
+        set = GlyphSet{};
     initialized = false;
 }
 
-const Glyph* FontAtlas::GetGlyph(char c) const {
-    const unsigned char code = static_cast<unsigned char>(c);
-    const unsigned char index = code >= 32 && code <= 126 ? code : static_cast<unsigned char>('?');
-    return &glyphs[index];
+const Glyph* FontAtlas::GetGlyph(char c, TextSize size) const {
+    return &sets[static_cast<int>(size)].glyphs[GlyphSlot(c)];
 }
 
-const std::vector<GlyphSpan>& FontAtlas::GetGlyphSpans(char c) const {
-    const unsigned char code = static_cast<unsigned char>(c);
-    const unsigned char index = code >= 32 && code <= 126 ? code : static_cast<unsigned char>('?');
-    return glyphSpans[index];
+const std::vector<GlyphSpan>& FontAtlas::GetGlyphSpans(char c, TextSize size) const {
+    return sets[static_cast<int>(size)].spans[GlyphSlot(c)];
 }
 
-void FontAtlas::BuildGlyphSpans() {
+void FontAtlas::BuildGlyphSpans(GlyphSet& set) {
     if (textureData.empty() || textureWidth <= 0 || textureHeight <= 0)
         return;
 
-    for (int c = 32; c < 127; ++c) {
-        const Glyph& g = glyphs[c];
-        auto& spans = glyphSpans[c];
+    for (int c = 32; c < 128; ++c) {
+        const Glyph& g = set.glyphs[c];
+        auto& spans = set.spans[c];
         spans.clear();
-
         if (g.width == 0 || g.height == 0)
             continue;
 
@@ -393,10 +516,11 @@ void FontAtlas::BuildGlyphSpans() {
     }
 }
 
-void FontAtlas::CalcTextSize(const char* text, float* outWidth, float* outHeight) const {
+void FontAtlas::CalcTextSize(const char* text, float* outWidth, float* outHeight, TextSize size) const {
     if (!text)
         return;
 
+    const int lineHeight = GetLineHeight(size);
     float width = 0;
     float height = (float)lineHeight;
     float lineWidth = 0;
@@ -411,7 +535,7 @@ void FontAtlas::CalcTextSize(const char* text, float* outWidth, float* outHeight
             continue;
         }
 
-        const Glyph* g = GetGlyph(c);
+        const Glyph* g = GetGlyph(c, size);
         if (g) {
             // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             lineWidth += g->xAdvance;

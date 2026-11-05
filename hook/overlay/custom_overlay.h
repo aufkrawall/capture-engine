@@ -46,6 +46,14 @@ struct DrawCommand {
     uint32_t baseVertex = 0;
 };
 
+// The font the atlas is rasterized from. An empty face or one that is not installed falls back through
+// ce::overlay_font::kDefaultFaces. A weight or size of 0 means automatic.
+struct FontRequest {
+    const char* face = nullptr;
+    int weight = 0;
+    float basePixelSize = 0.0f;
+};
+
 // Overlay renderer - main API
 class Renderer {
 public:
@@ -53,7 +61,7 @@ public:
     ~Renderer();
 
     // Initialize with a graphics backend
-    bool Initialize(RendererBackend* backend, float dpiScale = 1.0f);
+    bool Initialize(RendererBackend* backend, float dpiScale = 1.0f, const FontRequest& font = {});
     void Shutdown();
     void SetSkipDeviceRelease(bool skip) {
         skipDeviceRelease = skip;
@@ -78,6 +86,9 @@ public:
     void DrawTextScaled(float x, float y, const char* text, uint32_t color, float scale);
     void DrawTextScaledWithShadow(float x, float y, const char* text, uint32_t color, uint32_t shadowColor, float scale,
                                   float shadowOffset = 1.0f);
+    // One of the atlas' sizes at a physical-pixel shadow offset; 0 draws no shadow.
+    void DrawSizedText(float x, float y, const char* text, uint32_t color, TextSize size, uint32_t shadowColor = 0,
+                       int shadowPixels = 0);
 
     // Right-aligned text (prevents flicker when digit count changes)
     void DrawTextRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,
@@ -88,6 +99,7 @@ public:
     // Calculate text size
     void CalcTextSize(const char* text, float* outWidth, float* outHeight) const;
     void CalcTextSizeScaled(const char* text, float* outWidth, float* outHeight, float scale) const;
+    float TextWidth(const char* text, TextSize size) const;
 
     // Basic shapes
     void DrawRect(float x, float y, float w, float h, uint32_t color);
@@ -103,15 +115,6 @@ public:
 
     // Debug
     void ValidateCommands();
-
-    // Window-like containers (simplified)
-    void BeginWindow(float x, float y, uint32_t bgColor, float alpha = 0.8f);
-    void EndWindow();
-
-    // Table layout (simplified 2-column layout)
-    void BeginTable();
-    void TableRow(const char* label, const char* value, uint32_t labelColor, uint32_t valueColor);
-    void EndTable();
 
     // Font access
     FontAtlas* GetFont() {
@@ -143,9 +146,11 @@ public:
 
 private:
     void AddTextQuads(float x, float y, const char* text, uint32_t color);
-    void AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale);
+    void AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale,
+                            TextSize size = TextSize::Base);
     void AddTextSolidQuads(float x, float y, const char* text, uint32_t color);
-    void AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale);
+    void AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale,
+                                 TextSize size = TextSize::Base);
     void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color);
     void FlushBatch(bool useTexture);
     // Whether 16-bit indices can address `count` more vertices, in a new chunk if the backend draws chunks.
@@ -163,14 +168,6 @@ private:
     int viewportWidth = 0;
     int viewportHeight = 0;
     float dpiScale = 1.0f;
-
-    // Current drawing state
-    float cursorX = 0;
-    float cursorY = 0;
-    bool inWindow = false;
-    bool inTable = false;
-    float windowX = 0, windowY = 0;
-    float tableStartY = 0;
 
     bool initialized = false;
     bool frameStarted = false;

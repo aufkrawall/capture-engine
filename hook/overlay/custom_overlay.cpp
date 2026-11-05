@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include "hook/runtime/hook_common.h"
+#include "overlay_font_policy.h"
 
 namespace CustomOverlay {
 
@@ -31,7 +32,7 @@ Renderer::~Renderer() {
     Shutdown();
 }
 
-bool Renderer::Initialize(RendererBackend* backendPtr, float scale) {
+bool Renderer::Initialize(RendererBackend* backendPtr, float scale, const FontRequest& font) {
     if (initialized)
         return true;
     if (!backendPtr)
@@ -40,13 +41,26 @@ bool Renderer::Initialize(RendererBackend* backendPtr, float scale) {
     backend = backendPtr;
     dpiScale = scale;
 
-    // Initialize font atlas
-    if (!fontAtlas.Initialize("Segoe UI", 14, scale)) {
-        // Fallback to Arial if Segoe UI not available
-        if (!fontAtlas.Initialize("Arial", 14, scale)) {
-            return false;
-        }
+    namespace overlay_font = ce::overlay_font;
+    const int basePixels =
+        font.basePixelSize >= 1.0f
+            ? std::clamp(static_cast<int>(std::lround(font.basePixelSize)), overlay_font::kMinBasePixelSize,
+                         overlay_font::kMaxBasePixelSize)
+            : overlay_font::kDefaultBasePixelSize;
+    const bool faceRequested = font.face && font.face[0];
+    bool fontReady = faceRequested && fontAtlas.Initialize(font.face, basePixels, scale, font.weight);
+    if (faceRequested && !fontReady)
+        HookLogImportant("[Overlay] Font '%s' is not installed; using the default", font.face);
+    for (const char* face : overlay_font::kDefaultFaces) {
+        fontReady = fontReady || fontAtlas.Initialize(face, basePixels, scale, font.weight);
     }
+    // Nothing the chain names exists (a system without Windows' fonts): whatever GDI substitutes beats no text.
+    if (!fontReady && !fontAtlas.Initialize("Arial", basePixels, scale, font.weight, true))
+        return false;
+    HookLogImportant("[Overlay] Font: face='%s' weight=%d pixels=%d/%d/%d atlas=%dx%d", fontAtlas.GetFaceName().c_str(),
+                     fontAtlas.GetWeight(), fontAtlas.GetMetrics(TextSize::Base).pixelSize,
+                     fontAtlas.GetMetrics(TextSize::Small).pixelSize, fontAtlas.GetMetrics(TextSize::Hero).pixelSize,
+                     fontAtlas.GetTextureWidth(), fontAtlas.GetTextureHeight());
 
     // Initialize backend with font texture
     if (!backend->Initialize(fontAtlas.GetTextureWidth(), fontAtlas.GetTextureHeight(), fontAtlas.GetTextureData())) {
@@ -97,10 +111,6 @@ void Renderer::BeginFrame(int width, int height) {
     rewoundToTail = false;
     chunkBaseVertex = 0;
 
-    cursorX = 0;
-    cursorY = 0;
-    inWindow = false;
-    inTable = false;
     frameStarted = true;
 
     currentBatchVertexOffset = 0;
@@ -228,7 +238,7 @@ void Renderer::AddTextQuads(float x, float y, const char* text, uint32_t color) 
     AddTextQuadsScaled(x, y, text, color, 1.0f);
 }
 
-void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale) {
+void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale, TextSize size) {
     if (!text)
         return;
 
@@ -246,11 +256,11 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
 
         if (c == '\n') {
             px = originX;
-            py += static_cast<float>(fontAtlas.GetLineHeight()) * scale;
+            py += static_cast<float>(fontAtlas.GetLineHeight(size)) * scale;
             continue;
         }
 
-        const Glyph* g = fontAtlas.GetGlyph(c);
+        const Glyph* g = fontAtlas.GetGlyph(c, size);
         if (!g || g->width == 0)
             continue;
 
@@ -274,7 +284,8 @@ void Renderer::AddTextSolidQuads(float x, float y, const char* text, uint32_t co
     AddTextSolidQuadsScaled(x, y, text, color, 1.0f);
 }
 
-void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale) {
+void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale,
+                                       TextSize size) {
     if (!text || scale <= 0.0f)
         return;
 
@@ -287,15 +298,15 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
 
         if (c == '\n') {
             px = originX;
-            py += static_cast<float>(fontAtlas.GetLineHeight()) * scale;
+            py += static_cast<float>(fontAtlas.GetLineHeight(size)) * scale;
             continue;
         }
 
-        const Glyph* g = fontAtlas.GetGlyph(c);
+        const Glyph* g = fontAtlas.GetGlyph(c, size);
         if (!g || g->width == 0)
             continue;
 
-        const auto& spans = fontAtlas.GetGlyphSpans(c);
+        const auto& spans = fontAtlas.GetGlyphSpans(c, size);
         if (!spans.empty()) {
             const float gx = px + static_cast<float>(g->xOffset) * scale;
             const float gy = py + static_cast<float>(g->yOffset) * scale;
@@ -428,6 +439,30 @@ void Renderer::DrawTextScaledWithShadow(float x, float y, const char* text, uint
     }
 }
 
+void Renderer::DrawSizedText(float x, float y, const char* text, uint32_t color, TextSize size, uint32_t shadowColor,
+                             int shadowPixels) {
+    if (!initialized || !text)
+        return;
+
+    const float originX = roundf(x);
+    const float originY = roundf(y);
+    const auto off = static_cast<float>(shadowPixels);
+    const bool solidText = backend && backend->PreferSolidTextGeometry();
+    const size_t prevVertCount = vertices.size();
+    if (solidText) {
+        if (shadowPixels > 0)
+            AddTextSolidQuadsScaled(originX + off, originY + off, text, shadowColor, 1.0f, size);
+        AddTextSolidQuadsScaled(originX, originY, text, color, 1.0f, size);
+    } else {
+        if (shadowPixels > 0)
+            AddTextQuadsScaled(originX + off, originY + off, text, shadowColor, 1.0f, size);
+        AddTextQuadsScaled(originX, originY, text, color, 1.0f, size);
+    }
+    if (vertices.size() > prevVertCount) {
+        FlushBatch(!solidText);
+    }
+}
+
 void Renderer::DrawTextRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,
                                     float shadowOffset) {
     if (!initialized || !text)
@@ -458,6 +493,12 @@ void Renderer::CalcTextSizeScaled(const char* text, float* outWidth, float* outH
         *outWidth *= scale;
     if (outHeight)
         *outHeight *= scale;
+}
+
+float Renderer::TextWidth(const char* text, TextSize size) const {
+    float width = 0.0f;
+    fontAtlas.CalcTextSize(text, &width, nullptr, size);
+    return width;
 }
 
 void Renderer::DrawRect(float x, float y, float w, float h, uint32_t color) {
@@ -746,54 +787,6 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     // 0.75 logical pixels at every DPI (e.g. 100%->0.75px, 200%->1.5px physical = same visual size).
     const float lineThickness = 0.75f * dpiScale;
     DrawGraphPolyline(cxs, cys, clipped, color, lineThickness);
-}
-
-void Renderer::BeginWindow(float x, float y, uint32_t bgColor, float alpha) {
-    if (!initialized)
-        return;
-
-    windowX = x;
-    windowY = y;
-    cursorX = x + 8 * dpiScale;  // Padding
-    cursorY = y + 4 * dpiScale;
-    inWindow = true;
-
-    // Background will be drawn in EndWindow after we know the size
-}
-
-void Renderer::EndWindow() {
-    if (!initialized || !inWindow)
-        return;
-    inWindow = false;
-}
-
-void Renderer::BeginTable() {
-    if (!initialized)
-        return;
-    inTable = true;
-    tableStartY = cursorY;
-}
-
-void Renderer::TableRow(const char* label, const char* value, uint32_t labelColor, uint32_t valueColor) {
-    if (!initialized || !inTable)
-        return;
-
-    float colWidth = 100.0f * dpiScale;  // Fixed column width for label
-
-    // Draw label
-    DrawText(cursorX, cursorY, label, labelColor);
-
-    // Draw value
-    DrawText(cursorX + colWidth, cursorY, value, valueColor);
-
-    // Move to next row
-    cursorY += static_cast<float>(fontAtlas.GetLineHeight());
-}
-
-void Renderer::EndTable() {
-    if (!initialized)
-        return;
-    inTable = false;
 }
 
 }  // namespace CustomOverlay
