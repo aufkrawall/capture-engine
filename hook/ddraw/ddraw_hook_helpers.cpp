@@ -479,7 +479,7 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
     std::string finalLabel;
     if (ce::api_translator::IsDxupModuleLoaded("ddraw.dll")) {
         const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-        const bool isDx12 = intermediateDx11 || (GetModuleHandleA("d3d12.dll") != nullptr);
+        const bool isDx12 = intermediateDx11;
         finalLabel = ce::graphics_api_identity::WithDxup(legacyLabel, intermediateDx11, isDx12);
     } else {
         finalLabel = legacyLabel;

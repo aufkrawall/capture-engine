@@ -353,7 +353,7 @@ void DrawDX8Overlay(IDirect3DDevice8* device,  HWND hwnd) {
     std::string apiLabel = "DX8";
     if (ce::api_translator::IsDxupModuleLoaded("d3d8.dll")) {
         const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-        const bool isDx12 = intermediateDx11 || (GetModuleHandleA("d3d12.dll") != nullptr);
+        const bool isDx12 = intermediateDx11;
         apiLabel = ce::graphics_api_identity::WithDxup("DX8", intermediateDx11, isDx12);
     } else if (ce::api_translator::IsDxvkModuleLoaded("d3d8.dll")) {
         apiLabel = "DX8 -> Vk (DXVK)";
