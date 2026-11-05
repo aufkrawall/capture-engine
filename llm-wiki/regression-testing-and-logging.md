@@ -599,7 +599,7 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   was the previous present's wait). `overlay_us` is the normal route's overlay CPU time (back-buffer
   lookup to submission end, `CompleteDrawSubmissionMetrics`), plus every PostSL draw on the thread
   (`PerfLogger::NoteDrawOutsideRow`, from `InvokePostSLCallbackForFinalOutputPresent`), which also adds to
-  `total_us` unless the row's span already covers it; until 0.1.7419 it read 0 on PostSL routes. Still 0 on the
+  `total_us` unless the row's span already covers it; until 0.1.7422 it read 0 on PostSL routes. Still 0 on the
   FFX callback route, whose draw runs on AMD's thread. With no ProcessFrame row the held row is the catch-all (`total_us` = the whole hook, the forward included). A ProcessFrame row from
   a nested present on the same thread (Streamline's synchronous re-entry) is held by the outer row. Unit
   tests: `tests/test_dx11_present_perf_row.cpp` (`AHeldInnerRow...`, `AHoldingRow...`, `TheHoldEnds...`).

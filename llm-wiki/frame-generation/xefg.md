@@ -336,6 +336,7 @@ not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's pres
 - Why XeFG started directly paces worse than XeFG switched on (`20261104_210842`: jag 8792 us vs 421-991), and whether that
   also happens without CE. The user reports it does; no CE-off capture exists yet. CE's cost and call order match.
   Switched on after FSR in `20261104_221303`: CSV stddev 580-877 us at 85-90 fps, against 4848-5412 us for the direct start.
+- What the one 13-31 ms submit right after XeFG's chain arrives waits on. It is not CE's list: the same stall hits submits inside Present while CE submits nothing (`log/recent.md`, 2026-11-05). `[PRESENT STALL] stack #N overlay submit blocked` will name it on the next run.
 - Who presents the real frame under OptiScaler (game thread or XeFG's thread); the route does not depend on it.
 - Whether XeFG tolerates CE's create-time swapchain changes inside its own native create (descriptor overrides are
   skipped there today).
