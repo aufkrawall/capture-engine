@@ -8,8 +8,9 @@
 - **Focus edges under XeFG, stall in DXGI's submit too:** 28.9 ms down-call at 01:56:09.470 (`stack #5`: `ZwWaitForSingleObject` < `WaitForSingleObjectEx` < nvwgf2umx+0xa55b3d, under dxgi+0x524a), 6.7 ms at 01:56:43.676 (169 ms gap). The game resized XeFG's chain first both times (`ResizeBuffers1` at 01:56:09.424, 01:56:43.645).
 - **A lead, not proven:** most stalls in the last three sessions follow a `ResizeBuffers` on that chain by under 50 ms (01:55:37.682, 01:56:09.424, 01:56:43.645, 01:47:03.751), which would fit the driver doing first-use work for new back buffers. Not every resize stalls: 01:55:41.936 did not. No change either way.
 - **Background 34 s under XeFG:** 81 presents/s against 87 in the foreground, `overlay_us` 106/229 against 103/210, jag 1543-1785 us while composed. No `presentability` line: `IsIconic` stayed false at every Present and the game kept rendering, so not a minimize.
+- **Talos cannot be minimized (user, 2026-11-05):** this run had the game's exclusive fullscreen setting on, Alt+Tab, then Windows' Show Desktop button, and more is not possible. Explorer in front 01:56:33.7 to 01:56:43.8: 83 presents/s, largest gap 26 ms, `overlay_us` 100/161. XeFG's chain still reports `windowed=1` and `Focus-loss foreground reacquire Present proof` accepted it, a path that requires `Windowed=TRUE`, so that setting is not DXGI exclusive here. It does show as `ResizeBuffers1` at both focus edges; borderless `20261105_014611` had none there. So `NOT-PRESENTABLE` is unreachable in Talos: it needs a windowed D3D12 app or a flow scenario, none exists (`tests/flow` never minimizes its window).
 - **Cost:** bypass `own` 136.6/213.0, `overlay_us` 110/161; XeFG `overlay_us` 86-106 median.
-- **Still not run:** a real minimize, the hitch cap (no `DIVERGES` line).
+- **Still not run:** `NOT-PRESENTABLE` anywhere, the hitch cap (no `DIVERGES` line).
 
 ### 2026-11-05 - 0.1.7423 run: XeFG straight after DLSS works; the stall's stack repeats; the CSV line fix not exercised
 
