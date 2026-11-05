@@ -297,21 +297,6 @@ TEST(HardwareSensorOverlayTest, FormatsOnlyWhenTheCachedOverlayLayoutRefreshes) 
     EXPECT_NE(implementation.find("cachedCpuClocksText"), std::string::npos);
 }
 
-// The whole GPU row used to be drawn in one load-derived color, so at 99% load
-// the temperature, power and fan readings turned red with it.
-TEST(HardwareSensorOverlayTest, DrawsSensorReadingsOutsideTheLoadColoredSpan) {
-    const std::string implementation = ReadProjectFile("hook/overlay/overlay_adapter_render.cpp");
-    ASSERT_FALSE(implementation.empty());
-    EXPECT_NE(implementation.find("Colors::SensorValue"), std::string::npos);
-    EXPECT_NE(implementation.find("DrawMetricsRowValue(cachedGpuMetricsText, cachedGpuSensorOffset"),
-              std::string::npos);
-    EXPECT_NE(implementation.find("DrawMetricsRowValue(cachedCpuMetricsText, cachedCpuSensorOffset"),
-              std::string::npos);
-    // GetLoadColor must reach the row only through the split-span helper.
-    EXPECT_EQ(CountOccurrences(implementation, "DrawTextRightAligned(valueRightEdge, cursorY, cachedGpuMetricsText"),
-              0u);
-}
-
 // The bridge used to be a PowerShell script beside the executable. It is native
 // now, so the invariants that script carried have to hold in the C++ role: only
 // the CPU and GPU visitors are enabled, the poll wait stays interruptible, and

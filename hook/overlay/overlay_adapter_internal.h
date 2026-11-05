@@ -18,6 +18,8 @@
 
 #include "overlay_layout_policy.h"
 
+#include "overlay_panel_draw.h"
+
 #include "hook/metrics/perf_logger.h"
 
 #include "common/overlay/pseudo_overlay_dpi_policy.h"

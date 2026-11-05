@@ -222,6 +222,7 @@ void OverlayAdapter::ResetStateLocked() {
     lastEncoderOverloadTick = 0;
     lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     layoutDirty = true;
+    panelSensorColumns = 0;
     hdrPaperWhiteMonitor = nullptr;
     resolvedHdrPaperWhiteNits = 203.0f;
     graphScroll.Reset();
@@ -566,13 +567,4 @@ bool OverlayAdapter::RenderRasterCache(ce::overlay_cpu_raster::CommandCache& cac
     }
     return ce::overlay_cpu_raster::UpdateCommandCache(cache, renderer->GetVertices(), renderer->GetIndices(),
                                                       renderer->GetCommands(), atlas, target, stats, changedBounds);
-}
-
-uint32_t OverlayAdapter::GetLoadColor(float load) {
-    using namespace CustomOverlay::Colors;
-    if (load < 50.0f)
-        return LoadLow;
-    if (load < 85.0f)
-        return LoadMed;
-    return LoadHigh;
 }

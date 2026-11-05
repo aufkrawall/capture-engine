@@ -203,6 +203,56 @@ TEST(OverlayFontConfigTest, TheConfiguredFontReachesTheAtlasAndAMissingOneFallsB
     }
 }
 
+// The layouts change what is drawn, never how cheaply: rectangles, then text, then the graph alone.
+TEST(OverlayLayoutSelectionTest, EveryLayoutKeepsTheGraphOnlyPathAndSwitchesAtOnce) {
+    OverlayHarness harness(true);
+    ASSERT_TRUE(harness.initialized);
+    harness.Feed(300);
+    uint64_t fullFrames = 0;
+    float lastPanelWidth = 0.0f;
+    for (const OverlayLayout layout :
+         {OverlayLayout::Hero, OverlayLayout::List, OverlayLayout::Meters, OverlayLayout::Strip}) {
+        SCOPED_TRACE(static_cast<int>(layout));
+        auto cfg = harness.shm->ReadOverlayConfig();
+        cfg.layout = layout;
+        harness.shm->BeginWriteOverlayConfig();
+        harness.shm->overlayConfig = cfg;
+        harness.shm->EndWriteOverlayConfig();
+
+        harness.Frame();
+        EXPECT_EQ(harness.adapter.FullFramesForTest(), ++fullFrames) << "a new layout does not wait for the text interval";
+        ASSERT_FALSE(harness.counts.lastCommands.empty());
+        EXPECT_FALSE(harness.counts.lastCommands.back().useTexture) << "the graph is drawn last";
+        const float panelWidth = harness.counts.lastVertices[1].x - harness.counts.lastVertices[0].x;
+        EXPECT_NE(panelWidth, lastPanelWidth) << "the layout took effect";
+        lastPanelWidth = panelWidth;
+
+        const uint64_t graphOnly = harness.adapter.GraphOnlyFramesForTest();
+        for (int i = 0; i < 3; ++i)
+            harness.Frame();
+        EXPECT_EQ(harness.adapter.FullFramesForTest(), fullFrames);
+        EXPECT_EQ(harness.adapter.GraphOnlyFramesForTest(), graphOnly + 3);
+    }
+}
+
+// A backend that cannot merge shapes with text pays one draw call per switch, so all rectangles come first.
+TEST(OverlayLayoutSelectionTest, TheRowsStayInFewDrawCalls) {
+    OverlayHarness harness(true);
+    ASSERT_TRUE(harness.initialized);
+    harness.Feed(300);
+    for (const OverlayLayout layout :
+         {OverlayLayout::Hero, OverlayLayout::List, OverlayLayout::Meters, OverlayLayout::Strip}) {
+        auto cfg = harness.shm->ReadOverlayConfig();
+        cfg.layout = layout;
+        harness.shm->BeginWriteOverlayConfig();
+        harness.shm->overlayConfig = cfg;
+        harness.shm->EndWriteOverlayConfig();
+        harness.Frame();
+        EXPECT_EQ(harness.counts.lastCommands.size(), 3u)
+            << static_cast<int>(layout) << ": rectangles, text and the graph";
+    }
+}
+
 TEST(OverlayFrameCostTest, DisplayStartupWaitsWithoutPlottingWarmPresentationHistory) {
     VirtualOverlayClock clock;
     OverlayHarness harness(true, FrameTimeSource::DisplayChange);

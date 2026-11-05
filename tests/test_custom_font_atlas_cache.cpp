@@ -183,6 +183,9 @@ TEST(CustomFontAtlas, AMissingFontFailsUnlessASubstituteIsAccepted) {
     if (truncated.Initialize("Bahnschrift SemiBold SemiConden", 14, 1.0f)) {
         EXPECT_EQ(truncated.GetFaceName().rfind("Bahnschrift SemiBold SemiConden", 0), 0u)
             << "GDI's 31 character name selects the full face";
+        FontAtlas fullName;
+        EXPECT_TRUE(fullName.Initialize("Bahnschrift SemiBold SemiCondensed", 14, 1.0f))
+            << "config.ini.template suggests the name as Windows lists it, which is longer than GDI reads";
     }
 }
 

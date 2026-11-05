@@ -373,12 +373,26 @@ TEST(RendererSolidTextTest, PreferredSolidTextEmitsOnlySolidCommands) {
     }
 }
 
-TEST_F(RendererTest, DrawTextScaledSizeProportional) {
-    float w1 = 0, h1 = 0, w2 = 0, h2 = 0;
-    renderer.CalcTextSizeScaled("A", &w1, &h1, 1.0f);
-    renderer.CalcTextSizeScaled("A", &w2, &h2, 2.0f);
-    EXPECT_NEAR(w2, w1 * 2.0f, 0.5f);
-    EXPECT_NEAR(h2, h1 * 2.0f, 0.5f);
+TEST_F(RendererTest, SizedTextUsesItsOwnGlyphsAndTheShadowIsInPhysicalPixels) {
+    EXPECT_LT(renderer.TextWidth("123", TextSize::Small), renderer.TextWidth("123", TextSize::Base));
+    EXPECT_GT(renderer.TextWidth("123", TextSize::Hero), renderer.TextWidth("123", TextSize::Base));
+
+    const auto drawnVertices = [&](TextSize size, int shadow) {
+        renderer.BeginFrame(1920, 1080);
+        renderer.DrawSizedText(10, 10, "8", Colors::White, size, Colors::Black, shadow);
+        const auto vertices = renderer.GetVertices();
+        renderer.EndFrame();
+        return vertices;
+    };
+    const auto plain = drawnVertices(TextSize::Hero, 0);
+    ASSERT_EQ(plain.size(), 4u);
+    const auto shadowed = drawnVertices(TextSize::Hero, 1);
+    ASSERT_EQ(shadowed.size(), 8u) << "the shadow comes first, under the glyph";
+    EXPECT_EQ(shadowed[0].x, shadowed[4].x + 1.0f);
+    EXPECT_EQ(shadowed[0].y, shadowed[4].y + 1.0f);
+    const auto base = drawnVertices(TextSize::Base, 0);
+    EXPECT_GT(plain[2].y - plain[0].y, base[2].y - base[0].y) << "a hero glyph is larger, not a scaled copy";
+    EXPECT_NE(plain[0].u, base[0].u);
 }
 
 TEST_F(RendererTest, MultipleFramesAccumulate) {

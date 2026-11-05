@@ -220,11 +220,16 @@ TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAn
     ASSERT_FALSE(overlay.empty());
     ASSERT_FALSE(pseudo.empty());
 
-    EXPECT_NE(overlay.find("STARTING RECORDING..."), std::string::npos);
-    EXPECT_NE(overlay.find("STARTING AUDIO..."), std::string::npos);
-    EXPECT_NE(overlay.find("Colors::LabelYellow"), std::string::npos);
+    // OverlayPanelTest.RecordingStatesKeepTheirPlaceAndTheirMeaning covers how they look and that their
+    // width is reserved.
+    EXPECT_NE(overlay.find("GetStartingText(frameLayout.recordingState)"), std::string::npos);
     EXPECT_NE(overlay.find("frameLayout.recordingState != lastFrameLayout.recordingState"), std::string::npos);
-    EXPECT_NE(overlay.find("MeasureTextWidth(recBuf) + kShadowPad"), std::string::npos);
+    const std::string startingLabels = ReadSource("common/overlay/recording_indicator_policy.h");
+    EXPECT_NE(startingLabels.find("STARTING RECORDING..."), std::string::npos);
+    EXPECT_NE(startingLabels.find("STARTING AUDIO..."), std::string::npos);
+    const std::string panelReservation = ReadSource("hook/overlay/overlay_panel.cpp");
+    EXPECT_NE(panelReservation.find("STARTING RECORDING..."), std::string::npos);
+    EXPECT_NE(panelReservation.find("STARTING AUDIO..."), std::string::npos);
     EXPECT_NE(pseudo.find("uiThread_ = std::thread([this]() { ThreadMain(); })"), std::string::npos);
     EXPECT_NE(pseudo.find("bool PseudoOverlay::InitializeOnUiThread()"), std::string::npos);
     EXPECT_NE(pseudo.find("PostThreadMessageW(threadId, kMsgRefresh"), std::string::npos);

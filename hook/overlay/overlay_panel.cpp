@@ -247,7 +247,10 @@ float DrawRecordingFullRow(Composer& c, float y, float width) {
         if (c.in.recording.kind == RecordingKind::Starting) {
             c.Text(c.left, c.Baseline(y, pitch, Size::Small), c.in.recording.text, Size::Small, Tone::Warn);
         } else if (c.in.recording.kind != RecordingKind::None) {
-            DrawChip(c, c.left, y, width, RecordingChipText(c).c());
+            // Only a warning earns the whole width; a plain timer stays the size of its text.
+            const Short text = RecordingChipText(c);
+            DrawChip(c, c.left, y, HasRecordingWarning(c) ? width : c.W(text, Size::Small) + c.Px(kChipPadX) * 2.0f,
+                     text.c());
         }
     }
     return y + pitch;

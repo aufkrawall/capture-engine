@@ -18,13 +18,8 @@ inline MemoryValueMode SelectMemoryValueMode(bool usageValid, uint64_t usedBytes
     return totalBytes != 0 ? MemoryValueMode::UsedAndTotal : MemoryValueMode::UsedOnly;
 }
 
-// The leading load percentage carries a load-derived color, but the appended
-// sensor readings must not inherit it: drawing the whole composite in one color
-// turns temperature, power and fan red the moment GPU load reaches the high
-// threshold, which reads as though those sensors were themselves critical.
-// sensorOffset reports where the appended readings start so a caller can draw
-// the two spans in different colors; it equals the load length when nothing
-// was appended.
+// sensorOffset reports where the appended sensor readings start; it equals the
+// load length when nothing was appended.
 inline void FormatCpuMetricsValue(char* output, size_t outputSize, float usage, float maxCoreUsage,
                                   bool temperatureValid, float temperatureC, bool powerValid, float powerW,
                                   size_t* sensorOffset = nullptr) {
@@ -74,12 +69,7 @@ inline void FormatGpuMetricsValue(char* output, size_t outputSize, bool usageVal
         snprintf(output + length, outputSize - static_cast<size_t>(length), "  %.0f RPM", fanRpm);
 }
 
-inline constexpr const char* kGpuClocksLabel = "GPU Clocks";
-inline constexpr const char* kCpuClocksLabel = "CPU Clocks";
-
-// Clocks and voltage occupy their own row instead of extending the usage rows:
-// appending them there would push the widest row - and with it the whole
-// adaptive overlay width - well past the memory rows.
+// The metric rows' digest for the log; the panel formats what it draws itself.
 inline void FormatGpuClocksValue(char* output, size_t outputSize, bool coreClockValid, float coreClockMhz,
                                  bool memoryClockValid, float memoryClockMhz, bool voltageValid, float voltageV) {
     if (!output || outputSize == 0)

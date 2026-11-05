@@ -19,8 +19,10 @@
 #include <mutex>
 #include "graph_scroll_policy.h"
 #include "common/overlay/recording_indicator_policy.h"
+#include "common/logging/log_meter.h"
 #include "custom_overlay.h"
 #include "overlay_cpu_raster.h"
+#include "overlay_panel.h"
 #include "hook/metrics/benchmark_manager.h"
 #include "hook/runtime/ipc_client.h"
 #include "hook/metrics/performance_metrics.h"
@@ -212,7 +214,9 @@ private:
     void NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t elapsedUs);
     void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
                        const FrameLayoutSnapshot& frameLayout, bool refreshLayout, const GraphFrame* graph);
-    uint32_t GetLoadColor(float load);
+    // Hands the current values to the panel and rebuilds panelScene.
+    void FillPanelInputs(const OverlayConfig& cfg, const FrameLayoutSnapshot& frameLayout, const GraphFrame* graph,
+                         float maxWidth);
 
     CustomOverlay::Renderer* renderer = nullptr;
     CustomOverlay::RendererBackend* backend = nullptr;
@@ -245,11 +249,6 @@ private:
     char cachedGpuMetricsText[96] = "--";
     char cachedCpuClocksText[48] = "";
     char cachedGpuClocksText[64] = "";
-    // Byte offset at which the optional sensor readings start inside the two
-    // metrics strings, so the load percentage keeps its load color while the
-    // readings after it do not.
-    size_t cachedCpuSensorOffset = 0;
-    size_t cachedGpuSensorOffset = 0;
 
     // Last logged digest of the metric rows plus their validity flags, so a row
     // that alternates between a reading and "--" is visible in the log.
@@ -262,10 +261,12 @@ private:
     uint64_t lastEncoderOverloadTick = 0;
     uint32_t lastRecordingWarningKind = 0;
 
-    // Cached layout measurement (recomputed only on content updates, avoids
-    // per-frame snprintf+CalcTextSize overhead)
-    float cachedContentWidth = 0.0f;
     bool layoutDirty = true;
+    // What the last full build drew, and which hardware columns have ever had a reading: a sensor dropping
+    // out for a moment must not resize the panel. See overlay_panel.h.
+    ce::overlay_panel::Scene panelScene;
+    uint32_t panelSensorColumns = 0;
+    ce::log_meter::ChangeGate panelLogGate;
 
     // Throttled frame time display values (updated every 2 seconds)
     DWORD lastMaxFrameTimeUpdateTime = 0;

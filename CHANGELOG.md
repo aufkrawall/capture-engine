@@ -6,10 +6,12 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- **Four overlay layouts:** the in-game overlay was hard to read at a glance, so `[Overlay] layout` now chooses how it arranges its values, live while a game runs. `hero` (the new default) shows FPS as one large number above its graph and puts GPU and CPU in one table. `list` keeps one row per value, grouped, with aligned columns. `meters` shows load and memory as bars. `strip` is a narrow band along the screen edge that wraps in small windows. All four show the same values.
 - **Overlay font choice:** `[Overlay] font` picks any installed font and `font_weight` its weight; `font_size` now works too. A font that is not installed falls back to the default instead of whatever Windows substitutes. Font settings apply the next time the game starts.
 
 ### Improved
 
+- **Overlay colors now mean something:** values stay neutral until they need attention. Load turns amber at 85%, memory amber at 90% and red at 97% of its total, and recording shows as white text on a filled red chip that reads on any scene. A changing digit count no longer moves other values or resizes the panel, and a sensor dropping out reads `--` in place.
 - **Sharper, steadier overlay text:** numbers no longer twitch sideways as their digits change, whatever the font, and the overlay now uses Bahnschrift SemiBold when it is available, which needs less row height for the same digit size. A font that is not installed is now really detected, so the fallback to Segoe UI and Arial works.
 - **Overlay stays readable on bright scenes:** the default panel opacity rose from 50% to 72%. At 50% over a white scene the panel turned mid-grey, where red REC text all but vanished. An existing `config.ini` keeps its own `bg_alpha` until you change it.
 

@@ -207,7 +207,7 @@ float RecordingCellWidth(const Composer& c) {
         width = (std::max)(width, c.W(RecordingChipText(c), Size::Small) + c.Px(kChipPadX) * 2.0f);
     return width;
 }
-void DrawRecordingCell(Composer& c, float x, const CellRows& rows, float width) {
+void DrawRecordingCell(Composer& c, float x, const CellRows& rows, float) {
     const RecordingValue& recording = c.in.recording;
     if (!recording.visible)
         return;
@@ -215,7 +215,8 @@ void DrawRecordingCell(Composer& c, float x, const CellRows& rows, float width) 
     if (recording.kind == RecordingKind::Starting) {
         c.Text(x, c.Baseline(top, c.Pitch(Size::Small), Size::Small), recording.text, Size::Small, Tone::Warn);
     } else if (recording.kind != RecordingKind::None) {
-        DrawChip(c, x, top, width, RecordingChipText(c).c());
+        const Short text = RecordingChipText(c);
+        DrawChip(c, x, top, c.W(text, Size::Small) + c.Px(kChipPadX) * 2.0f, text.c());
     }
 }
 

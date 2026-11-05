@@ -83,22 +83,12 @@ public:
     void DrawText(float x, float y, const char* text, uint32_t color);
     void DrawTextWithShadow(float x, float y, const char* text, uint32_t color, uint32_t shadowColor,
                             float shadowOffset = 1.0f);
-    void DrawTextScaled(float x, float y, const char* text, uint32_t color, float scale);
-    void DrawTextScaledWithShadow(float x, float y, const char* text, uint32_t color, uint32_t shadowColor, float scale,
-                                  float shadowOffset = 1.0f);
     // One of the atlas' sizes at a physical-pixel shadow offset; 0 draws no shadow.
     void DrawSizedText(float x, float y, const char* text, uint32_t color, TextSize size, uint32_t shadowColor = 0,
                        int shadowPixels = 0);
 
-    // Right-aligned text (prevents flicker when digit count changes)
-    void DrawTextRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,
-                              float shadowOffset = 1.0f);
-    void DrawTextScaledRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,
-                                    float scale, float shadowOffset = 1.0f);
-
     // Calculate text size
     void CalcTextSize(const char* text, float* outWidth, float* outHeight) const;
-    void CalcTextSizeScaled(const char* text, float* outWidth, float* outHeight, float scale) const;
     float TextWidth(const char* text, TextSize size) const;
 
     // Basic shapes
@@ -126,6 +116,9 @@ public:
     int GetLineHeight() const {
         return fontAtlas.GetLineHeight();
     }
+    const TextSizeMetrics& GetTextMetrics(TextSize size) const {
+        return fontAtlas.GetMetrics(size);
+    }
 
     // Bounding box of the geometry the last built frame emitted, in viewport
     // pixels. Legacy compatibility routes composite through a CPU round trip
@@ -145,12 +138,8 @@ public:
     }
 
 private:
-    void AddTextQuads(float x, float y, const char* text, uint32_t color);
-    void AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale,
-                            TextSize size = TextSize::Base);
-    void AddTextSolidQuads(float x, float y, const char* text, uint32_t color);
-    void AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale,
-                                 TextSize size = TextSize::Base);
+    void AddTextQuads(float x, float y, const char* text, uint32_t color, TextSize size = TextSize::Base);
+    void AddTextSolidQuads(float x, float y, const char* text, uint32_t color, TextSize size = TextSize::Base);
     void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color);
     void FlushBatch(bool useTexture);
     // Whether 16-bit indices can address `count` more vertices, in a new chunk if the backend draws chunks.
@@ -284,22 +273,7 @@ constexpr uint32_t CPU = 0xFF00BFFF;         // DeepSkyBlue
 constexpr uint32_t GPU = 0xFF32CD32;         // LimeGreen
 constexpr uint32_t RAM = 0xFFB8860B;         // DarkGoldenrod
 constexpr uint32_t VRAM = 0xFFFF8C00;        // DarkOrange
-constexpr uint32_t LoadLow = 0xFF00FF00;     // Green
-constexpr uint32_t LoadMed = 0xFF00FFFF;     // Yellow
-constexpr uint32_t LoadHigh = 0xFF0000FF;    // Red
 
-// Label colors (matching reference overlay style)
-constexpr uint32_t LabelGreen = 0xFF00C850;   // Green for GPU/CPU names
-constexpr uint32_t LabelOrange = 0xFF0080FF;  // Orange for VRAM
-constexpr uint32_t LabelPink = 0xFF8080FF;    // Pink/Red for RAM
-constexpr uint32_t LabelCyan = 0xFFFFFF00;    // Cyan for FG
-constexpr uint32_t LabelYellow = 0xFF00FFFF;  // Yellow for FPS labels
-constexpr uint32_t ValueYellow = 0xFF00FFFF;  // Yellow for FPS values
-constexpr uint32_t ValueCyan = 0xFFFFFF00;    // Cyan for CPU %
-// Optional hardware-sensor readings appended to, or split out of, the usage
-// rows. Deliberately not a load color: these values are not a load percentage,
-// and inheriting one made every reading on a 99%-loaded GPU row look critical.
-constexpr uint32_t SensorValue = 0xFFE0E0E0;  // Neutral light gray
 }  // namespace Colors
 
 }  // namespace CustomOverlay

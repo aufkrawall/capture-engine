@@ -234,11 +234,7 @@ void Renderer::AddQuad(float x, float y, float w, float h, float u0, float v0, f
     indices.push_back(baseIdx + 3);
 }
 
-void Renderer::AddTextQuads(float x, float y, const char* text, uint32_t color) {
-    AddTextQuadsScaled(x, y, text, color, 1.0f);
-}
-
-void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale, TextSize size) {
+void Renderer::AddTextQuads(float x, float y, const char* text, uint32_t color, TextSize size) {
     if (!text)
         return;
 
@@ -256,7 +252,7 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
 
         if (c == '\n') {
             px = originX;
-            py += static_cast<float>(fontAtlas.GetLineHeight(size)) * scale;
+            py += static_cast<float>(fontAtlas.GetLineHeight(size));
             continue;
         }
 
@@ -264,10 +260,10 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
         if (!g || g->width == 0)
             continue;
 
-        float gx = px + static_cast<float>(g->xOffset) * scale;
-        float gy = py + static_cast<float>(g->yOffset) * scale;
-        float gw = (float)g->width * scale;
-        float gh = (float)g->height * scale;
+        float gx = px + static_cast<float>(g->xOffset);
+        float gy = py + static_cast<float>(g->yOffset);
+        float gw = (float)g->width;
+        float gh = (float)g->height;
 
         float u0 = static_cast<float>(g->x) / atlasW;
         float u1 = static_cast<float>(g->x + g->width) / atlasW;
@@ -276,17 +272,12 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
 
         AddQuad(gx, gy, gw, gh, u0, v0, u1, v1, color);
 
-        px += static_cast<float>(g->xAdvance) * scale;
+        px += static_cast<float>(g->xAdvance);
     }
 }
 
-void Renderer::AddTextSolidQuads(float x, float y, const char* text, uint32_t color) {
-    AddTextSolidQuadsScaled(x, y, text, color, 1.0f);
-}
-
-void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale,
-                                       TextSize size) {
-    if (!text || scale <= 0.0f)
+void Renderer::AddTextSolidQuads(float x, float y, const char* text, uint32_t color, TextSize size) {
+    if (!text)
         return;
 
     const float originX = roundf(x);
@@ -298,7 +289,7 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
 
         if (c == '\n') {
             px = originX;
-            py += static_cast<float>(fontAtlas.GetLineHeight(size)) * scale;
+            py += static_cast<float>(fontAtlas.GetLineHeight(size));
             continue;
         }
 
@@ -308,20 +299,20 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
 
         const auto& spans = fontAtlas.GetGlyphSpans(c, size);
         if (!spans.empty()) {
-            const float gx = px + static_cast<float>(g->xOffset) * scale;
-            const float gy = py + static_cast<float>(g->yOffset) * scale;
+            const float gx = px + static_cast<float>(g->xOffset);
+            const float gy = py + static_cast<float>(g->yOffset);
 
             for (const auto& span : spans) {
                 const uint32_t spanColor = ApplyCoverageAlpha(color, span.alpha);
                 if ((spanColor & 0xFF000000u) == 0)
                     continue;
 
-                AddQuad(gx + (float)span.x * scale, gy + (float)span.y * scale, (float)span.width * scale,
-                        (float)span.height * scale, 0.0f, 0.0f, 0.0f, 0.0f, spanColor);
+                AddQuad(gx + (float)span.x, gy + (float)span.y, (float)span.width, (float)span.height, 0.0f, 0.0f, 0.0f,
+                        0.0f, spanColor);
             }
         }
 
-        px += static_cast<float>(g->xAdvance) * scale;
+        px += static_cast<float>(g->xAdvance);
     }
 }
 
@@ -400,45 +391,6 @@ void Renderer::DrawTextWithShadow(float x, float y, const char* text, uint32_t c
     }
 }
 
-void Renderer::DrawTextScaled(float x, float y, const char* text, uint32_t color, float scale) {
-    if (!initialized || !text)
-        return;
-
-    size_t prevVertCount = vertices.size();
-    const bool solidText = backend && backend->PreferSolidTextGeometry();
-    if (solidText) {
-        AddTextSolidQuadsScaled(x, y, text, color, scale);
-    } else {
-        AddTextQuadsScaled(x, y, text, color, scale);
-    }
-
-    if (vertices.size() > prevVertCount) {
-        FlushBatch(!solidText);
-    }
-}
-
-void Renderer::DrawTextScaledWithShadow(float x, float y, const char* text, uint32_t color, uint32_t shadowColor,
-                                        float scale, float shadowOffset) {
-    if (!initialized || !text)
-        return;
-
-    const float originX = roundf(x);
-    const float originY = roundf(y);
-    float off = roundf(shadowOffset * dpiScale);
-    const bool solidText = backend && backend->PreferSolidTextGeometry();
-    size_t prevVertCount = vertices.size();
-    if (solidText) {
-        AddTextSolidQuadsScaled(originX + off, originY + off, text, shadowColor, scale);
-        AddTextSolidQuadsScaled(originX, originY, text, color, scale);
-    } else {
-        AddTextQuadsScaled(originX + off, originY + off, text, shadowColor, scale);
-        AddTextQuadsScaled(originX, originY, text, color, scale);
-    }
-    if (vertices.size() > prevVertCount) {
-        FlushBatch(!solidText);
-    }
-}
-
 void Renderer::DrawSizedText(float x, float y, const char* text, uint32_t color, TextSize size, uint32_t shadowColor,
                              int shadowPixels) {
     if (!initialized || !text)
@@ -451,48 +403,20 @@ void Renderer::DrawSizedText(float x, float y, const char* text, uint32_t color,
     const size_t prevVertCount = vertices.size();
     if (solidText) {
         if (shadowPixels > 0)
-            AddTextSolidQuadsScaled(originX + off, originY + off, text, shadowColor, 1.0f, size);
-        AddTextSolidQuadsScaled(originX, originY, text, color, 1.0f, size);
+            AddTextSolidQuads(originX + off, originY + off, text, shadowColor, size);
+        AddTextSolidQuads(originX, originY, text, color, size);
     } else {
         if (shadowPixels > 0)
-            AddTextQuadsScaled(originX + off, originY + off, text, shadowColor, 1.0f, size);
-        AddTextQuadsScaled(originX, originY, text, color, 1.0f, size);
+            AddTextQuads(originX + off, originY + off, text, shadowColor, size);
+        AddTextQuads(originX, originY, text, color, size);
     }
     if (vertices.size() > prevVertCount) {
         FlushBatch(!solidText);
     }
 }
 
-void Renderer::DrawTextRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,
-                                    float shadowOffset) {
-    if (!initialized || !text)
-        return;
-    float tw = 0, th = 0;
-    CalcTextSize(text, &tw, &th);
-    float x = std::floor(rightX - tw);  // Snap to pixel to prevent sub-pixel artifacts
-    DrawTextWithShadow(x, y, text, color, shadowColor, shadowOffset);
-}
-
-void Renderer::DrawTextScaledRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,
-                                          float scale, float shadowOffset) {
-    if (!initialized || !text)
-        return;
-    float tw = 0, th = 0;
-    CalcTextSizeScaled(text, &tw, &th, scale);
-    float x = std::floor(rightX - tw);  // Snap to pixel to prevent sub-pixel artifacts
-    DrawTextScaledWithShadow(x, y, text, color, shadowColor, scale, shadowOffset);
-}
-
 void Renderer::CalcTextSize(const char* text, float* outWidth, float* outHeight) const {
     fontAtlas.CalcTextSize(text, outWidth, outHeight);
-}
-
-void Renderer::CalcTextSizeScaled(const char* text, float* outWidth, float* outHeight, float scale) const {
-    fontAtlas.CalcTextSize(text, outWidth, outHeight);
-    if (outWidth)
-        *outWidth *= scale;
-    if (outHeight)
-        *outHeight *= scale;
 }
 
 float Renderer::TextWidth(const char* text, TextSize size) const {
