@@ -85,6 +85,10 @@ struct Breakdown {
     // Process usage added by opening the codec (encoder session buffers that
     // were resident right away); informational, part of `unaccounted`.
     int64_t codecOpenDelta = 0;
+    // The factor on the encoder's configured rate (AV1 free repeats raise it for a source-limited stretch). W3 (session
+    // 20261106_195839) grew 734 MB of unaccounted usage twice, in exactly the two stretches without frame generation,
+    // while the factor peaked at x8.57; this puts the two side by side.
+    double encoderRateFactor = 1.0;
 };
 
 inline uint64_t AccountedBytes(const Breakdown& b) {
@@ -108,13 +112,13 @@ inline std::string FormatBreakdown(const Breakdown& b, const char* stage) {
                   "[GpuMemory] stage=%s processLocal=%.0fMB countedTwice=%.0fMB physical~%.0fMB nonLocal=%.0fMB "
                   "budget=%.0fMB | captureReservoir=%.0fMB (%u slots%s) captureOther=%.0fMB | encoderFrames=%.0fMB "
                   "(%u frames) repeat=%.0fMB conversion=%.0fMB overlays=%.0fMB | accounted=%.0fMB unaccounted=%.0fMB "
-                  "(encoder session, drivers, devices) codecOpenDelta=%+.0fMB",
+                  "(encoder session, drivers, devices) codecOpenDelta=%+.0fMB rateFactor=x%.2f",
                   stage ? stage : "periodic", mb(b.processLocal), mb(b.countedTwice),
                   static_cast<double>(PhysicalEstimateBytes(b)) / kMb, mb(b.processNonLocal), mb(b.budget),
                   mb(b.captureReservoir), b.captureReservoirSlots, b.captureSharedAcrossDevices ? ", 2 devices" : "",
                   mb(b.captureOther), mb(b.encoderFrames), b.encoderFrameCount, mb(b.repeat), mb(b.conversion),
                   mb(b.overlays), mb(AccountedBytes(b)), static_cast<double>(UnaccountedBytes(b)) / kMb,
-                  static_cast<double>(b.codecOpenDelta) / kMb);
+                  static_cast<double>(b.codecOpenDelta) / kMb, b.encoderRateFactor);
     return line;
 }
 

@@ -88,7 +88,10 @@ if (wgcProactiveOverloadRepeatThisTick) {
                 const uint64_t nowGridDebtHoldTick = GetTickCount64();
                 if (nowGridDebtHoldTick - s_lastGridDebtHoldLogTick >= 1000) {
                     s_lastGridDebtHoldLogTick = nowGridDebtHoldTick;
-                    LogWarn(
+                    // With nothing owed to the grid this is a source that delivers few frames, which is how a still
+                    // desktop records (851 holds in 12 s, session 20261106_195839), not a warning.
+                    const auto logGridDebtHold = outputShortfallTicks > 0 ? &LogWarn : &LogInfo;
+                    logGridDebtHold(
                         "[WGC CFR] Uniform playout grid-debt sync hold: oldestLead=%lluus "
                         "shortfall=%u buffered=%zu total=%llu (held-repeat catch-up advances the "
                         "immutable CFR grid; visual/audio content targets and PTS unchanged)",

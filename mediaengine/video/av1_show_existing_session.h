@@ -79,6 +79,10 @@ public:
     uint32_t PendingSlots() const {
         return pendingPublished_.load(std::memory_order_acquire);
     }
+    // The factor on the encoder's configured rate; 1 without free repeats.
+    double CurrentRateFactor() const {
+        return rates_.Current().factor;
+    }
     void LogWindow(uint64_t nowMs, bool force);
     void LogSummary();
 

@@ -66,6 +66,11 @@ TEST(GpuMemoryBreakdownTest, UnaccountedIsTheProcessTotalMinusNamedComponents) {
     EXPECT_NE(line.find("captureReservoir=1519MB (64 slots)"), std::string::npos) << line;
     EXPECT_NE(line.find("encoderFrames=474MB (20 frames)"), std::string::npos) << line;
     EXPECT_NE(line.find("unaccounted=-1074MB"), std::string::npos) << line;
+    EXPECT_NE(line.find("rateFactor=x1.00"), std::string::npos) << line;
+
+    b.encoderRateFactor = 8.57;
+    const std::string raised = gm::FormatBreakdown(b, "periodic");
+    EXPECT_NE(raised.find("rateFactor=x8.57"), std::string::npos) << raised;
 }
 
 TEST(GpuMemoryBreakdownTest, LogKeyMovesInSixtyFourMegabyteSteps) {

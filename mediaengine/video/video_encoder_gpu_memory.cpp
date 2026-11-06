@@ -59,6 +59,7 @@ void VideoEncoder::LogGpuMemory(const char* stage, bool force) {
                  TextureBytes(retainedYuv.camera.texture) + TextureBytes(retainedYuv.cursor.texture) +
                  (faceCameraRenderer ? faceCameraRenderer->GpuBytes() : 0);
     b.codecOpenDelta = gpuMemory.codecOpenDelta;
+    b.encoderRateFactor = av1Repeats.CurrentRateFactor();
     // The bridge's pool lives on the encoder device and is opened on CE's;
     // the split capture pool is opened on the capture device.
     b.countedTwice =
