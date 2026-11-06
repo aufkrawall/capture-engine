@@ -11,6 +11,10 @@
   [multi-audio-capture.md](../multi-audio-capture.md#unresolved-native-aac-nmr-retry-hang-2026-11-07).
 - Diagnostic investigation only; no fix or behavioral test claimed. Preserved the supplied
   dump and staging MKV; terminated the stuck media/audio-worker tree with user authorization.
+- Upstream follow-up: master `e196e57c` retains the pin's identical AAC retry/NMR sources.
+  Dump state selects CBR and rails its inner solve; VBR alone has the band-shedding
+  legality fallback. This narrows a patch candidate, but needs a failing reproduction
+  before claiming a correct fix. Topic page records CE detachment's independent invariant.
 
 ### 2026-11-06 - W3 HDR with Steam, ReShade and OptiScaler: false factor flips, screenshot view, DLSS-G override
 

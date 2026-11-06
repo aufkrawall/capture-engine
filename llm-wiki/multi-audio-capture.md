@@ -26,6 +26,24 @@ FFmpeg `libavcodec/aacenc.c` (hard-overflow retry and lambda floor).
 
 The installed FFmpeg reports `fb30650940`, matching `FFMPEG_SOURCE_REF` in
 `tools/build/build_linux_msys2.py`; a newer CE build alone does not establish a fix.
+Upstream checked 2026-11-07 at master `e196e57ca225a98654e482806fa714facd232b57`:
+both `aacenc.c` and `aaccoder_nmr.h` are byte-identical between the pin and master;
+their path histories have no commits after the pin. The existing VBR legality fix
+therefore does not constitute a newer fix for this CBR failure.
+
+The dump confirms NMR `options.rc=0`, `rc_gl=1`, and internal `lam_rc=10000` while
+the outer lambda is at its floor. In `nmr_solve_group`, VBR's final legality path can
+remove highest bands if the coarsest candidate grid still exceeds its bit budget;
+the CBR reservoir path only re-solves to its lambda rail, then continues. This is a
+concrete candidate gap, not yet a validated repair. A fix must make legal allocation
+converge after all spend/slew/PNS changes, preserve sample counts and PTS, and have a
+regression that reproduces the stall. A generic retry limit alone is containment.
+CE's wrapper cannot cancel a CPU loop inside `avcodec_send_frame`; the observed ACK
+blocking also needs ownership-safe detachment, not simply ACK before detachment
+(the next recording may reuse the shared mapping). Public source anchors:
+[AAC retry loop](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aacenc.c),
+[NMR allocation](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aaccoder_nmr.h).
+
 No codec/policy change or regression reproduction was made during this investigation.
 The unpublished MKV retained AV1 video and two AAC tracks; recovery/content validation
 is separate from proving the hang. Do not delete staging output or claim the missing
