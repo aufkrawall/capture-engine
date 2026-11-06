@@ -640,34 +640,37 @@ TEST(FinalOutputCaptureTimingTest, SourceGroupIntervalCannotBeOverwrittenByBurst
     EXPECT_EQ(state.estimatedIntervalQpc.load(), groupInterval);
 }
 
-TEST(FinalOutputCaptureTimingTest, MultiplierChangeScalesStrongIntervalWithoutLosingPhase) {
-    policy::FinalOutputTimelineState state;
-    state.lastTimestampQpc.store(100'000'000);
-    state.estimatedIntervalQpc.store(83'333);
-    state.lastSourcePresentQpc.store(99'900'000);
-    state.callbacksSinceSourcePresent.store(1);
-
-    policy::AdjustFinalOutputTimelineForMultiplierChange(state, 2, 4, 100'000'000);
-
-    EXPECT_EQ(state.estimatedIntervalQpc.load(), 41'666);
-    EXPECT_EQ(state.lastTimestampQpc.load(), 100'000'000);
-    EXPECT_EQ(state.lastSourcePresentQpc.load(), 99'900'000);
-    EXPECT_EQ(state.sourceGroupAuthorityQpc.load(), 100'000'000);
-    EXPECT_EQ(state.callbacksSinceSourcePresent.load(), 1u);
-    EXPECT_TRUE(state.sourceGroupIntervalValid.load());
-}
-
-TEST(FinalOutputCaptureTimingTest, MultiplierTransitionAuthorityExpiresWithoutSourceBoundary) {
+// Without source boundaries (W3: every output on DLSS-G's presenter thread) only the measured rate moves the clock.
+// A step in that rate, as a fixed factor changed in a menu causes, is followed within a few outputs.
+TEST(FinalOutputCaptureTimingTest, MeasuredRateStepMovesTheClockWithinAFewOutputs) {
     policy::FinalOutputTimelineState state;
     constexpr int64_t kFrequency = 10'000'000;
-    constexpr int64_t kTransitionQpc = 100'000'000;
-    state.lastTimestampQpc.store(kTransitionQpc);
-    state.estimatedIntervalQpc.store(83'333);
+    int64_t callback = 100'000'000;
+    for (int output = 0; output < 16; ++output) {
+        policy::NextFinalOutputTimestampQpc(state, callback, kFrequency, 72.0f);
+        callback += kFrequency / 72;
+    }
+    ASSERT_NEAR(state.estimatedIntervalQpc.load(), kFrequency / 72.0, 2.0);
 
-    policy::AdjustFinalOutputTimelineForMultiplierChange(
-        state, 2, 4, kTransitionQpc);
-    policy::NextFinalOutputTimestampQpc(
-        state, kTransitionQpc + 3'000'000, kFrequency, 144.0f);
+    constexpr int kOutputsToFollow = 24;
+    for (int output = 0; output < kOutputsToFollow; ++output) {
+        policy::NextFinalOutputTimestampQpc(state, callback, kFrequency, 144.0f);
+        callback += kFrequency / 144;
+    }
+    EXPECT_NEAR(state.estimatedIntervalQpc.load(), kFrequency / 144.0, kFrequency / 144.0 * 0.05);
+}
+
+// A source boundary that stopped arriving must not own the clock forever.
+TEST(FinalOutputCaptureTimingTest, SourceGroupAuthorityExpiresWithoutSourceBoundary) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kSourceQpc = 100'000'000;
+    policy::ObserveFinalOutputSourcePresent(state, kSourceQpc, kFrequency);
+    policy::NextFinalOutputTimestampQpc(state, kSourceQpc + 1'000, kFrequency, 144.0f);
+    policy::ObserveFinalOutputSourcePresent(state, kSourceQpc + 166'666, kFrequency);
+    ASSERT_TRUE(state.sourceGroupIntervalValid.load());
+
+    policy::NextFinalOutputTimestampQpc(state, kSourceQpc + 3'000'000, kFrequency, 144.0f);
 
     EXPECT_FALSE(state.sourceGroupIntervalValid.load());
     EXPECT_EQ(state.sourceGroupExpiryCount.load(), 1u);

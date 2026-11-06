@@ -6,7 +6,6 @@ namespace {
 ce::capture_policy::FinalOutputTimelineState g_finalOutputTimeline;
 CaptureCadenceGateState g_finalOutputCadenceGate;
 std::atomic<uint32_t> g_skippedFinalOutputs{0};
-std::atomic<int> g_finalOutputMultiplier{0};
 
 int64_t GetQpcFrequency() {
     static const int64_t frequency = []() {
@@ -93,23 +92,12 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
                                                            plan.captureCandidate)) {
         g_finalOutputCadenceGate.Reset();
         g_skippedFinalOutputs.store(0, std::memory_order_release);
-        g_finalOutputMultiplier.store(0, std::memory_order_release);
         HookLogImportant("DX12: Final Streamline output clock reset for new recording capture epoch");
     }
 
     const int64_t qpcFrequency = GetQpcFrequency();
     const int64_t callbackQpc = GetCurrentQpc();
     const float outputFps = GetObservedFinalOutputFps();
-    const int currentMultiplier = std::clamp(g_FGCompat.GetFGMultiplier(), 2, 4);
-    const int previousMultiplier =
-        g_finalOutputMultiplier.exchange(currentMultiplier, std::memory_order_acq_rel);
-    if (previousMultiplier >= 2 && previousMultiplier != currentMultiplier) {
-        ce::capture_policy::AdjustFinalOutputTimelineForMultiplierChange(
-            g_finalOutputTimeline, static_cast<uint32_t>(previousMultiplier),
-            static_cast<uint32_t>(currentMultiplier), callbackQpc);
-        HookLogImportant("DX12: Final-output clock adjusted for DLSS MFG multiplier %dx -> %dx",
-                         previousMultiplier, currentMultiplier);
-    }
     const uint32_t skippedOutputs = g_skippedFinalOutputs.exchange(0, std::memory_order_acq_rel);
     for (uint32_t i = 0; i < skippedOutputs; ++i)
         ce::capture_policy::AdvanceFinalOutputTimelineForSkippedOutput(g_finalOutputTimeline, qpcFrequency, outputFps);
@@ -138,7 +126,7 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
             static_cast<unsigned long long>(planCount), plan.captureCandidate ? 1 : 0,
             plan.includeOverlay ? 1 : 0, static_cast<long long>(plan.metadata.timestampQpc),
             static_cast<unsigned long long>(plan.metadata.displayTimingSequence),
-            plan.metadata.displayTimingGeneration, skippedOutputs, outputFps, currentMultiplier,
+            plan.metadata.displayTimingGeneration, skippedOutputs, outputFps, g_FGCompat.GetFGMultiplier(),
             static_cast<long long>(virtualLeadUs),
             static_cast<unsigned long long>(
                 g_finalOutputTimeline.sourceGroupExpiryCount.load(std::memory_order_relaxed)),
@@ -186,7 +174,6 @@ void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason) {
     ce::capture_policy::ResetFinalOutputTimeline(g_finalOutputTimeline);
     g_finalOutputCadenceGate.Reset();
     g_skippedFinalOutputs.store(0, std::memory_order_release);
-    g_finalOutputMultiplier.store(0, std::memory_order_release);
     g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(false);
     HookLogImportant("DX12: Reset final Streamline output capture timing (%s)", reason ? reason : "state change");
 }

@@ -128,6 +128,10 @@ public:
     // Whether the (fake) DLSS-G runtime itself is in eOn - what reached it, not what the game asked for.
     bool DLSSFrameGenerationRunning();
 
+    // The (fake) DLSS-G runtime paces every output this far apart whatever its factor, as dynamic MFG holds its
+    // output rate while the factor changes. 0 returns to outputs sharing the game's frame interval.
+    bool SetDLSSConstantOutputInterval(int64_t microseconds);
+
     // ffxConfigure(frameGenerationEnabled) on the FidelityFX swapchain, with or without a present callback.
     bool SetFSRFrameGeneration(bool enabled, bool presentCallback = true);
     bool DetachForeignFFXInputs();

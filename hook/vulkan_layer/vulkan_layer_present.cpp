@@ -391,8 +391,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     finalOutputFps = getObservedFinalOutputFps();
                     finalOutputPlan = PlanVulkanFinalOutputCapture(
                         sd->finalOutputCapture, shm, finalOutputFps,
-                        newMeteredBatchSize >= 2, meteredBatchOutput,
-                        finalOutputMultiplier);
+                        newMeteredBatchSize >= 2, meteredBatchOutput);
                     captureMetadata = &finalOutputPlan.metadata;
                 }
                 // A generated output consumes its virtual ordinal even

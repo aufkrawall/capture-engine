@@ -67,7 +67,6 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
     EXPECT_NE(timing.find("NextFinalOutputTimestampQpc"), std::string::npos);
     EXPECT_NE(timing.find("CaptureDisplayTimingPublicationWatermark"), std::string::npos);
     EXPECT_NE(timing.find("ObserveFinalOutputSourcePresent"), std::string::npos);
-    EXPECT_NE(timing.find("AdjustFinalOutputTimelineForMultiplierChange"), std::string::npos);
     EXPECT_NE(timing.find("kFinalOutputCfrPublicationHeadroomPermille"), std::string::npos);
     EXPECT_NE(timing.find("std::try_to_lock"), std::string::npos);
     EXPECT_NE(timing.find("UpdateFinalOutputCaptureEpoch"), std::string::npos);

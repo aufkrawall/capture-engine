@@ -32,8 +32,7 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
                                                           SharedMemoryLayout* sharedMemory,
                                                           float observedOutputFps,
                                                           bool startsMeteredBatch,
-                                                          bool meteredBatchOutput,
-                                                          int currentMultiplier) {
+                                                          bool meteredBatchOutput) {
     VulkanFinalOutputCapturePlan plan;
     std::unique_lock<std::mutex> planningLock(state.planningMutex, std::try_to_lock);
     if (!planningLock.owns_lock()) {
@@ -57,7 +56,6 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
             state.timeline, sharedMemory &&
                                 sharedMemory->runtimeState.IsInjectVideoCaptureRequested())) {
         state.cadenceGate.Reset();
-        state.observedMultiplier.store(0, std::memory_order_release);
         state.skippedOutputs.store(0, std::memory_order_release);
         LayerLog("Vulkan Layer: final-output clock reset for new recording capture epoch");
     }
@@ -65,11 +63,6 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
         ce::capture_policy::ObserveFinalOutputSourcePresent(state.timeline, callbackQpc,
                                                             qpcFrequency);
     }
-    const int previousMultiplier =
-        state.observedMultiplier.exchange(currentMultiplier, std::memory_order_acq_rel);
-    ce::capture_policy::AdjustFinalOutputTimelineForMultiplierChange(
-        state.timeline, static_cast<uint32_t>(previousMultiplier),
-        static_cast<uint32_t>(currentMultiplier), callbackQpc);
     plan.skippedOutputs = state.skippedOutputs.exchange(0, std::memory_order_acq_rel);
     for (uint32_t index = 0; index < plan.skippedOutputs; ++index) {
         ce::capture_policy::AdvanceFinalOutputTimelineForSkippedOutput(state.timeline, qpcFrequency,

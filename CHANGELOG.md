@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Repeated frames in DLSS dynamic frame generation recordings:** inject recordings repeated up to a quarter of their frames while DLSS dynamic frame generation kept switching its factor, because capture timing assumed each switch changed the output rate. Recordings now keep an even frame cadence through factor changes, on DirectX 12 and Vulkan.
+
 - **NVIDIA Smooth Motion status after frame-generation switches:** clearing detection state no longer permanently disables the fallback needed when the driver presents from one thread, allowing the overlay to detect Smooth Motion again after a switch.
 
 - **NVIDIA Smooth Motion status:** the overlay lost `NVIDIA SM 2x` after a few flickering seconds, or never showed it at low frame rates, while the driver kept generating frames. Seen in Trine 5 (DX11). CaptureEngine now tells the game's frames from generated ones by how the driver presents them, so the status and factor hold at any refresh rate, frame rate or GPU load, with or without vsync. DX12 keeps its direct view and gains this where that view is missing; Vulkan uses it too.

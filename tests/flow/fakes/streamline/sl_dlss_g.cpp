@@ -37,6 +37,9 @@ std::mutex g_optionsMutex;
 sl::DLSSGMode g_mode = sl::DLSSGMode::eOff;
 uint32_t g_framesToGenerate = 1;
 std::atomic<uint32_t> g_presentedSinceGetState{0};
+// Dynamic MFG: the output rate holds and the game frame rate gives way, so every output takes this long whatever the
+// factor (0: outputs share the game's frame interval, as with a fixed factor).
+std::atomic<int64_t> g_constantOutputIntervalUs{0};
 
 struct PresentJob {
     UINT syncInterval = 0;
@@ -186,8 +189,11 @@ private:
                 generated = g_framesToGenerate == 0 ? 1 : g_framesToGenerate;
         }
         HRESULT result = S_OK;
+        const int64_t constantOutputInterval = g_constantOutputIntervalUs.load(std::memory_order_relaxed);
         for (uint32_t output = 0; output <= generated; ++output) {
-            if (output != 0)
+            if (constantOutputInterval > 0)
+                AdvanceClock(constantOutputInterval);
+            else if (output != 0)
                 AdvanceClock(FrameIntervalMicroseconds() / (generated + 1));
             CopyIntoRealBackBuffer();
             const bool last = output == generated;
@@ -318,6 +324,11 @@ uint32_t FlowCurrentMode() {
     return static_cast<uint32_t>(g_mode);
 }
 
+// Test-host control (not a Streamline function): see g_constantOutputIntervalUs.
+void FlowSetConstantOutputInterval(int64_t microseconds) {
+    g_constantOutputIntervalUs.store(microseconds, std::memory_order_relaxed);
+}
+
 }  // namespace
 }  // namespace ce::flow::fake
 
@@ -333,5 +344,7 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&CreateProxySwapChainForHwnd);
     if (std::strcmp(name, "flowCurrentMode") == 0)
         return reinterpret_cast<void*>(&FlowCurrentMode);
+    if (std::strcmp(name, "flowSetConstantOutputInterval") == 0)
+        return reinterpret_cast<void*>(&FlowSetConstantOutputInterval);
     return nullptr;
 }

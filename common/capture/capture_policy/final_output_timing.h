@@ -15,6 +15,14 @@ namespace ce::capture_policy {
 // intervals. This clock preserves output order and spreads the burst without
 // sleeping or making the Present thread wait. Source-present boundaries refine
 // the interval after each complete group.
+//
+// The clock measures the output interval and never derives it from the frame
+// generation factor. Dynamic MFG changes the factor up to dozens of times a
+// second while the output rate holds: rescaling by old/new factor on each change
+// (session 20261106_195839, W3 at 138 fps) moved the interval between 7.2 and
+// 14.4 ms and recorded about 20 repeats/s at >=30 flips/s, against about 2 at
+// <=10. A fixed factor changed in a menu does move the output rate; the next
+// source group or the measured presentation rate follows it.
 struct FinalOutputTimelineState {
     std::atomic<int64_t> lastTimestampQpc{0};
     std::atomic<int64_t> estimatedIntervalQpc{0};
@@ -74,31 +82,6 @@ inline bool UpdateFinalOutputCaptureEpoch(FinalOutputTimelineState& state, bool 
     ResetFinalOutputTimelineClock(state);
     state.captureEpochActive.store(true, std::memory_order_release);
     return true;
-}
-
-// A fixed/dynamic MFG factor change should not leave the virtual clock one
-// whole old-multiplier group ahead or behind. Preserve its phase and scale the
-// strongest interval estimate by the exact ratio; the next complete source
-// group remains authoritative and will replace this transition estimate.
-inline void AdjustFinalOutputTimelineForMultiplierChange(FinalOutputTimelineState& state,
-                                                         uint32_t previousMultiplier,
-                                                         uint32_t currentMultiplier,
-                                                         int64_t adjustmentQpc) {
-    if (previousMultiplier < 2 || currentMultiplier < 2 || previousMultiplier == currentMultiplier)
-        return;
-
-    int64_t previousInterval = state.estimatedIntervalQpc.load(std::memory_order_acquire);
-    if (previousInterval <= 0)
-        return;
-    const int64_t scaledInterval = std::max<int64_t>(
-        1, previousInterval * static_cast<int64_t>(previousMultiplier) /
-               static_cast<int64_t>(currentMultiplier));
-    const int64_t authorityQpc = adjustmentQpc > 0
-                                     ? adjustmentQpc
-                                     : state.lastTimestampQpc.load(std::memory_order_acquire);
-    state.estimatedIntervalQpc.store(scaledInterval, std::memory_order_release);
-    state.sourceGroupAuthorityQpc.store(authorityQpc, std::memory_order_release);
-    state.sourceGroupIntervalValid.store(authorityQpc > 0, std::memory_order_release);
 }
 
 // VkSetPresentConfigNV is carried only on the first call of a metered batch,

@@ -174,6 +174,18 @@ bool FlowGame::DLSSFrameGenerationRunning() {
     return reinterpret_cast<uint32_t (*)()>(function)() == static_cast<uint32_t>(sl::DLSSGMode::eOn);
 }
 
+bool FlowGame::SetDLSSConstantOutputInterval(int64_t microseconds) {
+    if (!streamline_)
+        return Fail("SetDLSSConstantOutputInterval without Streamline", E_NOINTERFACE);
+    void* function = nullptr;
+    if (streamline_->getFeatureFunction(sl::kFeatureDLSS_G, "flowSetConstantOutputInterval", function) !=
+            sl::Result::eOk ||
+        !function)
+        return Fail("resolving flowSetConstantOutputInterval", E_NOINTERFACE);
+    reinterpret_cast<void (*)(int64_t)>(function)(microseconds);
+    return true;
+}
+
 HRESULT FlowGame::StreamlineCreateFactory(REFIID riid, void** factory) {
     return streamline_->createFactory1(riid, factory);
 }
