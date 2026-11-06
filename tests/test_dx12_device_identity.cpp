@@ -19,6 +19,7 @@ using ce::dx12_device_identity::Relation;
 struct DeviceStore {
     std::vector<uint8_t> probe;
     int writes = 0;
+    DeviceStore* matchingStaleCopy = nullptr;
 };
 
 // One interface of a device: COM identity of its own, private data forwarded to the device's store.
@@ -52,8 +53,16 @@ public:
         if (refusePrivateData || id != kProbeGuid)
             return E_FAIL;
         ++store_->writes;
-        const auto* bytes = static_cast<const uint8_t*>(data);
-        store_->probe.assign(bytes, bytes + size);
+        if (size == 0) {
+            store_->probe.clear();
+        } else {
+            const auto* bytes = static_cast<const uint8_t*>(data);
+            store_->probe.assign(bytes, bytes + size);
+            if (store_->matchingStaleCopy) {
+                store_->matchingStaleCopy->probe = store_->probe;
+                store_->matchingStaleCopy = nullptr;
+            }
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override { return E_NOTIMPL; }
@@ -103,14 +112,16 @@ TEST(DX12DeviceIdentityTest, TwoDevicesAreNotOneDevice) {
 }
 
 TEST(DX12DeviceIdentityTest, AStaleProbeOnTheOtherDeviceProvesNothing) {
+    const auto firstStore = std::make_shared<DeviceStore>();
     const auto staleStore = std::make_shared<DeviceStore>();
-    const uint64_t stale = 1;
-    staleStore->probe.assign(reinterpret_cast<const uint8_t*>(&stale),
-                             reinterpret_cast<const uint8_t*>(&stale) + sizeof(stale));
-    DeviceView first(std::make_shared<DeviceStore>());
+    // Force the other store's stale value to collide with the first challenge, independently of test order.
+    firstStore->matchingStaleCopy = staleStore.get();
+    DeviceView first(firstStore);
     DeviceView second(staleStore);
     EXPECT_EQ(Compare(&first, &second), Relation::kDifferentDevices);
     EXPECT_EQ(Compare(&first, &second), Relation::kDifferentDevices);
+    EXPECT_TRUE(firstStore->probe.empty());
+    EXPECT_FALSE(staleStore->probe.empty()) << "the other device's store is never modified by the comparison";
 }
 
 TEST(DX12DeviceIdentityTest, AnUnprovableComparisonIsNotOneDevice) {

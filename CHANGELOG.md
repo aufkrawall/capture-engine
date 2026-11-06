@@ -27,6 +27,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DirectX 12 screenshot device checks:** a stale probe value could make two different devices appear identical and allow a screenshot copy against the wrong device. The check now requires both interfaces to observe a changing probe before accepting them as one device.
+
 - **DLSS frame generation factor under concurrent polling:** fixed a remaining race where a game poll could restore an older factor after the runtime evaluated a new one, briefly changing the overlay status and base frame rate. Requests and runtime observations now update one atomic state.
 
 - **Configured DLSS frame generation DLL ignored alongside OptiScaler:** `dlss_fg_dll_path` had no effect in that setup, and the driver's older copy ran instead (The Witcher 3: 310.9.0 instead of the configured 310.9.16), because a hook answering a module lookup looked like that DLL already being loaded. The configured DLL now loads, and the log no longer reports overrides as not in effect when they are.

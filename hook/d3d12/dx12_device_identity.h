@@ -3,8 +3,9 @@
 // Whether two ID3D12Device interfaces lead to one device. An interposer can hand out its own device interface for a
 // device it wraps, so comparing COM identity alone calls one device two (W3 with its overlay stack, session
 // 20261106_195839: every in-game screenshot failed over to desktop capture). A device's private data belongs to the
-// device, and a view forwards it, so a value written through one interface and read back through the other proves they
-// lead to one device; two real devices keep separate stores. A view that keeps private data to itself reads as
+// device, and a view forwards it, so two changing values written through one interface and read back through the other
+// prove they lead to one device; a stale matching value on a different device cannot follow the change. A view that
+// keeps private data to itself reads as
 // different devices, which is the safe side: recording work against another device's resource removes the device.
 
 #include <d3d12.h>
@@ -59,15 +60,22 @@ inline Relation Compare(ID3D12Object* left, ID3D12Object* right) {
     static std::mutex probeMutex;
     static std::atomic<uint64_t> nextProbe{1};
     std::lock_guard<std::mutex> lock(probeMutex);
-    const uint64_t written = nextProbe.fetch_add(1, std::memory_order_relaxed);
-    if (FAILED(left->SetPrivateData(kProbeGuid, sizeof(written), &written)))
-        return Relation::kUnknown;
-    uint64_t read = 0;
-    UINT readSize = sizeof(read);
-    const HRESULT readResult = right->GetPrivateData(kProbeGuid, &readSize, &read);
+    const uint64_t probe = nextProbe.fetch_add(1, std::memory_order_relaxed);
+    Relation relation = Relation::kSameDeviceOtherView;
+    for (const uint64_t written : {probe, ~probe}) {
+        if (FAILED(left->SetPrivateData(kProbeGuid, sizeof(written), &written))) {
+            relation = Relation::kUnknown;
+            break;
+        }
+        uint64_t read = 0;
+        UINT readSize = sizeof(read);
+        if (FAILED(right->GetPrivateData(kProbeGuid, &readSize, &read)) || readSize != sizeof(read) || read != written) {
+            relation = Relation::kDifferentDevices;
+            break;
+        }
+    }
     left->SetPrivateData(kProbeGuid, 0, nullptr);
-    return SUCCEEDED(readResult) && readSize == sizeof(read) && read == written ? Relation::kSameDeviceOtherView
-                                                                                : Relation::kDifferentDevices;
+    return relation;
 }
 
 }  // namespace ce::dx12_device_identity
