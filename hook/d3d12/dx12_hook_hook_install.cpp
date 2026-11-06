@@ -1,10 +1,30 @@
 #include "dx12_hook_internal.h"
 
 #include "common/logging/log_meter.h"
+#include "dx12_factory_bootstrap.h"
 #include "dx12_factory_slot_policy.h"
 #include "dx12_device_creation_report.h"
 
 namespace {
+
+struct FactoryBootstrapEnvironment {
+    bool IsInLoaderCallout() const {
+        // No function-local initialization lock: the first call can itself be from DllMain.
+        using WithinLoaderCallout = BOOLEAN(NTAPI*)();
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto withinCallout = ntdll ? reinterpret_cast<WithinLoaderCallout>(
+                                              GetProcAddress(ntdll, "RtlIsThreadWithinLoaderCallout"))
+                                        : nullptr;
+        return !withinCallout || withinCallout();
+    }
+
+    void NoteLoaderDeferral() const {
+        static ce::log_meter::ChangeGate deferred;
+        if (deferred.Observe(0)) {
+            HookLog("DX12: Deferring factory hook bootstrap inside loader callout; hook thread will retry");
+        }
+    }
+};
 
 void PublishCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
     dx12_hook_s_oCreateSCForHwndInline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
@@ -151,6 +171,10 @@ void InstallGlobalVTableHooks() {
     // latches the flag.
     static std::atomic<bool> s_installed{false};
     if (s_installed.load(std::memory_order_acquire)) {
+        return;
+    }
+    FactoryBootstrapEnvironment environment;
+    if (!ce::dx12_factory_bootstrap::CanInstall(environment)) {
         return;
     }
     static std::recursive_mutex s_installMutex;
