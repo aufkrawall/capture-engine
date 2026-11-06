@@ -50,10 +50,20 @@ void NoteDlssSnippetLoadedForOverridePolicy(const char *resolvedPath) {
       HookLogImportant("DLSS override in effect: %s is the configured %s", snippet, resolvedPath);
       break;
     case ce::graphics_runtime::DlssOverrideEffect::ModelRepository:
-      HookLogImportant(
-          "DLSS override NOT in effect for %s: NGX mapped the driver's model-repository copy %s (an OTA update "
-          "or an NVIDIA app DLSS override) instead of the configured %s",
-          snippet, resolvedPath, expected.c_str());
+      // W3 (session 20261106_195839): NGX mapped this copy of nvngx_dlss.dll and nvngx_dlssd.dll beside the configured
+      // ones and then ran the configured ones, so with the configured copy mapped this is no verdict.
+      if (ce::graphics_runtime::IsDlssOverrideBypassedByModelRepository(
+              reportedInEffect[slot].load(std::memory_order_acquire))) {
+        HookLogImportant(
+            "DLSS override NOT in effect for %s: NGX mapped the driver's model-repository copy %s (an OTA update "
+            "or an NVIDIA app DLSS override) and the configured %s was never mapped",
+            snippet, resolvedPath, expected.c_str());
+      } else {
+        HookLogImportant(
+            "DLSS override: NGX also mapped its model-repository copy %s of %s beside the configured %s; NGX's own "
+            "log names the copy it runs",
+            resolvedPath, snippet, expected.c_str());
+      }
       break;
     case ce::graphics_runtime::DlssOverrideEffect::OtherCopy:
       HookLogImportant(

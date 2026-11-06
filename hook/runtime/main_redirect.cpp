@@ -18,6 +18,23 @@
 
 namespace {
 
+// True when a hook in the process answered a module query with another image
+// (see ce::graphics_runtime::WouldRedirectDuplicateLoadedModule). No copy of the
+// module is loaded then, so the override goes ahead.
+bool NoteModuleQueryAnsweredByAnotherImage(const char* baseName, const std::string& loadedPath) {
+  if (loadedPath.empty() || ce::graphics_runtime::LoadedPathProvidesModule(loadedPath.c_str(), baseName)) {
+    return false;
+  }
+  static std::atomic<uint32_t> logs{0};
+  const uint32_t logIndex = logs.fetch_add(1, std::memory_order_relaxed);
+  if (logIndex < 8 || (logIndex % 1000) == 0) {
+    HookLogImportant("Module query for %s answered with %s, which is not that module: treating it as not loaded so "
+                     "its configured override applies",
+                     baseName, loadedPath.c_str());
+  }
+  return true;
+}
+
 // True when honouring a redirect to `finalPath` would map a SECOND instance of
 // that module base name, because the name is already loaded from a different
 // file. See ce::graphics_runtime::WouldRedirectDuplicateLoadedModule for why a
@@ -38,6 +55,7 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::strin
     return false;
   }
   const std::string loadedPath = ce::runtime_override_path::ModulePath(loaded);
+  NoteModuleQueryAnsweredByAnotherImage(baseName, loadedPath);
   if (!ce::graphics_runtime::WouldRedirectDuplicateLoadedModule(finalPath.c_str(), true, loadedPath.c_str())) {
     return false;
   }
@@ -447,7 +465,8 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
   if (directory.empty() || !fileName || !fileName[0]) {
     return;
   }
-  if (ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(fileName)) {
+  if (const HMODULE loaded = ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(fileName);
+      loaded && !NoteModuleQueryAnsweredByAnotherImage(fileName, ce::runtime_override_path::ModulePath(loaded))) {
     HookLog("Runtime preload: %s already loaded; keeping the existing copy", fileName);
     return;
   }

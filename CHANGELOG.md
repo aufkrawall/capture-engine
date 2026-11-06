@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Configured DLSS frame generation DLL ignored alongside OptiScaler:** `dlss_fg_dll_path` had no effect in that setup, and the driver's older copy ran instead (The Witcher 3: 310.9.0 instead of the configured 310.9.16), because a hook answering a module lookup looked like that DLL already being loaded. The configured DLL now loads, and the log no longer reports overrides as not in effect when they are.
+
 - **In-game screenshots with other overlays and frame generation (DirectX 12):** a game running with several injected tools could fail its screenshot and silently fall back to capturing the desktop, because CaptureEngine treated two interfaces of one graphics device as two devices (The Witcher 3 with Streamline, ReShade, OptiScaler and the Steam overlay). Screenshots now come from the game's own frame in that setup too.
 
 - **Repeated frames in DLSS dynamic frame generation recordings:** inject recordings repeated up to a quarter of their frames while DLSS dynamic frame generation kept switching its factor, because capture timing assumed each switch changed the output rate. Recordings now keep an even frame cadence through factor changes, on DirectX 12 and Vulkan.

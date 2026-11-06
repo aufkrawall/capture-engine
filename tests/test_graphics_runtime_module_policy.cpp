@@ -22,6 +22,8 @@ using ce::graphics_runtime::IsForeignStreamlineInterposer;
 using ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect;
 using ce::graphics_runtime::ShouldPlaceStreamlinePluginSet;
 using ce::graphics_runtime::ShouldRetireLegacyBridgeNgxFeatureModule;
+using ce::graphics_runtime::IsDlssOverrideBypassedByModelRepository;
+using ce::graphics_runtime::LoadedPathProvidesModule;
 using ce::graphics_runtime::WouldRedirectDuplicateLoadedModule;
 
 // The full family CE can redirect through the per-profile override paths
@@ -183,6 +185,25 @@ TEST(GraphicsRuntimeModulePolicy, KeepsRedirectingWhenNoDuplicateInstanceCanResu
         WouldRedirectDuplicateLoadedModule("C:\\npi\\sl\\sl.common.dll", true, "c:/NPI/sl/SL.COMMON.DLL"));
     EXPECT_FALSE(WouldRedirectDuplicateLoadedModule(nullptr, true, "H:\\game\\bin\\x64\\sl.common.dll"));
     EXPECT_FALSE(WouldRedirectDuplicateLoadedModule("", true, "H:\\game\\bin\\x64\\sl.common.dll"));
+}
+
+// W3 with OptiScaler's WINMM.dll (session 20261106_195839): GetModuleHandleA("nvngx_dlssg.dll") answered with
+// WINMM.dll. The loader finds modules by file name, so that is a hook's answer and no copy of the module.
+TEST(GraphicsRuntimeModulePolicy, AModuleQueryAnsweredWithAnotherFileNameIsNoDuplicate) {
+    constexpr const char* kConfigured = "C:\\npi\\sl\\nvngx_dlssg.dll";
+    EXPECT_FALSE(WouldRedirectDuplicateLoadedModule(kConfigured, true, "H:\\game\\bin\\x64_dx12\\WINMM.dll"));
+    EXPECT_TRUE(WouldRedirectDuplicateLoadedModule(kConfigured, true, "H:\\game\\bin\\x64_dx12\\NVNGX_DLSSG.DLL"))
+        << "the same file name from another folder is a real second instance, in any case";
+    EXPECT_FALSE(LoadedPathProvidesModule("H:\\game\\WINMM.dll", "nvngx_dlssg.dll"));
+    EXPECT_TRUE(LoadedPathProvidesModule("H:\\game\\nvngx_dlssg.dll", "NVNGX_DLSSG.dll"));
+    EXPECT_TRUE(LoadedPathProvidesModule("H:/game/nvngx_dlssg.dll", "C:\\npi\\sl\\nvngx_dlssg.dll"));
+}
+
+// NGX maps its model-repository copy beside a configured one it then runs (W3: nvngx_dlss.dll and nvngx_dlssd.dll),
+// so the copy alone proves a bypass only while the configured one was never mapped (W3: nvngx_dlssg.dll).
+TEST(GraphicsRuntimeModulePolicy, AModelRepositoryCopyIsABypassOnlyWithoutTheConfiguredCopy) {
+    EXPECT_TRUE(IsDlssOverrideBypassedByModelRepository(false));
+    EXPECT_FALSE(IsDlssOverrideBypassedByModelRepository(true));
 }
 
 TEST(GraphicsRuntimeModulePolicy, ExtractsNgxModelSegments) {

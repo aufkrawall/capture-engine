@@ -90,6 +90,24 @@ inline bool EqualsModulePathIgnoreCase(const char* left, const char* right) {
     return *left == '\0' && *right == '\0';
 }
 
+inline const char* ModuleFileName(const char* moduleNameOrPath) {
+    if (!moduleNameOrPath) {
+        return "";
+    }
+    const char* fileName = moduleNameOrPath;
+    for (const char* cursor = moduleNameOrPath; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            fileName = cursor + 1;
+        }
+    }
+    return fileName;
+}
+
+// Whether the file a module query answered with is the module that was asked for.
+inline bool LoadedPathProvidesModule(const char* loadedModulePath, const char* moduleNameOrPath) {
+    return EqualsModulePathIgnoreCase(ModuleFileName(loadedModulePath), ModuleFileName(moduleNameOrPath));
+}
+
 // A runtime-override redirect must never introduce a SECOND instance of a
 // module base name that is already loaded from a different file.
 //
@@ -108,6 +126,12 @@ inline bool EqualsModulePathIgnoreCase(const char* left, const char* right) {
 // The same rule already governs `PreloadConfiguredGraphicsRuntimeDlls`: a name
 // that is already loaded keeps the loaded copy, because a second instance cannot
 // take effect anyway.
+//
+// The loader finds a module by its file name, so a module query answered with
+// another file name is a hook in the process, not a loaded copy of that module:
+// nothing would be duplicated. W3 with OptiScaler's WINMM.dll (session
+// 20261106_195839): the query for nvngx_dlssg.dll answered with WINMM.dll, the
+// override was refused, and NGX ran its older model-repository copy.
 inline bool WouldRedirectDuplicateLoadedModule(const char* redirectTargetPath, bool baseNameAlreadyLoaded,
                                                const char* loadedModulePath) {
     if (!baseNameAlreadyLoaded) {
@@ -121,20 +145,10 @@ inline bool WouldRedirectDuplicateLoadedModule(const char* redirectTargetPath, b
         // honouring the redirect could map a duplicate we cannot rule out.
         return true;
     }
+    if (!LoadedPathProvidesModule(loadedModulePath, redirectTargetPath)) {
+        return false;
+    }
     return !EqualsModulePathIgnoreCase(redirectTargetPath, loadedModulePath);
-}
-
-inline const char* ModuleFileName(const char* moduleNameOrPath) {
-    if (!moduleNameOrPath) {
-        return "";
-    }
-    const char* fileName = moduleNameOrPath;
-    for (const char* cursor = moduleNameOrPath; *cursor; ++cursor) {
-        if (*cursor == '\\' || *cursor == '/') {
-            fileName = cursor + 1;
-        }
-    }
-    return fileName;
 }
 
 // The NGX feature images the 1.x -> 2.x Streamline bridge asks both
@@ -335,6 +349,12 @@ inline DlssOverrideEffect ClassifyDlssOverrideEffect(const char* resolvedPath, b
         return DlssOverrideEffect::InEffect;
     }
     return fromModelRepository ? DlssOverrideEffect::ModelRepository : DlssOverrideEffect::OtherCopy;
+}
+
+// NGX maps its model-repository copy beside a configured one it then runs, so that copy alone proves the override
+// bypassed only while the configured image was never mapped.
+inline bool IsDlssOverrideBypassedByModelRepository(bool configuredCopyMapped) {
+    return !configuredCopyMapped;
 }
 
 // Resolves which Streamline plugin a physically loaded image provides. Both
