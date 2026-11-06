@@ -27,6 +27,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Session log diagnostics:** the compact log digest no longer hides nonzero hexadecimal failure counters or device-removal codes as harmless zero values, so these failures remain visible in its problem summary.
+
 - **DirectX 12 screenshot device checks:** a stale probe value could make two different devices appear identical and allow a screenshot copy against the wrong device. The check now requires both interfaces to observe a changing probe before accepting them as one device.
 
 - **DLSS frame generation factor under concurrent polling:** fixed a remaining race where a game poll could restore an older factor after the runtime evaluated a new one, briefly changing the overlay status and base frame rate. Requests and runtime observations now update one atomic state.

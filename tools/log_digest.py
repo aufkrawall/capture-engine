@@ -58,7 +58,7 @@ PROBLEM = re.compile(
 # "failed=false", the watchdog's and dump hooks' own names.
 BENIGN_COUNTER = re.compile(
     r"\b(?:errors?|fail\w*|dropped|overflow\w*|lost|stall\w*|refus\w*|timeouts?|crash\w*|dumps?|aborts?|unexpected|"
-    r"device\w*removed\w*)\s*[=:]\s*(?:0x0+\b|0(?![.\d])|false|none)|"
+    r"device\w*removed\w*)\s*[=:]\s*(?:0x0+\b|0(?![.\w])|(?:false|none)\b)|"
     r"\bdropped 0\b|crash handler installed|crash-safe|failure fallback|"
     r"FreezeWatchdog|pre-termination|SetUnhandledExceptionFilter|exception (?:filter|handler)",
     re.IGNORECASE,
@@ -371,8 +371,10 @@ def self_test() -> int:
             "10:00:06.000 T0002 #6 p42 Stats dropped=0 errors=0",
             "10:00:06.100 T0002 #7 p42 first append10:00:06.200 T0003 #8 p42 second append",
             "10:00:06.300 T0003 #9 p42 NamesThatReportNothing crash handler installed, crash-safe muxing, a failure "
-            "fallback, dropped 0 texture(s), Exit unexpected=0 failureSeq=0",
+            "fallback, dropped 0 texture(s), Exit unexpected=0 failureSeq=0 deviceRemoved=0x00000000",
             "10:00:06.400 T0003 #10 p42 RealProblemKept dropped 3 texture(s) unexpected=1",
+            "10:00:06.500 T0003 #11 p42 HexProblemKept unexpected=0x1 deviceRemoved=0x887A0005",
+            "10:00:06.600 T0003 #12 p42 DecimalProblemKept errors=0.5",
             "[10:00:07.000] [T:0003] [S:9] [old.exe] Recording started",
         ])
         write("captureengine.log", ["[2026-10-02 10:00:01.000] [ERROR] [Controller] Recording failed to start"])
@@ -386,9 +388,11 @@ def self_test() -> int:
             "zero counters are not problems": "Stats dropped=0" not in text.split("## timeline")[0],
             "names that report nothing are not problems": "NamesThatReportNothing" not in text.split("## timeline")[0],
             "a real count stays a problem": "RealProblemKept" in text.split("## timeline")[0],
+            "a nonzero hex status stays a problem": "HexProblemKept" in text.split("## timeline")[0],
+            "a nonzero decimal stays a problem": "DecimalProblemKept" in text.split("## timeline")[0],
             "timeline collapses repeats": "(x2 until 10:00:05.100)" in text,
             "old format parsed": "Recording started" in text,
-            "lost line reported": "1 line(s) lost between #0 and #10" in text,
+            "lost line reported": "1 line(s) lost between #0 and #12" in text,
             "merged records recovered": "1 merged hook record(s) recovered" in text,
             "silence reported": "silent 4.8s" in text,
             "vendor marked": "sl.log" in text and "vendor log" in text,
