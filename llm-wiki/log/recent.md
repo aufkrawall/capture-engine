@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-11-06 - DXGI retry review and live Mirror's Edge/DXUP/Steam validation
+
+- Review of `41938bd4` and `2531374e`: retain strict system-DXGI discovery; admit factory bootstrap before its mutex only outside loader callouts and outside active/resident CE Vulkan ownership. Two independent guard mutations failed the new behavioral tests; restoring the guards passed. Full native tests and all 197 isolated FG scenarios passed. A transient atomic-rename access error in the unrelated toolchain-state self-test did not reproduce in its focused retry or the final unfiltered native/Python test pass; product resume produced setup 0.1.7433.
+- User session `20261106_151030`, 0.1.7433, Mirror's Edge x86 + DXUP + Steam: initially absent native DXGI resolved at 15:10:36.610; native factory body hooks installed by .646; DX12 overlay initialized at 15:10:40.192 and rendered 3,258 frames under the correct `DX9 -> DX12 (DXUP)` label. Normal exit, no dump/device removal. SetColorSpace1's refused body hook recovered through a successful inline hook. FG was off and no recording ran.
+- One incoming-Present gap of 274.682 ms at 15:10:44.364 (CSV frame 1171) is not explained by the measured hook work: adjacent CSV processing times were 0.152/0.575/0.129 ms and forwarded Present times 0.218/0.228/0.220 ms; no fence wait. Its cause remains unproven. After the first second, CSV processing median/p95/p99 were 0.121/0.172/0.248 ms over 3,101 frames. This short run validates startup/overlay recovery, not recording sync or live FG switching.
+
 ### 2026-11-06 - Late dxgi.dll module-load retry for factory vtable and swapchain hooks (Mirror's Edge on DXUP)
 
 - **Session `20261106_131542` and `20261106_135827`, Mirror's Edge x86 with DXUP and Steam overlay:**
