@@ -114,6 +114,13 @@ enum class ApplicationInjectionMode : uint8_t {
     kNone
 };
 
+inline std::string ApplicationProfileNameFromSection(std::string_view section) {
+    const size_t dot = section.find('.');
+    if (dot == std::string_view::npos)
+        return std::string(section);
+    return std::string(section.substr(dot + 1));
+}
+
 // Canonical [Profile.*] application routing. The legacy whitelist vectors below
 // remain the runtime adapters used by the injector and WGC code.
 struct ApplicationProfile {
@@ -133,6 +140,10 @@ struct ApplicationProfile {
     // overrides applied (config_load_desktop_overlay.cpp). Equals the global settings when the profile
     // overrides nothing.
     PseudoOverlayConfig desktopOverlay;
+
+    std::string Name() const {
+        return ApplicationProfileNameFromSection(section);
+    }
 };
 
 inline const ApplicationProfile* FindApplicationProfileForProcessIdentity(

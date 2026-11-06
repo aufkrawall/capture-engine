@@ -6,7 +6,7 @@ Last cross-checked: 2026-11-04 (recovery-owned spool lifetime across writer tear
 
 All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 
-- Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory file with the final container extension (`.mkv`, `.mp4`, etc.); idle media initialization creates no output. The file receives its final collision-safe name after valid mux finalization.
+- Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory file with the final container extension (`.mkv`, `.mp4`, etc.); idle media initialization creates no output. The file receives its final collision-safe name after valid mux finalization. When recording through an active `[Profile.<name>]`, the published name replaces the default `capture` prefix with the sanitized profile name (spaces preserved; invalid filesystem characters substituted; audio-only appends `_audio`).
 - Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine_impl.cpp`.
 - SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/media/screenshot_encoding.cpp`.
 

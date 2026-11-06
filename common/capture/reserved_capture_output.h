@@ -21,6 +21,12 @@ struct OutputNameSeed {
 // capture share a seed so their published names differ only by extension.
 OutputNameSeed MakeOutputNameSeed();
 
+// Derives the collision-safe filename prefix for recording output: when an application
+// profile name is provided, sanitizes it (replacing illegal characters, trimming whitespace,
+// capping length) and replaces "capture" with the profile name. Falls back to defaultPrefix
+// (e.g. L"capture" or L"capture_audio") when profileName is empty.
+std::wstring RecordingOutputPrefix(const std::string& profileName, const std::wstring& defaultPrefix);
+
 // Expands %VIDEOS%, %DOCUMENTS% (Windows library folders, wherever they were
 // moved) and %VAR% environment references in a configured directory. Undefined
 // references are left in place.

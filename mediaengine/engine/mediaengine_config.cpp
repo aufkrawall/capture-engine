@@ -105,7 +105,9 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
                     audioOnlyTrailerSucceeded ? 1 : 0, closeResult,
                     static_cast<unsigned long long>(audioOnlyWrittenPackets));
             }
-            if (audioOnlyOutputReservation.PublishToNewPath(audioOnlyOutputDirectory, L"capture_audio", L"mka")) {
+            const std::wstring audioPrefix =
+                ce::capture_output::RecordingOutputPrefix(this->config.activeProfile, L"capture_audio");
+            if (audioOnlyOutputReservation.PublishToNewPath(audioOnlyOutputDirectory, audioPrefix, L"mka")) {
                 DLL_Log("MediaEngine: audio-only output published: %s",
                         ce::privacy::CollapsePathForLog(audioOnlyOutputReservation.Utf8Path()).c_str());
             } else {

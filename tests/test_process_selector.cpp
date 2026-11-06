@@ -252,3 +252,47 @@ TEST_F(ConfigOverrideTest, ProfileAudioCarriesMoreSpecificAndLaterExclusions) {
     EXPECT_EQ(generic->processExclusions[0].pattern, R"(Modded\Game.exe)");
     EXPECT_EQ(generic->processExclusions[1].pattern, R"(Private\Game.exe)");
 }
+
+TEST(ProcessSelectorTest, ApplicationProfileNameExtractsFromSection) {
+    EXPECT_EQ(ApplicationProfileNameFromSection("Profile.hots"), "hots");
+    EXPECT_EQ(ApplicationProfileNameFromSection("Profile.Strange Brigade DX12"), "Strange Brigade DX12");
+    EXPECT_EQ(ApplicationProfileNameFromSection("App.hots"), "hots");
+    EXPECT_EQ(ApplicationProfileNameFromSection("NoDot"), "NoDot");
+
+    ApplicationProfile hotsProfile;
+    hotsProfile.section = "Profile.hots";
+    EXPECT_EQ(hotsProfile.Name(), "hots");
+
+    ApplicationProfile sbProfile;
+    sbProfile.section = "Profile.Strange Brigade DX12";
+    EXPECT_EQ(sbProfile.Name(), "Strange Brigade DX12");
+}
+
+TEST_F(ConfigOverrideTest, ActiveProfilePopulatesConfigAndVideoConfigWhenMatched) {
+    WriteConfig(
+        "[Profile.hots]\n"
+        "process=HeroesOfTheStorm_x64.exe\n"
+        "video_capture=inject\n"
+        "dll_injection=always\n\n"
+        "[Profile.Strange Brigade DX12]\n"
+        "process=StrangeBrigade_DX12.exe\n"
+        "dll_injection=never\n"
+        "video_capture=dxgi_dup\n");
+
+    AppConfig hotsConfig;
+    LoadConfig(tempConfigFile, hotsConfig, "HeroesOfTheStorm_x64.exe");
+    EXPECT_EQ(hotsConfig.activeProfile, "hots");
+    EXPECT_EQ(hotsConfig.video.activeProfile, "hots");
+    EXPECT_EQ(hotsConfig.captureMethod, "inject");
+
+    AppConfig sbConfig;
+    LoadConfig(tempConfigFile, sbConfig, "StrangeBrigade_DX12.exe");
+    EXPECT_EQ(sbConfig.activeProfile, "Strange Brigade DX12");
+    EXPECT_EQ(sbConfig.video.activeProfile, "Strange Brigade DX12");
+    EXPECT_EQ(sbConfig.captureMethod, "dxgi_dup");
+
+    AppConfig unprofiledConfig;
+    LoadConfig(tempConfigFile, unprofiledConfig, "notepad.exe");
+    EXPECT_TRUE(unprofiledConfig.activeProfile.empty());
+    EXPECT_TRUE(unprofiledConfig.video.activeProfile.empty());
+}

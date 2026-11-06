@@ -173,7 +173,8 @@ bool MediaScalingConfigEquals(const ScalingConfig& lhs, const ScalingConfig& rhs
 
 bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
     return lhs.encoder == rhs.encoder && lhs.fps == rhs.fps && lhs.container == rhs.container &&
-           lhs.outputDir == rhs.outputDir && lhs.rateControl == rhs.rateControl && lhs.bitrate == rhs.bitrate &&
+           lhs.outputDir == rhs.outputDir && lhs.activeProfile == rhs.activeProfile &&
+           lhs.rateControl == rhs.rateControl && lhs.bitrate == rhs.bitrate &&
            lhs.maxBitrate == rhs.maxBitrate && lhs.bufferSize == rhs.bufferSize &&
            lhs.keyframeInterval == rhs.keyframeInterval &&
            lhs.preset == rhs.preset && lhs.tuning == rhs.tuning && lhs.multipass == rhs.multipass &&

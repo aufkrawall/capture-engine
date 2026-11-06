@@ -702,7 +702,8 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
     const fs::path outputDirectory = ce::capture_output::ResolveCaptureDirectory(
         savedConfig.outputDir, ce::capture_output::GetPackageDirectory());
     const std::wstring extension(savedConfig.container.begin(), savedConfig.container.end());
-    if (!outputReservation.PublishToNewPath(outputDirectory, L"capture", extension)) {
+    const std::wstring prefix = ce::capture_output::RecordingOutputPrefix(savedConfig.activeProfile, L"capture");
+    if (!outputReservation.PublishToNewPath(outputDirectory, prefix, extension)) {
         const DWORD publishError = GetLastError();
         if (disposition == ce::mux::VideoOutputDisposition::kPublishAfterFinalizeFailure) {
             outputReservation.KeepStagingForRecovery();

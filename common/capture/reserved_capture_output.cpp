@@ -35,13 +35,18 @@ OutputNameSeed CurrentSeed() {
 }
 
 bool IsSafeFilenameComponent(const std::wstring& value, size_t maximumLength, bool allowEmpty) {
-    if ((!allowEmpty && value.empty()) || value.size() > maximumLength)
+    if (value.empty())
+        return allowEmpty;
+    if (value.size() > maximumLength)
+        return false;
+    if (value == L"." || value == L"..")
         return false;
     for (wchar_t character : value) {
-        const bool alphaNumeric = (character >= L'a' && character <= L'z') ||
-                                  (character >= L'A' && character <= L'Z') || (character >= L'0' && character <= L'9');
-        if (!alphaNumeric && character != L'_' && character != L'-')
+        if (character < 32 || character == L'<' || character == L'>' || character == L':' ||
+            character == L'"' || character == L'/' || character == L'\\' || character == L'|' ||
+            character == L'?' || character == L'*') {
             return false;
+        }
     }
     return true;
 }
@@ -127,6 +132,61 @@ std::wstring ExpandConfiguredPathReferences(const std::wstring& value) {
 
 OutputNameSeed MakeOutputNameSeed() {
     return CurrentSeed();
+}
+
+std::wstring RecordingOutputPrefix(const std::string& profileName, const std::wstring& defaultPrefix) {
+    if (profileName.empty())
+        return defaultPrefix;
+
+    std::wstring wide;
+    const int wideLength = MultiByteToWideChar(CP_UTF8, 0, profileName.data(),
+                                               static_cast<int>(profileName.size()), nullptr, 0);
+    if (wideLength <= 0)
+        return defaultPrefix;
+    wide.resize(static_cast<size_t>(wideLength));
+    MultiByteToWideChar(CP_UTF8, 0, profileName.data(), static_cast<int>(profileName.size()),
+                        wide.data(), wideLength);
+
+    size_t start = 0;
+    while (start < wide.size() && iswspace(wide[start]))
+        ++start;
+    if (start >= wide.size())
+        return defaultPrefix;
+
+    size_t end = wide.size();
+    while (end > start && (iswspace(wide[end - 1]) || wide[end - 1] == L'.'))
+        --end;
+    if (end <= start)
+        return defaultPrefix;
+
+    std::wstring sanitized;
+    sanitized.reserve(end - start);
+    for (size_t i = start; i < end; ++i) {
+        const wchar_t ch = wide[i];
+        if (ch < 32 || ch == L'<' || ch == L'>' || ch == L':' || ch == L'"' ||
+            ch == L'/' || ch == L'\\' || ch == L'|' || ch == L'?' || ch == L'*') {
+            sanitized.push_back(L'_');
+        } else {
+            sanitized.push_back(ch);
+        }
+    }
+
+    constexpr size_t kMaxPrefixLength = 64;
+    const bool isAudioOnly = (defaultPrefix == L"capture_audio");
+    const size_t allowedLen = isAudioOnly ? (kMaxPrefixLength - 6) : kMaxPrefixLength;
+    if (sanitized.size() > allowedLen) {
+        sanitized.resize(allowedLen);
+        while (!sanitized.empty() && (iswspace(sanitized.back()) || sanitized.back() == L'.'))
+            sanitized.pop_back();
+    }
+
+    if (sanitized.empty())
+        return defaultPrefix;
+
+    if (isAudioOnly)
+        return sanitized + L"_audio";
+
+    return sanitized;
 }
 
 std::filesystem::path GetPackageDirectory() {

@@ -307,6 +307,9 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
             overrideSection = profile->section;
     }
 
+    config.activeProfile = overrideSection.empty() ? "" : ApplicationProfileNameFromSection(overrideSection);
+    config.video.activeProfile = config.activeProfile;
+
     if (!overrideSection.empty()) {
         if (currentProcessPath.empty()) {
             ConfigLogInfo("Config: applying per-process override section [%s] for process '%s'",

@@ -6,6 +6,7 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- **Recordings use the application profile name in output files:** when recording through a named application profile (`[Profile.<name>]`), the resulting file name replaces `capture` with the game profile name (for example, `hots_20261106T204334392Z_p25304_s2.mkv` or `Strange Brigade DX12_20261106T204334392Z_p25304_s2.mkv`) across inject, WGC, and desktop duplication captures. Audio-only recordings append `_audio` (`<name>_audio_*.mka`). Profile names with spaces and safe punctuation are preserved while invalid characters are sanitized, and unprofiled captures continue to use `capture_*`.
 - **Four overlay layouts:** the in-game overlay was hard to read at a glance, so `[Overlay] layout` now chooses how it arranges its values, live while a game runs. `hero` (the new default) shows FPS as one large number above its graph and puts GPU and CPU in one table. `list` keeps one row per value, grouped, with aligned columns. `meters` shows load and memory as bars. `strip` is a narrow band along the screen edge that wraps in small windows. All four show the same values.
 - **Overlay font choice:** `[Overlay] font` picks any installed font and `font_weight` its weight; `font_size` now works too. A font that is not installed falls back to the default instead of whatever Windows substitutes. Font settings apply the next time the game starts.
 

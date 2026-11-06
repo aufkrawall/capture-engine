@@ -230,3 +230,56 @@ TEST_F(ReservedCaptureOutputTest, RejectsFilenameComponentsThatCouldEscapeTheCap
     EXPECT_FALSE(ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", L"../mkv", seed));
     EXPECT_TRUE(std::filesystem::is_empty(directory));
 }
+
+TEST_F(ReservedCaptureOutputTest, RecordingOutputPrefixSanitizesAndReplacesCapture) {
+    using ce::capture_output::RecordingOutputPrefix;
+
+    EXPECT_EQ(RecordingOutputPrefix("hots", L"capture"), L"hots");
+    EXPECT_EQ(RecordingOutputPrefix("Strange Brigade DX12", L"capture"), L"Strange Brigade DX12");
+    EXPECT_EQ(RecordingOutputPrefix("", L"capture"), L"capture");
+
+    // Audio-only mode substitutes "capture" with the profile name and appends "_audio"
+    EXPECT_EQ(RecordingOutputPrefix("hots", L"capture_audio"), L"hots_audio");
+    EXPECT_EQ(RecordingOutputPrefix("Strange Brigade DX12", L"capture_audio"), L"Strange Brigade DX12_audio");
+    EXPECT_EQ(RecordingOutputPrefix("", L"capture_audio"), L"capture_audio");
+
+    // Whitespace trimming and invalid character substitution
+    EXPECT_EQ(RecordingOutputPrefix("  Heroes of the Storm  ", L"capture"), L"Heroes of the Storm");
+    EXPECT_EQ(RecordingOutputPrefix("Game: Subtitle / DX12", L"capture"), L"Game_ Subtitle _ DX12");
+    EXPECT_EQ(RecordingOutputPrefix("   ", L"capture"), L"capture");
+    EXPECT_EQ(RecordingOutputPrefix("...", L"capture"), L"capture");
+
+    // Long names are capped within 64 characters
+    const std::string longName(100, 'x');
+    const std::wstring longPrefix = RecordingOutputPrefix(longName, L"capture");
+    EXPECT_EQ(longPrefix.size(), 64u);
+    const std::wstring longAudioPrefix = RecordingOutputPrefix(longName, L"capture_audio");
+    EXPECT_EQ(longAudioPrefix.size(), 64u);
+    EXPECT_EQ(longAudioPrefix.substr(58), L"_audio");
+}
+
+TEST_F(ReservedCaptureOutputTest, AtomicNewPathPublicationSupportsProfileNamesWithSpaces) {
+    const ce::capture_output::OutputNameSeed stagingSeed{13380163200456ull, 43, 16};
+    const ce::capture_output::OutputNameSeed finalSeed{13380163200456ull, 43, 17};
+    auto staging =
+        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture_stage", L"mkv",
+                                                                    stagingSeed);
+    ASSERT_TRUE(staging);
+    const std::filesystem::path stagingPath = staging.Path();
+    ASSERT_TRUE(staging.ReleaseToWriter());
+    {
+        std::ofstream writer(stagingPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(writer);
+        writer << "strange-brigade-dx12-frame-bytes";
+    }
+
+    const std::wstring profilePrefix = ce::capture_output::RecordingOutputPrefix("Strange Brigade DX12", L"capture");
+    ASSERT_TRUE(staging.PublishToNewPathForTesting(directory, profilePrefix, L"mkv", finalSeed));
+    EXPECT_EQ(staging.Path().extension(), L".mkv");
+    EXPECT_EQ(staging.Path().filename().wstring().rfind(L"Strange Brigade DX12_", 0), 0u);
+    EXPECT_FALSE(std::filesystem::exists(stagingPath));
+
+    std::ifstream published(staging.Path(), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(published)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(bytes, "strange-brigade-dx12-frame-bytes");
+}
