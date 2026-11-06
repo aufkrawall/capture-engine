@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **In-game screenshots with other overlays and frame generation (DirectX 12):** a game running with several injected tools could fail its screenshot and silently fall back to capturing the desktop, because CaptureEngine treated two interfaces of one graphics device as two devices (The Witcher 3 with Streamline, ReShade, OptiScaler and the Steam overlay). Screenshots now come from the game's own frame in that setup too.
+
 - **Repeated frames in DLSS dynamic frame generation recordings:** inject recordings repeated up to a quarter of their frames while DLSS dynamic frame generation kept switching its factor, because capture timing assumed each switch changed the output rate. Recordings now keep an even frame cadence through factor changes, on DirectX 12 and Vulkan.
 
 - **NVIDIA Smooth Motion status after frame-generation switches:** clearing detection state no longer permanently disables the fallback needed when the driver presents from one thread, allowing the overlay to detect Smooth Motion again after a switch.

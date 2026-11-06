@@ -86,20 +86,10 @@ bool IsServiceableFormat(DXGI_FORMAT format) {
     }
 }
 
-bool SameComObject(IUnknown* left, IUnknown* right) {
-    if (!left || !right) {
-        return false;
-    }
-    ComPtr<IUnknown> leftIdentity;
-    ComPtr<IUnknown> rightIdentity;
-    return SUCCEEDED(left->QueryInterface(IID_PPV_ARGS(&leftIdentity))) &&
-           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) && leftIdentity.Get() == rightIdentity.Get();
-}
-
 bool DeviceOfResourceMatches(ID3D12Resource* resource, ID3D12Device* device) {
     ComPtr<ID3D12Device> resourceDevice;
     return resource && device && SUCCEEDED(resource->GetDevice(IID_PPV_ARGS(&resourceDevice))) &&
-           SameComObject(resourceDevice.Get(), device);
+           DX12_ScreenshotDevicesAreOneDevice(resourceDevice.Get(), device, "FSR");
 }
 
 void TransitionIfNeeded(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
@@ -301,10 +291,13 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
         return CaptureOutcome::kFailed;
     }
     ComPtr<ID3D12Device> queueDevice;
-    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !SameComObject(device.Get(), queueDevice.Get())) {
+    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) ||
+        !DX12_ScreenshotDevicesAreOneDevice(device.Get(), queueDevice.Get(), "FSR")) {
         LogCaptureFailure("owner queue device identity", requestId, E_INVALIDARG);
         return CaptureOutcome::kFailed;
     }
+    // Everything recorded below goes to this queue, so it comes from the device view this queue belongs to.
+    device = queueDevice;
 
     UiSnapshot ui = SnapshotGameUiResource();
     D3D12_RESOURCE_DESC uiDesc{};

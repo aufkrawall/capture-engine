@@ -558,6 +558,9 @@ void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartu
 bool PostSLOwnsThisFramesOverlayDraw(const OverlayConfig& cfg);
 void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayout* shm, uint64_t requestId,
                                     ID3D12CommandQueue* queueOverride = nullptr);
+// Whether a screenshot's resource and its queue belong to one device, also when each is reached through another
+// interposer's view of it. Logs the two views once when they differ.
+bool DX12_ScreenshotDevicesAreOneDevice(ID3D12Device* resourceDevice, ID3D12Device* queueDevice, const char* route);
 // Services a pending screenshot request during native no-callback FSR FG, where no ProcessFrame or PostSL runs on the
 // presenter. Called from the FFX proxy-present prework on the game thread, before the overlay composite.
 void DX12_ServiceFSRNoCallbackScreenshotIfPending(IDXGISwapChain* proxy);

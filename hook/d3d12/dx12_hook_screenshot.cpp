@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "dx12_device_identity.h"
 #include "hook/runtime/hook_clock.h"
 
 #include "common/ipc/inject_transport_snapshot.h"
@@ -6,14 +7,20 @@
 
 namespace {
 
-bool SameComIdentity(IUnknown* left, IUnknown* right) {
-    if (!left || !right)
-        return false;
-    ComPtr<IUnknown> leftIdentity;
-    ComPtr<IUnknown> rightIdentity;
-    return SUCCEEDED(left->QueryInterface(IID_PPV_ARGS(&leftIdentity))) &&
-           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) &&
-           leftIdentity.Get() == rightIdentity.Get();
+// The module a COM interface's vtable lives in: who implements this view of the device.
+void DescribeInterfaceOwner(ID3D12Object* object, char* out, size_t outSize) {
+    snprintf(out, outSize, "unknown");
+    HMODULE owner = nullptr;
+    if (!object || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       *reinterpret_cast<LPCSTR*>(object), &owner)) {
+        return;
+    }
+    char path[MAX_PATH]{};
+    if (GetModuleFileNameA(owner, path, MAX_PATH) == 0)
+        return;
+    const char* name = strrchr(path, '\\');
+    snprintf(out, outSize, "%s", name ? name + 1 : path);
 }
 
 void LogDX12ScreenshotQueueFailure(const char* stage, HRESULT hr, IDXGISwapChain* swapChain,
@@ -28,6 +35,25 @@ void LogDX12ScreenshotQueueFailure(const char* stage, HRESULT hr, IDXGISwapChain
 }
 
 }  // namespace
+
+bool DX12_ScreenshotDevicesAreOneDevice(ID3D12Device* resourceDevice, ID3D12Device* queueDevice, const char* route) {
+    const auto relation = ce::dx12_device_identity::Compare(resourceDevice, queueDevice);
+    if (relation != ce::dx12_device_identity::Relation::kSameObject) {
+        static ce::log_meter::ChangeGate gate;
+        if (const auto verdict = gate.Observe(ce::log_meter::FieldKey(resourceDevice, queueDevice),
+                                              static_cast<uint64_t>(relation))) {
+            char resourceOwner[MAX_PATH]{};
+            char queueOwner[MAX_PATH]{};
+            DescribeInterfaceOwner(resourceDevice, resourceOwner, sizeof(resourceOwner));
+            DescribeInterfaceOwner(queueDevice, queueOwner, sizeof(queueOwner));
+            HookLogImportant("DX12: %s screenshot sees two device interfaces: %s (resource=%p from %s, queue=%p from "
+                             "%s)%s",
+                             route, ce::dx12_device_identity::Describe(relation), resourceDevice, resourceOwner,
+                             queueDevice, queueOwner, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
+    return ce::dx12_device_identity::IsOneDevice(relation);
+}
 
 // True while the PostSL callback draws the overlay for this Present. That
 // callback runs before ProcessFrame in the same Present, so it owns the ordering
@@ -79,7 +105,7 @@ void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayou
         failureStage = "queue device query";
         failureHr = queue->GetDevice(IID_PPV_ARGS(&queueDevice));
     }
-    if (SUCCEEDED(failureHr) && !SameComIdentity(backBufferDevice.Get(), queueDevice.Get())) {
+    if (SUCCEEDED(failureHr) && !DX12_ScreenshotDevicesAreOneDevice(backBufferDevice.Get(), queueDevice.Get(), "D3D12")) {
         failureStage = "swapchain/queue device identity";
         failureHr = E_INVALIDARG;
     }
@@ -88,8 +114,9 @@ void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayou
         const auto presentationEncoding =
             DXGIShared::ResolveSwapChainPresentationEncoding(swapChain, resourceDesc.Format);
         failureStage = "asynchronous readback submission";
-        queued = SaveDX12TextureAsScreenshotRaw(backBufferDevice.Get(), queue.Get(), backBuffer.Get(), shm,
-                                                requestId, presentationEncoding);
+        // The readback's command list goes to this queue, so it comes from the device view this queue belongs to.
+        queued = SaveDX12TextureAsScreenshotRaw(queueDevice.Get(), queue.Get(), backBuffer.Get(), shm, requestId,
+                                                presentationEncoding);
         if (!queued)
             failureHr = E_FAIL;
     }

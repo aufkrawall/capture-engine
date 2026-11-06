@@ -389,6 +389,8 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
     }
 
     ScreenshotDx12Readback readback;
+    // The worker polls it for removal after this frame, and a caller's device view may not outlive the frame otherwise.
+    device->AddRef();
     readback.device = device;
     readback.bufferSize = bufferSize;
     HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,

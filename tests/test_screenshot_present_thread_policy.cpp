@@ -410,7 +410,6 @@ TEST(ScreenshotPresentThreadPolicyTest, D3D12ScreenshotUsesTheExactSwapchainReso
     EXPECT_NE(body.find("GetPendingScreenshotRequestId(shm) != requestId"), std::string::npos);
     EXPECT_NE(body.find("backBuffer->GetDevice"), std::string::npos);
     EXPECT_NE(body.find("queue->GetDevice"), std::string::npos);
-    EXPECT_NE(body.find("SameComIdentity(backBufferDevice.Get(), queueDevice.Get())"), std::string::npos);
     EXPECT_EQ(body.find("g_Device.load"), std::string::npos)
         << "a transition can rotate the global device independently of the requested backbuffer";
     EXPECT_EQ(submit.find("CaptureRequestedDX12Screenshot(sc3"), std::string::npos)

@@ -324,6 +324,8 @@ void ReleaseScreenshotDx12Readback(ScreenshotDx12Readback& readback) {
         readback.fence->Release();
     if (readback.buffer)
         readback.buffer->Release();
+    if (readback.device)
+        readback.device->Release();
     readback.Disown();
 }
 
