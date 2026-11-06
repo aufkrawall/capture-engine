@@ -3,7 +3,9 @@
 #include "hook/fg/fg_detection.h"
 #include "hook/fg/fg_runtime_state.h"
 
+#include <barrier>
 #include <filesystem>
+#include <thread>
 
 #include "common/logging/log_meter.h"
 #include "source_fragment_reader.h"
@@ -275,6 +277,31 @@ TEST(FGRuntimeStateTest, DeactivatingDLSSFGForgetsTheRuntimesFactor) {
     EXPECT_EQ(fg.GetDLSSFGMultiplier(), 0);
     fg.SetDLSSFGMultiplier(2);
     EXPECT_EQ(fg.GetDLSSFGMultiplier(), 2);
+}
+
+TEST(FGRuntimeStateTest, ConcurrentRepeatedRequestsCannotRepublishAnOlderRuntimeFactor) {
+    FGCompatibility fg;
+    fg.SetDLSSFGMultiplier(2);
+    constexpr int kRounds = 25000;
+    std::barrier rendezvous(2);
+    std::thread requester([&] {
+        for (int round = 0; round < kRounds; ++round) {
+            rendezvous.arrive_and_wait();
+            fg.SetDLSSFGMultiplier(2);
+            rendezvous.arrive_and_wait();
+        }
+    });
+    int stalePublications = 0;
+    for (int round = 0; round < kRounds; ++round) {
+        fg.NoteDLSSFGRuntimeMultiplier(3);
+        rendezvous.arrive_and_wait();
+        fg.NoteDLSSFGRuntimeMultiplier(4);
+        rendezvous.arrive_and_wait();
+        // Both possible serial orders end at 4x: a repeated request has no authority to change it.
+        stalePublications += fg.GetDLSSFGMultiplier() != 4 ? 1 : 0;
+    }
+    requester.join();
+    EXPECT_EQ(stalePublications, 0);
 }
 
 // Dynamic multi-frame generation changes the DLSS-G cadence per frame, so the

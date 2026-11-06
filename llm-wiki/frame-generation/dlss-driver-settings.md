@@ -98,6 +98,11 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
   28904 us base interval in that session was right: Reflex paced the game at 4 x 7226 us. Coverage:
   `FGRuntimeStateTest.TheRuntimesFactorOutranksARepeatedRequestUntilTheRequestChanges`,
   `FlowNGX.TheRuntimesEvaluationOutranksTheGamesPolledRequest`.
+- **Concurrent publication (review, 2026-11-06):** separate requested/runtime/published atomics still let a concurrent
+  poll republish an older evaluation. `FGCompatibility::UpdateDLSSFGMultiplier` now commits the request and effective
+  factor together in one CAS; readers stay lock-free and the transition log remains metered. The barrier-driven
+  `FGRuntimeStateTest.ConcurrentRepeatedRequestsCannotRepublishAnOlderRuntimeFactor` caught 1,853 stale publications in
+  25,000 rounds before the fix and none after. This verifies concurrency in the owner, not live hardware behavior.
 - The FG preset is **not** an NGX parameter. `nvngx_dlssg.dll` exposes no `*.Hint.Render.Preset.*` name at all; the
   create-time parameters it parses are `DLSSG.UserInterfaceRecompositionEnabled`, `MenuDetectionEnabled`,
   `AsyncCreateEnabled`, the linearized-depth trio and `IndicatorLevel`. The preset comes from the driver settings

@@ -97,7 +97,7 @@ public:
             }
         }
 
-        const int apiMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
+        const int apiMultiplier = GetDLSSFGMultiplier();
         return apiMultiplier >= 2 ? apiMultiplier : cachedMultiplier.load(std::memory_order_acquire);
     }
 
@@ -213,7 +213,7 @@ public:
     // and driver overrides answer differently). It stands until a changed request or the next evaluation.
     void NoteDLSSFGRuntimeMultiplier(int multiplier);
     int GetDLSSFGMultiplier() const {
-        return dlssFGMultiplier.load(std::memory_order_acquire);
+        return static_cast<int>(dlssFGMultiplierState.load(std::memory_order_acquire) >> 8);
     }
     void SetFSRFGActive(bool active);
     void SetFSRFGMultiplier(int multiplier);
@@ -375,14 +375,14 @@ private:
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<bool> directFFXApiConfirmed{false};
     std::atomic<bool> fsrFGAuthoritativeApiOff{false};
-    void PublishDLSSFGMultiplier(int normalizedMultiplier);
+    void UpdateDLSSFGMultiplier(int multiplier, bool runtimeObservation);
     void ClearDLSSFGMultiplier();
-    std::atomic<int> dlssFGMultiplier{0};           // what the status reads: the runtime's factor, else the request
-    std::atomic<int> dlssFGRequestedMultiplier{0};  // SetDLSSFGMultiplier
-    std::atomic<int> dlssFGRuntimeMultiplier{0};    // NoteDLSSFGRuntimeMultiplier
+    // Low byte: last request. High byte: effective factor. One CAS commits both so a poll cannot publish a stale
+    // runtime observation after another thread evaluated a new factor, or clear that newer observation in two steps.
+    std::atomic<uint32_t> dlssFGMultiplierState{0};
     // Dynamic multi-frame generation can vary the factor per frame, so the
     // transition log is metered rather than per-change; these carry the
-    // heartbeat's counter and the range it reports. See PublishDLSSFGMultiplier.
+    // heartbeat's counter and the range it reports. See UpdateDLSSFGMultiplier.
     std::atomic<uint32_t> dlssFGMultiplierChanges{0};
     std::atomic<int> dlssFGMultiplierObservedLow{0};
     std::atomic<int> dlssFGMultiplierObservedHigh{0};

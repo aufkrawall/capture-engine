@@ -91,7 +91,7 @@ ce::fg_runtime::DetectionSnapshot FGCompatibility::CaptureDetectionSnapshot() co
     snapshot.fsrFGApiActive = fsrFGApiActive.load(std::memory_order_acquire);
     snapshot.heuristicFSRFGActive = heuristicFSRFGActive.load(std::memory_order_acquire);
     snapshot.nvidiaSmoothMotionDetected = nvidiaSmoothMotionDetected.load(std::memory_order_acquire);
-    snapshot.dlssFGMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
+    snapshot.dlssFGMultiplier = GetDLSSFGMultiplier();
     snapshot.xefgPresenterActive = xefgPresenterActive.load(std::memory_order_acquire);
     snapshot.xefgEnabled = xefgEnabled.load(std::memory_order_acquire);
     snapshot.xefgMeasuredNotGenerating = xefgMeasuredNotGenerating.load(std::memory_order_acquire);
@@ -103,7 +103,7 @@ ce::fg_runtime::RuntimeMode FGCompatibility::GetRuntimeMode() const {
 }
 
 FGCompatibility::FGType FGCompatibility::GetActiveFGType() const {
-    return RuntimeModeToFGType(GetRuntimeMode(), dlssFGMultiplier.load(std::memory_order_acquire));
+    return RuntimeModeToFGType(GetRuntimeMode(), GetDLSSFGMultiplier());
 }
 
 bool FGCompatibility::IsFGActive() const {
@@ -166,33 +166,40 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
 }
 
 void FGCompatibility::SetDLSSFGMultiplier(int multiplier) {
-    const int normalizedMultiplier = NormalizeDLSSFGFactor(multiplier);
-    const int previousRequest = dlssFGRequestedMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
+    UpdateDLSSFGMultiplier(multiplier, false);
+}
+
+void FGCompatibility::NoteDLSSFGRuntimeMultiplier(int multiplier) {
+    UpdateDLSSFGMultiplier(multiplier, true);
+}
+
+void FGCompatibility::ClearDLSSFGMultiplier() {
+    dlssFGMultiplierState.store(0, std::memory_order_release);
+}
+
+void FGCompatibility::UpdateDLSSFGMultiplier(int multiplier, bool runtimeObservation) {
+    const uint32_t normalized = static_cast<uint32_t>(NormalizeDLSSFGFactor(multiplier));
     // A request the game changed may be what the runtime does next, and the runtime's next evaluation says so either
     // way. A repeated one is the game's poll restating its option, which says nothing about the runtime: W3 asked for
     // 2x on the game thread at every poll while its evaluations ran 4x on the presenter thread (session
     // 20261106_195839: 3680 false factor flips in three minutes, every game frame still 4 outputs).
-    if (normalizedMultiplier == 0 || previousRequest != normalizedMultiplier) {
-        dlssFGRuntimeMultiplier.store(0, std::memory_order_release);
+    uint32_t previous = dlssFGMultiplierState.load(std::memory_order_acquire);
+    uint32_t effective = 0;
+    for (;;) {
+        const uint32_t previousRequest = previous & 0xffu;
+        const uint32_t previousEffective = previous >> 8;
+        const uint32_t request = runtimeObservation ? previousRequest : normalized;
+        effective = runtimeObservation || normalized == 0 || previousRequest != normalized || previousEffective < 2
+                        ? normalized
+                        : previousEffective;
+        const uint32_t next = request | (effective << 8);
+        if (dlssFGMultiplierState.compare_exchange_weak(previous, next, std::memory_order_acq_rel,
+                                                        std::memory_order_acquire)) {
+            break;
+        }
     }
-    const int runtimeMultiplier = dlssFGRuntimeMultiplier.load(std::memory_order_acquire);
-    PublishDLSSFGMultiplier(runtimeMultiplier >= 2 ? runtimeMultiplier : normalizedMultiplier);
-}
-
-void FGCompatibility::NoteDLSSFGRuntimeMultiplier(int multiplier) {
-    const int normalizedMultiplier = NormalizeDLSSFGFactor(multiplier);
-    dlssFGRuntimeMultiplier.store(normalizedMultiplier, std::memory_order_release);
-    PublishDLSSFGMultiplier(normalizedMultiplier);
-}
-
-void FGCompatibility::ClearDLSSFGMultiplier() {
-    dlssFGRequestedMultiplier.store(0, std::memory_order_release);
-    dlssFGRuntimeMultiplier.store(0, std::memory_order_release);
-    dlssFGMultiplier.store(0, std::memory_order_release);
-}
-
-void FGCompatibility::PublishDLSSFGMultiplier(int normalizedMultiplier) {
-    const int previousMultiplier = dlssFGMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
+    const int normalizedMultiplier = static_cast<int>(effective);
+    const int previousMultiplier = static_cast<int>(previous >> 8);
     if (previousMultiplier == normalizedMultiplier) {
         return;
     }
