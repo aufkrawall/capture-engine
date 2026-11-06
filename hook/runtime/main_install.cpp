@@ -148,10 +148,8 @@ void CheckAndInstallHooks() {
     InstallGlobalVTableHooks();
   }
 
-  // DX12: Only initialize the hook instance for state tracking and
-  // ExecuteCommandLists hooking. We do NOT install DXGI vtable hooks anymore -
-  // wrappers handle Present/ResizeBuffers. NOTE: Skip for Vulkan games to
-  // prevent DXGI interference
+  // DX12 state tracking and ExecuteCommandLists hooks are initialized independently of
+  // the native factory bootstrap above. Skip Vulkan-owned renderers to avoid DXGI interference.
   {
     HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
     const bool d3d12DeviceCreated = WasD3D12DeviceCreated();

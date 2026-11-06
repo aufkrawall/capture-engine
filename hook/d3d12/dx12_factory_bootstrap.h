@@ -12,6 +12,12 @@ bool CanInstall(Environment& environment) {
         environment.NoteLoaderDeferral();
         return false;
     }
+    // A resident layer is authoritative even before the hook thread publishes Vulkan ownership.
+    // Plain vulkan-1.dll presence is deliberately not evidence: D3D games load it too.
+    if (environment.IsVulkanActive() || environment.HasResidentVulkanLayer()) {
+        environment.NoteVulkanBypass();
+        return false;
+    }
     return true;
 }
 

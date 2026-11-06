@@ -24,6 +24,20 @@ struct FactoryBootstrapEnvironment {
             HookLog("DX12: Deferring factory hook bootstrap inside loader callout; hook thread will retry");
         }
     }
+
+    bool IsVulkanActive() const { return DXGIShared::IsVulkanActive(); }
+
+    bool HasResidentVulkanLayer() const {
+        return GetModuleHandleW(L"VK_LAYER_CE_overlay.dll") != nullptr ||
+               GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll") != nullptr;
+    }
+
+    void NoteVulkanBypass() const {
+        static ce::log_meter::ChangeGate bypassed;
+        if (bypassed.Observe(0)) {
+            HookLog("DX12: Bypassing factory hook bootstrap for the active or resident CE Vulkan layer");
+        }
+    }
 };
 
 void PublishCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
@@ -167,8 +181,9 @@ void InstallGlobalVTableHooks() {
     // Fast-app coverage: the HookThread installs these hooks as its FIRST action (before any
     // module scans / IPC waits), so a game that creates its swapchain within the first second
     // (dx12_fg_switch_test via Steam + RTSS, session 20260812_044326) cannot slip past them.
-    // DX12Hook::Init retries here when dxgi.dll was not loaded yet; only a completed install
-    // latches the flag.
+    // Completed DXGI loads, periodic hook scans and DX12Hook::Init retry when the native runtime
+    // was absent. Shared admission below keeps loader callouts and Vulkan-owned objects out;
+    // only a completed install latches the flag.
     static std::atomic<bool> s_installed{false};
     if (s_installed.load(std::memory_order_acquire)) {
         return;

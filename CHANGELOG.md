@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Vulkan startup with late-loaded DXGI:** factory-hook retries now respect an already loaded CaptureEngine Vulkan layer before renderer detection finishes, preventing D3D hooks from modifying the Vulkan driver's private presentation objects.
+
 - **Game startup with nested graphics DLL loads:** late DXGI hook discovery now waits until a DLL's initialization callback has returned before creating factories or taking the installer lock, avoiding a loader-lock deadlock while retaining immediate discovery after ordinary loads.
 
 - **Overlay text cut off in small windows or at high display scale:** Hero, List and Meters now wrap oversized sections to the available viewport width, keeping the configured font size, hardware readings, recording warnings, graph and meter bars visible.
