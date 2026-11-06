@@ -215,6 +215,7 @@ private:
     bool FaceCameraCompositionActive() const;
 
     bool DynamicOverlayRecompositionActive() const;
+    ce::media::Av1RepeatOverlayState CurrentRepeatOverlayState() const;
     void ObserveFreshFrameDynamicOverlayPressure(ID3D11Texture2D* acceptedConvertedFrame);
 
     void BeginDeferredRecording();
@@ -407,6 +408,7 @@ private:
     int64_t duplicatedFrameCount = 0;  // Encoder-side duplicates
     int64_t overlayAwareRepeatRenderCount = 0;  // Re-rendered from uncomposited RGB source
     ce::capture_policy::CfrDynamicOverlayRepeatState dynamicOverlayRepeatState{};
+    ce::media::Av1RepeatOverlayState lastSubmittedRepeatOverlayState{};  // the overlay of the frame NVENC got last
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)

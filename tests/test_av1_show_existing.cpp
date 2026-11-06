@@ -112,6 +112,69 @@ TEST(Av1ShowExistingTest, KeyframesOverlaysAndTheLedgerBoundForceReencodes) {
     EXPECT_EQ(ledger.Stats().pendingPeak, 2u);
 }
 
+namespace {
+
+ce::media::Av1RepeatOverlayState DrawnPointer(int x, int y) {
+    ce::media::Av1RepeatOverlayState state;
+    state.known = true;
+    state.cursorDrawn = true;
+    state.cursor.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible;
+    state.cursor.handle = 0x10;
+    state.cursor.screenX = x;
+    state.cursor.screenY = y;
+    state.cursor.requestedWidth = 48;
+    state.cursor.requestedHeight = 48;
+    state.cursor.dpi = 144;
+    return state;
+}
+
+}  // namespace
+
+// A desktop recording re-encoded every repeat because a drawn pointer could have moved (session 20261106_195839:
+// 1021 of 1056 repeats at about 42 KB each). Only a pointer that did move changes the slot's pixels.
+TEST(Av1ShowExistingTest, ARepeatChangesOverlayPixelsOnlyWhenThePointerDrawsDifferently) {
+    using ce::media::RepeatSlotChangesOverlayPixels;
+    const auto submitted = DrawnPointer(100, 200);
+
+    auto later = submitted;
+    later.cursor.associationQpc = 111;
+    later.cursor.observedQpc = 222;
+    later.cursor.contentQpc = 333;
+    EXPECT_FALSE(RepeatSlotChangesOverlayPixels(true, false, submitted, later)) << "only the time moved";
+
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, DrawnPointer(101, 200)));
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, DrawnPointer(100, 201)));
+    auto otherShape = submitted;
+    otherShape.cursor.handle = 0x20;
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, otherShape));
+    auto otherScale = submitted;
+    otherScale.cursor.requestedWidth = 64;
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, otherScale));
+
+    auto hidden = submitted;
+    hidden.cursor.flags &= ~ce::cursor::kStateVisible;
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, hidden)) << "the pointer disappears";
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, hidden, submitted)) << "the pointer appears";
+    auto hiddenElsewhere = hidden;
+    hiddenElsewhere.cursor.screenX = 500;
+    EXPECT_FALSE(RepeatSlotChangesOverlayPixels(true, false, hidden, hiddenElsewhere)) << "nothing is drawn either way";
+
+    auto embedded = submitted;
+    embedded.cursor.SetSourceEmbedded(true);
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, embedded)) << "the source owns the pointer now";
+    auto suppressed = submitted;
+    suppressed.cursorDrawn = false;
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, submitted, suppressed)) << "composition was suppressed";
+}
+
+TEST(Av1ShowExistingTest, ARepeatChangesOverlayPixelsWhenTheyCannotBeVouchedFor) {
+    using ce::media::RepeatSlotChangesOverlayPixels;
+    const auto state = DrawnPointer(100, 200);
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, true, state, state)) << "a face camera's frames change on their own";
+    EXPECT_TRUE(RepeatSlotChangesOverlayPixels(true, false, {}, state)) << "the frame sent last has an unknown overlay";
+    EXPECT_FALSE(RepeatSlotChangesOverlayPixels(false, true, {}, state)) << "not recomposing: the slot repeats pixels";
+}
+
 TEST(Av1ShowExistingTest, AnUnexpectedKeyframeHoldsCommittedSlotsAndDisarms) {
     Av1ShowExistingRepeats ledger;
     ledger.Reset(EnabledConfig());

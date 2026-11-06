@@ -362,6 +362,10 @@ bool VideoEncoder::DynamicOverlayRecompositionActive() const {
     return FaceCameraCompositionActive() || (CursorCompositionActive() && cursorRenderer != nullptr);
 }
 
+ce::media::Av1RepeatOverlayState VideoEncoder::CurrentRepeatOverlayState() const {
+    return {true, CursorCompositionActive() && cursorRenderer != nullptr, cursorCaptureState};
+}
+
 bool VideoEncoder::IsLiveOutput() const {
     return liveOutput;
 }

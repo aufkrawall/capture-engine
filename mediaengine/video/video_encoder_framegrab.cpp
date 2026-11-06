@@ -318,12 +318,17 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         if (success) {
             lastAssignedVideoPts = d3d11Frame->pts;
             outputFrameCount++;
+            lastSubmittedRepeatOverlayState = CurrentRepeatOverlayState();
             const bool cachedDynamicOverlaySource =
                 recomposeOverlaysForRepeats && CacheRepeatSourceFrameTexture(
                                                    bgraTexture, frameWidth, frameHeight, isHDR, captureLeft, captureTop);
             if (recomposeOverlaysForRepeats && !cachedDynamicOverlaySource) {
                 repeatSourceNeedsOverlayRecompose = false;
             }
+            // The retained source plus an unchanged overlay reproduces this frame exactly; the slot's own overlay
+            // decides that per repeat (RepeatSlotChangesOverlayPixels).
+            if (cachedDynamicOverlaySource)
+                av1Repeats.NoteRepeatCacheHoldsLastSubmit();
             // Keep one full-frame cache copy per accepted frame. Dynamic
             // overlays retain the uncomposited RGB source so camera/cursor
             // state can advance on CFR repeats; the ordinary path retains the
@@ -496,7 +501,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     // encoding the same pixels again (av1_show_existing_session.h).
     const int64_t showExistingPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
                                                           lastAssignedVideoPts, useExplicitCfrTimeline);
-    if (av1Repeats.TryRepeat(codecCtx, showExistingPts, recomposeOverlaysForRepeat, [this](AVPacket* out) {
+    const bool repeatChangesOverlayPixels =
+        ce::media::RepeatSlotChangesOverlayPixels(recomposeOverlaysForRepeat, FaceCameraCompositionActive(),
+                                                  lastSubmittedRepeatOverlayState, CurrentRepeatOverlayState());
+    if (av1Repeats.TryRepeat(codecCtx, showExistingPts, repeatChangesOverlayPixels, [this](AVPacket* out) {
             out->stream_index = stream->index;
             if (onPacket)
                 onPacket(out);
@@ -651,6 +659,9 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     diagnostics.frameAnalysis.framesEncoded++;
     outputFrameCount++;
+    // A frame copied from the composited cache carries that cache's older overlay.
+    lastSubmittedRepeatOverlayState =
+        populatedFromRepeatSource ? CurrentRepeatOverlayState() : ce::media::Av1RepeatOverlayState{};
     if (populatedFromRepeatSource) {
         overlayAwareRepeatRenderCount++;
         CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));

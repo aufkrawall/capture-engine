@@ -128,6 +128,7 @@ void VideoEncoder::CleanupResources() {
     duplicatedFrameCount = 0;
     overlayAwareRepeatRenderCount = 0;
     dynamicOverlayRepeatState.Reset();
+    lastSubmittedRepeatOverlayState = {};
     encodeFrameCounter = 0;
     lastLogFrameCount = 0;
     nextOutputTime_ms = -1;

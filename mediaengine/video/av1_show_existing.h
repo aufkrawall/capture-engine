@@ -23,8 +23,40 @@
 #include <vector>
 
 #include "av1_obu.h"
+#include "common/capture/cursor_capture_state.h"
 
 namespace ce::media {
+
+// The overlay a frame was composed with, as far as a repeat slot can compare it.
+struct Av1RepeatOverlayState {
+    bool known = false;  // false: the frame's overlay cannot be vouched for
+    bool cursorDrawn = false;
+    ce::cursor::CaptureState cursor;
+};
+
+// Whether a repeat slot composed from the retained source would show other pixels than the frame sent to the encoder
+// last. Timestamps are left out: a pointer that did not move draws the same pixels at any time. A face camera's frames
+// change on their own, so it counts as a change. Recording a desktop, every repeat re-encoded only because a pointer
+// could have moved (session 20261106_195839: 1021 of 1056 repeats, 51 Mbit/s for about 12 s of source-limited desktop).
+inline bool RepeatSlotChangesOverlayPixels(bool recomposing, bool faceCameraActive,
+                                           const Av1RepeatOverlayState& submitted, const Av1RepeatOverlayState& slot) {
+    if (!recomposing)
+        return false;
+    if (faceCameraActive || !submitted.known || !slot.known)
+        return true;
+    const bool submittedVisible = submitted.cursorDrawn && submitted.cursor.IsVisible();
+    const bool slotVisible = slot.cursorDrawn && slot.cursor.IsVisible();
+    if (submittedVisible != slotVisible)
+        return true;
+    if (!slotVisible)
+        return false;
+    const auto& a = submitted.cursor;
+    const auto& b = slot.cursor;
+    return a.handle != b.handle || a.screenX != b.screenX || a.screenY != b.screenY || a.captureLeft != b.captureLeft ||
+           a.captureTop != b.captureTop || a.captureWidth != b.captureWidth || a.captureHeight != b.captureHeight ||
+           a.requestedWidth != b.requestedWidth || a.requestedHeight != b.requestedHeight || a.dpi != b.dpi ||
+           a.PositionIsShapeTopLeft() != b.PositionIsShapeTopLeft();
+}
 
 enum class Av1RepeatReencodeReason : uint8_t {
     Disabled,       // session not eligible (codec/config)
