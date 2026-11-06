@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-06 - W3 HDR with Steam, ReShade and OptiScaler: false factor flips, screenshot view, DLSS-G override
+
+- **Session `20261106_195839`, 0.1.7438, W3 DX12 HDR, `dlss_fg_mode=dynamic`, one clip each in game and on the desktop:** healthy finalization, exact A/V lengths, no uncovered overlay present across six FG transitions. Four defects:
+- **False 2x/4x flips:** the game's polled `generated=1` and the NGX evaluation's `MultiFrameCount=3` wrote one multiplier from two threads, 3680 flips while every game frame stayed 4 outputs. Details in `frame-generation/dlss-driver-settings.md`.
+- **Recording repeats followed those flips** (r=0.91, up to 29 of 120 per second): the final-output clock rescaled on each. Details in `cfr-capture-sync.md`.
+- **In-game hook screenshot fell back to WGC** at the device identity check. Details in `screenshots.md`. Which interface differs is unproven; the new log line names it.
+- **Configured `nvngx_dlssg.dll` not used:** a hook answered the module query with `WINMM.dll`. Details in `startup-runtime-overrides.md`.
+- **Also:** free AV1 repeats with a still pointer, `rateFactor=` in `[GpuMemory]`, factor-only `FG publication` lines metered, WARN only on real grid debt, `log_digest.py` false positives.
+- **Corrected along the way:** my first reading treated the flips as real dynamic MFG and PC latency's constant 28904 us as a model artifact. The present series and the per-thread log disproved both: the factor was false and that base interval was right.
+- **Not run on hardware.** To check on a retest: `leadClamps` near zero, `FG publication` steady at 4x, in-game screenshot from the hook, `nvngx_dlssg_310_9_16.log` with OptiScaler, `reencoded=overlay` on a desktop clip.
+
 ### 2026-11-06 - FPS limiter under Smooth Motion: every output of a capped frame gets a slot
 
 - **Report:** with Smooth Motion the limiter does not give a flat graph. Session `20261106_181807`, Trine 5 DX11, 0.1.7435, caps 140 and 120. The same session VALIDATES the worker-run status: 2x held throughout (`stream=worker-runs modalRun=2`).

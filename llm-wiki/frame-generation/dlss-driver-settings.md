@@ -87,6 +87,17 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
   a 144 Hz panel. That is `dlss_fg_target_fps=max_refresh` doing its job. The Streamline options keep reporting the
   game's own request (`optionsMode=on generated=3`), because the runtime varies the cadence below that API.
   `FGCompatibility::SetDLSSFGMultiplier` is metered for the same reason - unmetered it was 26% of that session's log.
+- **Those two sources must not share one value (2026-11-06).** Session `20261106_195839` (W3): the game restated
+  `generated=1` at every poll on its own thread, the NGX evaluation reported `DLSSG.MultiFrameCount=3` on the presenter
+  thread, and each wrote the one multiplier. The log shows it per thread: `4 -> 2` on T1DF0, `2 -> 4` on T5788, 3680
+  flips in three minutes. They were false: the present series ran 4 outputs per 28.7 ms in low-flip and high-flip
+  stretches alike (runs between long gaps: 95 of 96 and 102 of 102 were 4 outputs), and evaluations reported 3x only a
+  few times. So some of the 2/3/4 in the Talos numbers above may be this race too; that session's logs are gone, so it
+  stays open. `FGCompatibility` now owns both sources: the runtime's factor (`NoteDLSSFGRuntimeMultiplier`) stands until
+  a changed request or the next evaluation, a repeated request changes nothing, and off forgets it. PC latency's
+  28904 us base interval in that session was right: Reflex paced the game at 4 x 7226 us. Coverage:
+  `FGRuntimeStateTest.TheRuntimesFactorOutranksARepeatedRequestUntilTheRequestChanges`,
+  `FlowNGX.TheRuntimesEvaluationOutranksTheGamesPolledRequest`.
 - The FG preset is **not** an NGX parameter. `nvngx_dlssg.dll` exposes no `*.Hint.Render.Preset.*` name at all; the
   create-time parameters it parses are `DLSSG.UserInterfaceRecompositionEnabled`, `MenuDetectionEnabled`,
   `AsyncCreateEnabled`, the linearized-depth trio and `IndicatorLevel`. The preset comes from the driver settings

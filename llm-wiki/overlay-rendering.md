@@ -396,8 +396,9 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   it only abandons a queue-depth count seeded under the old factor (conservation divides displays by the factor), so
   the single-frame hold stands until the next known-empty seed (`factorChanges=` in the chain line). Before, every
   factor change emptied the windows and the overlay showed `PC Latency --` until new samples arrived - about one 500 ms
-  text refresh, sometimes two. DLSS-G dynamic MFG publishes a new factor many times a second (2/3/4 in Talos
-  `20260919_223111`), so the reading kept dropping out during plain gameplay. The 32-sample trimmed window blends the
+  text refresh, sometimes two. The published factor could change many times a second (2/3/4 in Talos
+  `20260919_223111`; partly a false reading, see `frame-generation/dlss-driver-settings.md`), so the reading kept
+  dropping out during plain gameplay. The 32-sample trimmed window blends the
   old and new factor for a fraction of a second after a deliberate 2x->4x change instead. Tests:
   `tests/test_system_latency_generator_factor.cpp` (the dynamic case blanked 70 of 120 frames with the old reset; it
   samples on the Present path, before the frame's displays arrive, as the overlay does).

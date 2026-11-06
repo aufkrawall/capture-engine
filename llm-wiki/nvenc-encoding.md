@@ -308,6 +308,21 @@ emit such units routinely, so this is not packet replay. Packet: `pts=dts=` slot
 duration 1, no key flag; MKV/MP4 strip the TD, FLV (enhanced RTMP `av01`) keeps it.
 Slot count, PTS grid and track length are unchanged, so the A/V contract is too.
 
+A composited pointer no longer rules this out by itself (2026-11-06). Session
+`20261106_195839` re-encoded 1021 of 1056 repeats of a 12 s source-limited desktop
+recording with reason `overlay` at about 42 KB each (51 Mbit/s, encoder headroom down to
+90.8 fps), only because a drawn pointer could have moved. `RepeatSlotChangesOverlayPixels`
+compares the overlay the slot would compose with the one the frame sent last carries:
+position, shape, scale and visibility count, timestamps do not, and a face camera always
+counts as a change. A frame copied from the composited cache has an unknown overlay, so
+the next slot re-encodes. Wiring needs NVENC and was not run on hardware: the
+`[AV1 ShowExisting] summary` should show far fewer `reencoded=overlay` on such a recording.
+
+`[GpuMemory]` carries `rateFactor=` because W3 in that session grew 734 MB of unaccounted
+media VRAM (614 to 1348 MB) in exactly its two stretches without frame generation, while
+free repeats raised the rate up to x8.57. A larger NVENC rate buffer is only a suspicion;
+the field exists to confirm or refute it on the next run.
+
 Rules (all enforced by the ledger, violations disarm the session):
 - The repeated frame must be showable: a shown KEY_FRAME is not (spec; libaom
   rejects it), so the first repeat after a key re-encodes. A frame with
