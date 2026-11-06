@@ -5,25 +5,10 @@
 #include "hook/fg/fg_detection.h"
 #include "hook/runtime/hook_common.h"
 #include "overlay_fg_metric_policy.h"
+#include "overlay_fg_publication_log.h"
 #include "hook/metrics/performance_metrics.h"
 
 namespace ce::overlay_metrics {
-namespace {
-
-struct PublishedState {
-    bool valid = false;
-    bool effectiveFGActive = false;
-    fg_runtime::RuntimeMode runtimeMode = fg_runtime::RuntimeMode::kOff;
-    int publishedType = 0;
-    int publishedMultiplier = 1;
-};
-
-PublishedState& LastPublishedState() {
-    static PublishedState state;
-    return state;
-}
-
-}  // namespace
 
 void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput& input) {
     if (!metrics) {
@@ -57,20 +42,16 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput
 
     metrics->SetFGMetrics(publishedOutputFPS, publishedBaseFPS, publishedMultiplier, publishedType);
 
-    auto& last = LastPublishedState();
-    if (!last.valid || last.effectiveFGActive != publishedActive || last.runtimeMode != loggedRuntimeMode ||
-        last.publishedType != publishedType || last.publishedMultiplier != publishedMultiplier) {
+    static FGPublicationLogGate logGate;
+    if (const auto verdict = logGate.Observe(publishedActive, static_cast<int>(loggedRuntimeMode), publishedType,
+                                             publishedMultiplier);
+        verdict.log) {
         HookLogImportant(
             "FG publication: source=%s runtime=%s active=%d published_type=%d published_multiplier=%d base_fps=%.2f "
-            "output_fps=%.2f",
+            "output_fps=%.2f factorChanges=%u",
             input.publicationSource ? input.publicationSource : "unknown",
             ce::fg_runtime::GetRuntimeModeName(loggedRuntimeMode), publishedActive ? 1 : 0, publishedType,
-            publishedMultiplier, publishedBaseFPS, publishedOutputFPS);
-        last.valid = true;
-        last.effectiveFGActive = publishedActive;
-        last.runtimeMode = loggedRuntimeMode;
-        last.publishedType = publishedType;
-        last.publishedMultiplier = publishedMultiplier;
+            publishedMultiplier, publishedBaseFPS, publishedOutputFPS, verdict.factorChanges);
     }
 }
 

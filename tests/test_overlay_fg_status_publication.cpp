@@ -3,6 +3,7 @@
 #include "hook/d3d12/dx12_overlay_policy.h"
 #include "hook/fg/fg_detection.h"
 #include "hook/fg/fg_session_state.h"
+#include "hook/overlay/overlay_fg_publication_log.h"
 #include "hook/overlay/overlay_metrics_publisher.h"
 #include "hook/metrics/performance_metrics.h"
 #include "source_fragment_reader.h"
@@ -54,6 +55,37 @@ void PublishPlanner(PerformanceMetrics& metrics, bool active, ce::fg_runtime::Ru
 }
 
 }  // namespace
+
+// W3 (session 20261106_195839) spent 41% of its hook log's bytes on this line, one per factor change.
+TEST(FGPublicationLogGateTest, FactorChangesAreMeteredAndStateChangesAlwaysLog) {
+    using ce::overlay_metrics::FGPublicationLogGate;
+    constexpr int kDLSSFG = static_cast<int>(ce::fg_runtime::RuntimeMode::kDLSSFG);
+    constexpr int kFSRFG = static_cast<int>(ce::fg_runtime::RuntimeMode::kFSRFG);
+    FGPublicationLogGate gate;
+    EXPECT_TRUE(gate.Observe(true, kDLSSFG, 1, 2).log) << "the first publication";
+    EXPECT_FALSE(gate.Observe(true, kDLSSFG, 1, 2).log) << "nothing changed";
+
+    constexpr uint32_t kFlips = 2048;
+    uint32_t logged = 0;
+    uint32_t lastCount = 0;
+    for (uint32_t flip = 1; flip <= kFlips; ++flip) {
+        const auto verdict = gate.Observe(true, kDLSSFG, 1, flip % 2 == 0 ? 2 : 4);
+        EXPECT_EQ(verdict.factorChanges, flip);
+        if (verdict.log) {
+            ++logged;
+            lastCount = verdict.factorChanges;
+        }
+    }
+    EXPECT_EQ(logged, FGPublicationLogGate::kFactorChangeBurst + kFlips / FGPublicationLogGate::kFactorChangeStride);
+    EXPECT_EQ(lastCount, kFlips) << "the heartbeat carries the count";
+
+    const auto otherRuntime = gate.Observe(true, kFSRFG, 2, 2);
+    EXPECT_TRUE(otherRuntime.log);
+    EXPECT_EQ(otherRuntime.factorChanges, 0u);
+    EXPECT_TRUE(gate.Observe(false, kFSRFG, 0, 1).log) << "off always shows";
+    EXPECT_TRUE(gate.Observe(true, kDLSSFG, 1, 4).log) << "on always shows";
+    EXPECT_EQ(gate.Observe(true, kDLSSFG, 1, 2).factorChanges, 1u) << "a new state starts a new count";
+}
 
 TEST(OverlayFGStatusPublicationTest, PublishesNoFGAsBaseline) {
     PerformanceMetrics metrics;
