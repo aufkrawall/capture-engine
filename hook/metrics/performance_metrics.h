@@ -150,6 +150,14 @@ public:
         return UsesMeasuredFGRates() && measured > 0.0f ? measured : m_fgOutputFPS.load(std::memory_order_relaxed);
     }
     float GetFGBaseFPS() const {
+        // Smooth Motion's reported base is measured from the application's frames, and the display stream says nothing
+        // about those. A driver that generates past the panel still keeps the application under what reaches the
+        // screen: Witcher 3 at 144 presented 288 on a 143 Hz panel (20260919_181510).
+        if (m_fgType.load(std::memory_order_relaxed) == 3) {
+            const float reportedBase = m_fgBaseFPS.load(std::memory_order_relaxed);
+            const float output = GetFGOutputFPS();
+            return output > 0.0f && reportedBase > output ? output : reportedBase;
+        }
         if (UsesMeasuredFGRates()) {
             const float measuredBase = m_measuredFgBaseFPS.load(std::memory_order_relaxed);
             if (measuredBase > 0.0f)
@@ -276,10 +284,11 @@ private:
     void UpdateSeries(MetricSeries& series, int64_t currentQpcUs);
     void ApplyRecordingTransition(MetricSeries& series);
     void RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs);
-    // Smooth Motion keeps its own measured interposer rates.
+    // Any generator's output rate is what the screen shows. Smooth Motion's interposer stream counts what it submits,
+    // which vsync can cut down to the panel's rate before it is ever shown.
     bool UsesMeasuredFGRates() const {
         const int type = m_fgType.load(std::memory_order_relaxed);
-        return (type == 1 || type == 2 || type == 4) && m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
+        return (type >= 1 && type <= 4) && m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
     }
     void RefreshMeasuredFGRates(int64_t currentQpcUs);
     // Rate-limited cadence-health aggregation line; early-outs to one timestamp
