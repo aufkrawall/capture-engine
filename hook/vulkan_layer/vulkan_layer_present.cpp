@@ -200,7 +200,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         ce::vulkan_present_boundary::ReportPresentTimeLimiterBoundary(sd, nativeVulkanPresent);
         g_SharedFpsLimiter.Apply(true,
                                  nativeVulkanPresent
-                                     ? ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary
+                                     ? ce::interposer_output_pacing::ResolveVulkanFinalOutputSite(
+                                           g_FGCompat.GetRuntimeMode())
                                      : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
         perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
     }

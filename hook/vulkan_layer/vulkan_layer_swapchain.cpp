@@ -529,7 +529,8 @@ SwapchainData* BeginAcquireBoundary(VkSwapchainKHR swapchain) {
         ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
         g_SharedFpsLimiter.Apply(false,
                                  groupedAdmission
-                                     ? ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary
+                                     ? ce::interposer_output_pacing::ResolveVulkanFinalOutputSite(
+                                           g_FGCompat.GetRuntimeMode())
                                      : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
     }
     return sd;
