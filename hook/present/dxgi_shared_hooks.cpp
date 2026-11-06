@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_vtable_dispatch.h"
+#include "hook/runtime/api_translator_modules.h"
 #include "hook/runtime/hook_clock.h"
 #include "dxgi_color_space_hook_policy.h"
 #include "dxgi_present_hook_policy.h"
@@ -521,6 +522,21 @@ HMODULE GetSystemDXGIModuleHandle() {
         // the game directory cannot satisfy this lookup.
         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, path, &systemModule);
     }
+    // When running under a standalone translation runtime like DXUP whose dxgi.dll replaces
+    // the system runtime rather than wrapping it, the system image is never loaded.
+    if (!systemModule && ce::api_translator::IsDxupModuleLoaded("dxgi.dll")) {
+        HMODULE dxupModule = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, "dxgi.dll", &dxupModule) &&
+            dxupModule) {
+            char dxupPath[MAX_PATH] = {};
+            if (GetModuleFileNameA(dxupModule, dxupPath, MAX_PATH) > 0 &&
+                !ce::overlay_compat::IsThirdPartyOverlayModulePath(dxupPath)) {
+                systemModule = dxupModule;
+                strncpy(path, dxupPath, MAX_PATH - 1);
+                path[MAX_PATH - 1] = '\0';
+            }
+        }
+    }
     // A proxy may be loaded before it loads native DXGI. Cache only successful discovery so the
     // early factory installer can retry when the translator creates its native backend.
     if (!systemModule) {
@@ -530,8 +546,9 @@ HMODULE GetSystemDXGIModuleHandle() {
     if (!s_cached.compare_exchange_strong(expected, systemModule, std::memory_order_acq_rel)) {
         return expected;
     }
-    HookLogImportant("DXGIShared: system dxgi.dll resolved to %p (%s)", (void*)systemModule,
-                     path[0] ? path : "(system directory unavailable)");
+    HookLogImportant("DXGIShared: %s dxgi.dll resolved to %p (%s)",
+                     ce::api_translator::IsDxupModuleHandle(systemModule) ? "DXUP" : "system",
+                     (void*)systemModule, path[0] ? path : "(system directory unavailable)");
     return systemModule;
 }
 

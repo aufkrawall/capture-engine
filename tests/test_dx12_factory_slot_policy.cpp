@@ -335,6 +335,17 @@ TEST(Dx12FactorySlotPolicyTest, NativeModuleLookupDoesNotPermanentlyCacheAnEarly
     EXPECT_LT(missing, publish);
 }
 
+TEST(Dx12FactorySlotPolicyTest, NativeModuleLookupResolvesDxupWhenSystemDxgiAbsent) {
+    const std::string source = ReadSource("hook/present/dxgi_shared_hooks.cpp");
+    const size_t lookup = source.find("HMODULE GetSystemDXGIModuleHandle() {");
+    const size_t end = source.find("bool IsAddressInsideSystemDXGI(", lookup);
+    ASSERT_NE(lookup, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = source.substr(lookup, end - lookup);
+    EXPECT_NE(body.find("ce::api_translator::IsDxupModuleLoaded(\"dxgi.dll\")"), std::string::npos);
+    EXPECT_NE(body.find("!ce::overlay_compat::IsThirdPartyOverlayModulePath(dxupPath)"), std::string::npos);
+}
+
 TEST(Dx12FactorySlotPolicyTest, ColdNativeLoadRetriesCreationHooksBeforeBootstrapAndServiceEarlyReturns) {
     const std::string install = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     const size_t bootstrap = install.find("void HookSwapchainVTableViaTempSwapchain(");

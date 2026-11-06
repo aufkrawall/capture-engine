@@ -29,6 +29,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Overlay movement when hardware readings drop out:** GPU memory clocks, voltage and fan readings, CPU peak clocks, and clock rows now keep their slots and show `--` until readings return. Missing samples no longer collapse Hero rows or change Strip wrapping.
 
+- **Overlay in games using DXUP's DXGI runtime:** the in-game overlay now appears in games running on DXUP when both its D3D9/D3D11 and `dxgi.dll` binaries are installed, such as Direct3D 9 games wrapped directly to Direct3D 12 (Mirror's Edge). CaptureEngine's factory discovery previously looked exclusively for Windows' System32 `dxgi.dll`, which was never loaded when DXUP's standalone DXGI implementation provided the presentation backend, deferring factory and swapchain hooks for the entire session. Native discovery now falls back to DXUP's DXGI runtime when system DXGI is absent, preserving coexistence with third-party overlays such as Steam.
+
 - **DXUP native D3D11 fallback label:** the overlay no longer claims a DirectX 12 backend just because DXUP's `d3d11.dll` remains loaded after falling back to Windows' DirectX 11. Native D3D12 output still reports the full DXUP translation chain.
 
 - **DXVK D3D8 overlay label:** DirectX 8 games now show `DX8 -> Vk (DXVK)` when DXVK's D3D9 backend is also loaded, instead of being mislabeled as DirectX 9.
