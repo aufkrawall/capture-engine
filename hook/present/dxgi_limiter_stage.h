@@ -15,6 +15,11 @@ void ApplyFpsLimiterStage(IDXGISwapChain* pSwapChain, bool allowPostPresentRefle
                           ce::fps_limiter_policy::PresentSite site =
                               ce::fps_limiter_policy::PresentSite::kDuplicateProne);
 
+// The application's frame on the game thread, right before a delegated Present into a present interposer's proxy: this
+// site owns the cadence and the interposer's outputs pass (ce::interposer_output_pacing). Everything above the interposer
+// stays untouched, so this is the limiter's wait alone. The real Present is not CE's to pair a post-present half with.
+void ApplyFpsLimiterAtPresentInterposerInput(IDXGISwapChain* pProxySwapChain);
+
 // The submission itself: flushes the D3D10/11 immediate context of `swapChain` (an IDXGISwapChain*).
 void SubmitD3D1xRecordedWork(void* swapChain);
 

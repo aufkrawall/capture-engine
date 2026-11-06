@@ -316,6 +316,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
                        delegationOverlayModule ? delegationOverlayModule : "module",
                        m_StreamlineRuntimeNonRetaining ? " (Streamline-runtime wrapper passthrough)" : "");
         }
+        if (m_PresentInvisibleToDetourHook) {
+            DXGIShared::ApplyFpsLimiterAtPresentInterposerInput(pRealCached);
+        }
         const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
         auto delegateGuard =
@@ -457,12 +460,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // Unique application-present boundary: the DXGI detours take their
     // IsInWrapperPresent() early return while this wrapper owns the present,
     // so exactly one Apply() runs per presented frame and the cadence grid
-    // gates every entry instead of a duplicate-present time window.
+    // gates every entry instead of a duplicate-present time window. In front of
+    // a present interposer this is the game thread's input site.
     ce::present_stage_cost::EnterStage(CostStage::kLimiter);
     const int64_t limiterStartUs = phaseClock.Now();
     DXGIShared::NoteApplicationPresentPacedOnSwapchain(pRealCached, "CE's swapchain wrapper");
-    DXGIShared::ApplyFpsLimiterStage(pRealCached, true,
-                                     ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+    DXGIShared::ApplyFpsLimiterStage(pRealCached, !m_PresentInvisibleToDetourHook,
+                                     ce::interposer_output_pacing::ResolveWrapperPresentSite(
+                                         m_PresentInvisibleToDetourHook));
     preLimiterCapture.Close();
 
     if (activeDebugSample) {
@@ -630,6 +635,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
                        delegationOverlayModule ? delegationOverlayModule : "module",
                        m_StreamlineRuntimeNonRetaining ? " (Streamline-runtime wrapper passthrough)" : "");
         }
+        if (m_PresentInvisibleToDetourHook) {
+            DXGIShared::ApplyFpsLimiterAtPresentInterposerInput(pReal1Cached);
+        }
         const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
         auto delegateGuard =
@@ -734,8 +742,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     ce::present_stage_cost::EnterStage(CostStage::kLimiter);
     const int64_t limiterStartUs = perfRow.NowUs();
     DXGIShared::NoteApplicationPresentPacedOnSwapchain(pReal1Cached, "CE's swapchain wrapper");
-    DXGIShared::ApplyFpsLimiterStage(pReal1Cached, true,
-                                     ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+    DXGIShared::ApplyFpsLimiterStage(pReal1Cached, !m_PresentInvisibleToDetourHook,
+                                     ce::interposer_output_pacing::ResolveWrapperPresentSite(
+                                         m_PresentInvisibleToDetourHook));
     preLimiterCapture.Close();
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 

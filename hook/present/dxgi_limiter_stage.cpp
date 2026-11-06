@@ -70,6 +70,21 @@ void ApplyFpsLimiterStage(IDXGISwapChain* pSwapChain, bool allowPostPresentRefle
     ApplyPresentFrameLatencyOverrides(pSwapChain);
 }
 
+void ApplyFpsLimiterAtPresentInterposerInput(IDXGISwapChain* pProxySwapChain) {
+    if (!g_IPC) {
+        return;
+    }
+    static ce::log_meter::ChangeGate s_gate;
+    if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(pProxySwapChain))) {
+        HookLogImportant("DXGI limiter: the application's Present into the present interposer's proxy sc=%p owns pacing "
+                         "(tid=0x%04X)%s",
+                         (void*)pProxySwapChain, GetCurrentThreadId(),
+                         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply(false, ce::fps_limiter_policy::PresentSite::kRuntimeInputPresent);
+}
+
 bool IsStreamlineFinalOutputForLimiter(IDXGISwapChain* pSwapChain, bool isD3D12SwapChain, bool streamlineFGRunning,
                                        bool callerFromStreamlineModule, bool callerFromFFXFrameGenerationModule,
                                        bool callbackProvenRuntimeOutput) {
