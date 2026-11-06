@@ -44,7 +44,15 @@ blocking also needs ownership-safe detachment, not simply ACK before detachment
 [AAC retry loop](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aacenc.c),
 [NMR allocation](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aaccoder_nmr.h).
 
-No codec/policy change or regression reproduction was made during this investigation.
+Patch `tools/patches/ffmpeg/0007-aac-nmr-bounded-frame-legality.patch` now supplies
+one final CBR/ABR/VBR budget repair after PNS: bounded coarsening, then highest-band
+removal while retaining spectral anchors. The shared C policy is tested through
+injected allocation effects, including a railed grid and non-decreasing costs.
+An independent 32-pass encoder guard reports an internal error if no legal frame
+can be produced. First targeted validation: 16 allocation/runtime-contract/mux
+tests pass, including dense 320 kbps AAC transitions decoded to exact common
+endpoints in MKV/MP4. Disabling repair fails four policy tests; restoration passes.
+The original waveform plus its complete encoder history has not been replayed.
 The unpublished MKV retained AV1 video and two AAC tracks; recovery/content validation
 is separate from proving the hang. Do not delete staging output or claim the missing
 post-hang interval can be recovered. See [recording-output-paths.md](recording-output-paths.md).

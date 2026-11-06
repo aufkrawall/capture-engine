@@ -140,6 +140,26 @@ Do not replace this guard with `repeat_pps`: AV1 has no PPS, FFmpeg's
 `avcodec_open2` cannot affect the encoder. A future FFmpeg/driver fix should be
 verified against both sides of the metadata issue before removing the guard.
 
+### 0007-aac-nmr-bounded-frame-legality.patch
+
+Repairs native AAC NMR frame-budget enforcement after CBR/ABR/VBR spending,
+slew and PNS decisions. CBR previously retried a railed candidate grid without
+the VBR path's highest-band fallback. The outer encoder could retry forever
+at its lambda floor (recording session `20261106_223450`). One final shared
+repair now measures PNS and spectral bits, coarsens only when required, then
+removes highest bands while preserving each spectral chain's anchor. Work is
+bounded by the finite band count, with no wall-clock timeout or sample drop.
+Repair events are logged at powers of two. A separate 32-pass NMR encoder
+guard refuses an unrepresentable frame instead of emitting an illegal packet
+or consuming a core forever.
+
+`tests/test_aac_nmr_budget.cpp` exercises the actual private C policy with
+injected allocations, including an edge repair that initially increases cost
+and an allocator that never lowers it. `AudioMuxIntegrationTest` checks dense
+320 kbps AAC transitions, continued output, decoded content and exact track
+endpoints through Matroska and MP4. Hosts using prebuilt FFmpeg explicitly
+skip the private policy test; they still run the public encoding/mux tests.
+
 ## Applying Patches
 
 Patches are automatically applied by `build.py` during the FFmpeg build step.

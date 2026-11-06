@@ -15,6 +15,11 @@
   Dump state selects CBR and rails its inner solve; VBR alone has the band-shedding
   legality fallback. This narrows a patch candidate, but needs a failing reproduction
   before claiming a correct fix. Topic page records CE detachment's independent invariant.
+- Implementation: local patch 0007 shares final budget repair across CBR/ABR/VBR
+  and bounds outer retries. All 16 focused allocation/codec/mux tests pass; a
+  deliberate repair bypass fails four tests. The original state contains one
+  short-window channel with 15,699 spectral bits before scalefactor edges, already
+  over the stereo frame limit. Exact original-history replay and hardware remain open.
 
 ### 2026-11-06 - W3 HDR with Steam, ReShade and OptiScaler: false factor flips, screenshot view, DLSS-G override
 

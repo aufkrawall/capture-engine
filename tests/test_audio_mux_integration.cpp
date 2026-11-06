@@ -244,7 +244,8 @@ namespace {
 // Encodes the same signal once per codec into one file of `muxer`, then decodes every
 // stream back and requires the exact recording endpoint and aligned content.
 void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extension,
-                                      const std::vector<const char*>& codecs, int kTargetSamples = 4800) {
+                                      const std::vector<const char*>& codecs, int kTargetSamples = 4800,
+                                      bool denseTransitions = false) {
     TemporaryMka file(extension);
     ASSERT_FALSE(file.path.empty());
     AVFormatContext* format = nullptr;
@@ -262,7 +263,7 @@ void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extensio
         MuxTrack* stableTrack = track.get();
         AudioConfig config;
         config.codec = codec;
-        config.bitrate = 192;
+        config.bitrate = denseTransitions ? 320 : 192;
         config.sampleRate = "48000";
         config.bitDepth = "24";
         config.outputChannels = 2;
@@ -292,7 +293,21 @@ void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extensio
 
     ASSERT_GE(avio_open(&format->pb, file.path.string().c_str(), AVIO_FLAG_WRITE), 0);
     ASSERT_GE(avformat_write_header(format, nullptr), 0) << muxer;
-    const std::vector<float> source = MakeDeterministicStereoSignal(kTargetSamples, 48000);
+    std::vector<float> source = MakeDeterministicStereoSignal(kTargetSamples, 48000);
+    if (denseTransitions) {
+        uint32_t random = 0x12345678u;
+        for (int sample = 0; sample < kTargetSamples; ++sample) {
+            for (int channel = 0; channel < 2; ++channel) {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                const float noise = static_cast<float>(random >> 8) / 8388608.0f - 1.0f;
+                const int block = sample / 1024;
+                const float gain = block % 19 == 0 ? 0.0f : ((sample / 64 + block) % 2 == 0 ? 0.9f : 0.03f);
+                source[static_cast<size_t>(sample) * 2 + channel] = noise * gain;
+            }
+        }
+    }
     uint64_t generation = 1;
     for (auto& track : tracks) {
         ASSERT_TRUE(track->encoder->ResetForRecordingStart(0, generation++));
@@ -328,6 +343,14 @@ void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extensio
 
 TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatroska) {
     ExpectExactEndpointsThroughMuxer("matroska", L".mka", {"aac", "alac", "flac", "opus", "pcm"});
+}
+
+TEST(AudioMuxIntegrationTest, DenseAacCbrTransitionsFinalizeAndDecodeToThePcmEndpoint) {
+    for (const int target : {48000, 48528, 97536}) {
+        SCOPED_TRACE(::testing::Message() << "target samples " << target);
+        ExpectExactEndpointsThroughMuxer("matroska", L".mka", {"aac", "pcm"}, target, true);
+        ExpectExactEndpointsThroughMuxer("mp4", L".mp4", {"aac", "alac"}, target, true);
+    }
 }
 
 // The recording end rarely lands on a codec frame boundary. For Opus (960-sample frames, 312 samples of

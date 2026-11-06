@@ -28,6 +28,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **AAC recordings hanging with high CPU and never finishing:** repaired the native AAC allocator's final frame-budget enforcement across CBR, ABR, and VBR. Oversized allocations now coarsen and remove only the highest remaining bands with bounded work, preserving sample counts and timestamps; an additional codec retry guard reports an unrecoverable internal failure instead of spinning indefinitely.
+
 - **Accented and non-ASCII recording profile names:** profile labels are now converted from the Windows section-name code page to UTF-8 before building recording filenames, preventing replacement characters in names such as `Pokémon` on non-UTF-8 Windows locales.
 
 - **Recordings selected by window title:** starting a WGC or desktop-duplication recording through a window-only application profile no longer reads a destroyed profile after configuration refresh, and its name now reaches both video and audio-only output filenames.

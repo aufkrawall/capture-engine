@@ -33,9 +33,13 @@ class FfmpegCustomPatchTest(unittest.TestCase):
             PATCH_DIR / "0004-schannel-guard-disabled-dtls-helpers.patch",
             PATCH_DIR / "0005-nvenc-idr-free-dynamic-bitrate.patch",
             PATCH_DIR / "0006-amfenc-av1-hdr-mastering-units.patch",
+            PATCH_DIR / "0007-aac-nmr-bounded-frame-legality.patch",
         ]
         targets = [
             Path("libavcodec/amfenc.c"),
+            Path("libavcodec/aacenc.c"),
+            Path("libavcodec/aacenc.h"),
+            Path("libavcodec/aaccoder_nmr.h"),
             Path("libavformat/matroskaenc.c"),
             Path("libavformat/rtmpproto.c"),
             Path("libavformat/tls_schannel.c"),
