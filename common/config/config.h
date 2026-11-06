@@ -70,7 +70,7 @@ struct VideoConfig {
     // playable (mediaengine/mux/crash_safe_muxing.h). Off by default: a fragmented file cannot state its exact end.
     bool fragmentedMp4 = false;
     std::string outputDir;
-    std::string activeProfile;  // Active application profile name, empty for default capture
+    std::string activeProfile;  // UTF-8 application profile name, empty for default capture
     std::string rateControl;
     std::string bitrate;  // string to handle "75Mbps"
     std::string maxBitrate;
@@ -492,7 +492,7 @@ struct AppConfig {
     std::vector<WhitelistEntry> profileDxgiDupTargets;
     bool hasProcessPathSelectors = false;
     std::vector<ApplicationProfile> applicationProfiles;
-    std::string activeProfile;  // Active application profile name, empty if no profile matched
+    std::string activeProfile;  // UTF-8 application profile name, empty if no profile matched
 
     // Graphics Overrides
     GraphicsConfig graphics{};

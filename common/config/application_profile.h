@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common/config/process_selector.h"
+#include "config_ini_reader.h"
 #include "pseudo_overlay_config.h"
 
 // Match mode for process/window detection (OBS-style)
@@ -114,17 +115,19 @@ enum class ApplicationInjectionMode : uint8_t {
     kNone
 };
 
-inline std::string ApplicationProfileNameFromSection(std::string_view section) {
+// Section lookup names use the Windows active code page. Recording names are
+// UTF-8; convert at extraction, before passing them to filename sanitization.
+// The explicit code page lets regression tests cover non-UTF-8 Windows locales.
+inline std::string ApplicationProfileNameFromSection(std::string_view section, unsigned sectionCodePage = CP_ACP) {
     const size_t dot = section.find('.');
-    if (dot == std::string_view::npos)
-        return std::string(section);
-    return std::string(section.substr(dot + 1));
+    const std::string_view name = dot == std::string_view::npos ? section : section.substr(dot + 1);
+    return ce::config_text::WideToCodePage(ce::config_text::CodePageToWide(name, sectionCodePage), CP_UTF8);
 }
 
 // Canonical [Profile.*] application routing. The legacy whitelist vectors below
 // remain the runtime adapters used by the injector and WGC code.
 struct ApplicationProfile {
-    std::string section;
+    std::string section;  // Active-code-page lookup name; Name() returns UTF-8.
     WhitelistEntry target;
     std::string captureMonitor = "auto";
     ApplicationVideoCapture videoCapture = ApplicationVideoCapture::kNone;

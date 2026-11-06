@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/capture/reserved_capture_output.h"
 #include "common/config/config.h"
 #include "captureengine/media/profile_window_policy.h"
 #include "common/platform/utf8.h"
@@ -267,6 +268,44 @@ TEST(ProcessSelectorTest, ApplicationProfileNameExtractsFromSection) {
     ApplicationProfile sbProfile;
     sbProfile.section = "Profile.Strange Brigade DX12";
     EXPECT_EQ(sbProfile.Name(), "Strange Brigade DX12");
+}
+
+TEST(ProcessSelectorTest, ApplicationProfileNamesNormalizeCodePagesBeforeFilenameSanitization) {
+    const std::string pokemon = "Pok\xC3\xA9" "mon";
+    const std::string westernSection = "Profile.Pok\xE9" "mon";
+    const std::string westernName = ApplicationProfileNameFromSection(westernSection, 1252);
+    EXPECT_EQ(westernName, pokemon);
+    EXPECT_EQ(ApplicationProfileNameFromSection("App.Pok\xE9" "mon", 1252), pokemon);
+    EXPECT_EQ(ApplicationProfileNameFromSection("Profile." + pokemon, CP_UTF8), pokemon);
+    EXPECT_EQ(ce::capture_output::RecordingOutputPrefix(westernName, L"capture"), L"Pok\u00E9mon");
+    EXPECT_EQ(ce::capture_output::RecordingOutputPrefix(westernName, L"capture_audio"), L"Pok\u00E9mon_audio");
+
+    // Shift-JIS section bytes for the Japanese label, independent of the host's ACP.
+    const std::string japaneseSection = "Profile.\x83\x51\x81\x5B\x83\x80";
+    const std::string japaneseName = ApplicationProfileNameFromSection(japaneseSection, 932);
+    EXPECT_EQ(japaneseName, "\xE3\x82\xB2\xE3\x83\xBC\xE3\x83\xA0");
+    EXPECT_EQ(ce::capture_output::RecordingOutputPrefix(japaneseName, L"capture"), L"\u30B2\u30FC\u30E0");
+}
+
+TEST_F(ConfigOverrideTest, ActiveProfileConvertsSectionLookupNamesToUtf8) {
+    bool lossy = false;
+    const std::string sectionName = ce::config_text::WideToCodePage(L"Pok\u00E9mon", GetACP(), &lossy);
+    if (sectionName.empty() || lossy)
+        GTEST_SKIP() << "This label is not representable in the loader's section-name code page";
+
+    const std::string name = "Pok\xC3\xA9" "mon";
+    for (const char* sectionPrefix : {"Profile.", "App."}) {
+        SCOPED_TRACE(sectionPrefix);
+        WriteConfig("[" + std::string(sectionPrefix) + name + "]\nprocess=Game.exe\nvideo_capture=wgc\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "Game.exe");
+        ASSERT_EQ(config.applicationProfiles.size(), 1u);
+        EXPECT_EQ(config.applicationProfiles.front().Name(), name);
+        EXPECT_EQ(config.activeProfile, name);
+        EXPECT_EQ(config.video.activeProfile, name);
+        EXPECT_EQ(ce::capture_output::RecordingOutputPrefix(config.video.activeProfile, L"capture"),
+                  L"Pok\u00E9mon");
+    }
 }
 
 TEST_F(ConfigOverrideTest, ActiveProfilePopulatesConfigAndVideoConfigWhenMatched) {

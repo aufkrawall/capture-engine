@@ -21,6 +21,12 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
   `profile_window_policy.h::ApplyRecordingOutputProfile` fills both profile-name fields only when no process profile
   matched and the selected screen-capture route still exists. Focused coverage is in `test_process_selector.cpp`;
   the 2026-11-06 follow-up was source-reviewed but its tests/build were explicitly left for the user to run.
+- `ApplicationProfile::section` remains an active-code-page lookup name, as returned by `ConfigSource::SectionNames`.
+  `ApplicationProfileNameFromSection` converts its suffix to UTF-8; both `AppConfig::activeProfile` and
+  `VideoConfig::activeProfile` carry that UTF-8 name into `RecordingOutputPrefix`. Never decode the section bytes
+  directly as UTF-8 on a non-UTF-8 Windows locale. Injected 1252/932 code-page regressions and a representable-label
+  loader regression are in `test_process_selector.cpp`. Section labels outside the loader's active code page remain
+  subject to its existing lookup limitations; this fix does not change section enumeration or matching.
 - The destination is reserved with `CreateFileW(CREATE_NEW)`. Existing paths are never truncated, removed, or selected as the recording destination.
 - The reservation records the Windows volume/file identity. Failure cleanup deletes only a path that still has the reserved identity.
 - A video muxer opens only an identity-owned same-directory reservation with the container extension. The container format is selected from configured metadata rather than the staging filename. Publication requires positive encoded duration and at least one successfully written video packet; a collision-safe atomic rename then exposes the final collision-safe name. A trailer or close failure with committed video no longer deletes the file (`VideoOutputDisposition::kPublishAfterFinalizeFailure`, 2026-09-23): `av_write_trailer` returns the AVIOContext's sticky error, so one transient write error anywhere in a long recording, or a full disk while the final cues are written, used to delete the whole recording. It is published with an `ERROR` log line; audio-only recordings follow the same rule (`ShouldPublishAudioOnlyOutput`). Warm-up cancellation and output without video still delete only the owned staging identity.
