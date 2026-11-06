@@ -1,8 +1,8 @@
 # Present Interposers (NVIDIA Smooth Motion)
 
-Last verified: 2026-11-06 (the worker-run evidence is measured from Trine 5 DX11 sessions `20261106_151156` / `171629`,
-its fix has not run on hardware yet. Strange Brigade DX12 sessions `20260914_102700` / `105242` / `105853` for the DX12
-topology, whose output-chain route is NOT yet hardware-confirmed: the app-facing fallback was, in 0.1.6555/0.1.6556.)
+Last verified: 2026-11-06 (worker-run status VALIDATED in Trine 5 DX11, session `20261106_181807`, 0.1.7435. The limiter's
+output slots below have not run on hardware. Strange Brigade DX12 sessions `20260914_102700` / `105242` / `105853` for the
+DX12 topology, whose output-chain route is NOT yet hardware-confirmed: the app-facing fallback was, in 0.1.6555/0.1.6556.)
 
 Primary sources:
 - `hook/overlay/overlay_compat_detail/module_table.h` (`IsPresentInterposerModulePath` and friends)
@@ -11,12 +11,14 @@ Primary sources:
 - `hook/present/present_interposer_cadence.h`
 - `hook/present/present_interposer_tracking.cpp`
 - `hook/fg/fg_interposer_status.cpp` (status and rates, both DLLs)
+- `hook/pacing/interposer_output_pacing.h`, `hook/pacing/fps_limiter_detail/interposer_output.h` (the limiter)
 - `hook/present/dxgi_shared.cpp` (`IsSwapchainPresentCoveredByDeepBodyHook`, the private-chain registry)
 - `hook/present/dxgi_shared_present.cpp`, `dxgi_shared_present1.cpp`, `dxgi_shared_present_core.cpp`
 - `hook/d3d12/dx12_hook_swapchain_create.cpp`, `dx12_hook_swapchain_wrap_policy.cpp`
 - `hook/wrappers/dxgi_factory_wrap.cpp`, `dxgi_swapchain_wrap_present.cpp`, `dxgi_swapchain_wrap_internal.h`
 - `tests/test_present_interposer_evidence.cpp`, `tests/test_smooth_motion_rates.cpp`,
-  `tests/test_present_interposer_cadence.cpp`, `tests/test_overlay_compat.cpp`, `tests/test_dxgi_shared_part11.cpp`
+  `tests/test_present_interposer_cadence.cpp`, `tests/test_overlay_compat.cpp`, `tests/test_dxgi_shared_part11.cpp`,
+  `tests/test_fps_limiter_interposer_output.cpp`
 
 ## Summary
 A **present interposer** replaces DXGI for the application instead of working inside the application's swapchain the
@@ -59,7 +61,8 @@ its attribution, queue rebinding and limiter site differ: `frame-generation/xefg
    would never be composited at all.
 6. **Everything above the interposer stays untouched.** No present-mode override, no interval override, no extra
    GPU work on the application's queue. The generated group must arrive at DXGI already spread by the driver's own
-   metering; CE's only contract is stated on the final flip (see Forced vsync).
+   metering; CE's only contract is stated on the final flip (see Forced vsync). The FPS limiter's wait on the game thread
+   is the one thing CE does there: it delays a call and changes nothing about it.
 7. **The interposer's own pipeline carries no CE wrappers.** `IsGraphicsImportHookTargetModulePath` keeps NvPresent out
    of the import patches, so its `D3D11CreateDevice` and `GetProcAddress` are the real ones. A wrapped device there runs
    its draws and CE's overlay through a wrapper context, where they looked like the game's (Trine 5, below), and forced
@@ -168,6 +171,40 @@ between that window and `DetectPattern` for 4 s and then stayed off, once the pa
 (`smCadence=0`). The deferred AF bootstrap also retried on that uncooperative wrapper every Present, writing 17 hook
 warnings per Present: 87% of the log.
 
+## FPS limiter
+`ce::interposer_output_pacing` owns this. **Where CE sees the application's Present, it paces that**: CE's swapchain wrapper
+is the input site (`PresentSite::kRuntimeInputPresent`) on the game thread, the outputs pass while it is live, and the
+driver spaces them, the same model as FSR FG. Where CE only sees the outputs (Trine 5 DX11, Vulkan), they are the site
+(`kInterposerOutputPresent`, 5): the first output of a frame waits for the group's slot on the exact rational grid, and the
+frame's later outputs each get an even share of that group. A frame whose first output missed its slot passes whole.
+
+| Trine 5 DX11, 2x | display stddev | jaggedness | p1 / p50 / p99 | flip lead | present-to-display |
+| --- | --- | --- | --- | --- | --- |
+| No limiter, 109/s (`180824`) | 78-250 us | 87-129 us | 8900 / 9100 / 9500 us | 4345 us (half an interval) | 21 ms |
+| One wait per frame at 140, 0.1.7435 (`181807`) | **1315 us** | 1867 us | 3700 / 7100 / 8700 us | 770 us | 6.3 ms |
+| One wait per frame at 120, 0.1.7435 (`181807`) | **1436 us** | 1030 us | 400 / 8300 / 9000 us | 3166 us | 4.4 ms |
+| Every output its own slot at 140, status undetected, 0.1.7434 (`151156`) | **133-237 us** | 155-192 us | 6700 / 7100 / 7500 us | ~650 us | 1.5 ms |
+| Smooth Motion off at 140 (`151156`) | 98-111 us | 103-115 us | 6800 / 7100 / 7400 us | - | 0.75 ms |
+
+The waited presents themselves were exact in the second row (release to release 14286 us, stddev 13 us): CE's grid was
+fine, the unwaited present beside it was not. Present calls within a pair arrived 0.2 to 3 ms apart. The duplicate window that
+told the two apart was also a time threshold, so next-frame presents inside 2 ms escaped (window #3: 176.8 outputs/s at a
+140 cap) and the waited present could move to the other output of a pair. No lock contention on the workers in any of these
+sessions (`strict grid serialized` count 0), though `kInterposerOutputPresent` blocks on the cadence lock like any strict site.
+
+Group position is a thread change or the multiplier's count, never a clock. A detection flap cannot change the cadence
+either: with no status yet each output owns a slot of the same output grid. Below the cap CE adds nothing, because a CE
+wait there could only disturb the driver's flat schedule (first row).
+
+Base-frame capture sync on this site keeps its target as the frame rate, with the later outputs spaced within that group.
+
+Diagnostics: `Apply: ACTIVE ... site=5` and `FPS Limiter: pacing the present interposer's outputs` for the output route;
+`DXGI limiter: the application's Present into the present interposer's proxy` for the input route;
+`FPS Limiter: present interposer output spacing (N outputs): spaced= waitMeanUs= late= lateMeanUs= lateMaxUs= unscheduled=`
+every 600 outputs. `unscheduled` counts outputs left to the driver because the frame missed its slot; `late` counts
+outputs of a capped frame that reached CE after their own slot. In `sensors.log`, `publishedInterval` is the screen and
+`nvFlipSchedule avgDelayUs` is cumulative: difference `avg x applied` across lines to get a window's lead.
+
 ## Diagnostics / failure modes
 - `DetourCreateSwapChainGlobal: Present interposer <path> created its output swapchain <ptr> on queue <ptr>` — the
   create was classified AND the queue recorded. Absent under Smooth Motion means the caller-module test missed; a
@@ -235,6 +272,10 @@ are those. Nothing above the generator is touched, no timer is added and no driv
   the workers present breaks it. It survives only as the last evidence.
 - Hooking the proxy's Present through NvPresent64's vtable. Its RTTI has no swapchain class, so finding the table is a
   scan that the next driver can break, and the worker runs answer the same question without touching it.
+- Pacing a frame's outputs with one wait and a time window for the rest: that was site 1 under frame generation, and it is
+  what the limiter table above measures.
+- Spacing the later outputs of a frame that missed its slot. It would put a CE wait on top of the driver's own schedule
+  exactly where that schedule is flat.
 - Adopting the render target bound at Present entry as the overlay target on an interposer's private chain.
 - Deciding the interposer route inside a per-API branch. It is a property of who owns the chain, not of the API; the
   Witcher 3 crash below is what that mistake cost.
@@ -271,7 +312,12 @@ The same audit found the D3D10 sampler hook writing `ID3D10Device` slot 9, which
   `devRemoved=0x887A002B` on the first `Reinit SUBMIT`: if it returns, the queue was not the whole story and the
   next suspects are the backbuffer resource state NvPresent64 leaves before Present, and whether it tracks
   submissions on its own queue.
-- The visible `NVIDIA SM` label from the worker runs has not been confirmed on hardware.
+- **The limiter's output slots have not run with a detected status.** The table's evidence is every output on the grid with
+  the status undetected; the same grid with the status detected is new code. DX12's input site and Vulkan's output site have
+  no measurement at all. A first DX12 run should show near the first table row's flatness; if it does not, compare
+  `nvFlipSchedule` lead against half an interval before anything else.
+- Under the output route the game is only throttled by NvPresent's queue, so the frame ages there. The input route needs CE's
+  view of the application's Present, which Trine 5 does not give (`Where the application's frames come from`).
 - **The worker runs are a driver implementation detail**, measured on r621 in DX11 only. Stale-risk **high** on a driver
   update. A driver that presents each output on its own worker reads `modalRun=1`, not generating. Nothing else
   would catch that in DX11: compare with the display rate if it ever happens.

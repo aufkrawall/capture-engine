@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-19 (Reflex warmup judged per game frame; DLSS-G enabled-but-idle pacing; pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
+Last cross-checked: 2026-11-06 (NVIDIA Smooth Motion's outputs each on their own slot, hardware pending); 2026-10-19 (Reflex warmup judged per game frame; DLSS-G enabled-but-idle pacing; pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -99,6 +99,14 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 - Open: plain front-loading stays off under FG (the present-to-display evidence is distorted by AMD's hold); the perf
   CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
   stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.
+
+## NVIDIA Smooth Motion: every output of a capped frame has a slot (2026-11-06, hardware pending)
+
+CE's wrapper is the input site where it exists. Otherwise `PresentSite::kInterposerOutputPresent` paces the outputs: whole
+groups on the exact rational grid, later outputs on an even share of the group, nothing added to a frame that missed its
+slot. One wait per frame read display stddev 1315 us at a 140 cap where every output on the grid read 133-237 us. Evidence,
+rules and diagnostics: `present-interposers.md`, section FPS limiter. Sources: `hook/pacing/interposer_output_pacing.h`,
+`fps_limiter_detail/interposer_output.h`, `tests/test_fps_limiter_interposer_output.cpp`.
 
 ## XeFG: `xefgSwapChainSetPresentId` is the input site (2026-10-23, flow only, hardware pending)
 

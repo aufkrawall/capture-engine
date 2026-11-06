@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-06 - FPS limiter under Smooth Motion: every output of a capped frame gets a slot
+
+- **Report:** with Smooth Motion the limiter does not give a flat graph. Session `20261106_181807`, Trine 5 DX11, 0.1.7435, caps 140 and 120. The same session VALIDATES the worker-run status: 2x held throughout (`stream=worker-runs modalRun=2`).
+- **Root cause:** the DXGI site under FG waited on one present per frame and told the other by a 2 ms window. The waited presents were exact (14286 us, stddev 13 us); the screen read stddev 1315 us at 140 and 1436 us at 120, with the driver's flip lead down to 770 us from half an interval. Presents of the next frame escaped the window (176.8 outputs/s at a 140 cap).
+- **Decisive evidence:** session `20261106_151156`, same game on 0.1.7434: status undetected, so each output happened to own a slot: 133-237 us at the same cap. Without any limiter the driver alone is flat: 78-250 us at 109/s. Table in `present-interposers.md`.
+- **Fix:** `kInterposerOutputPresent` and `ce::interposer_output_pacing`. CE's wrapper paces the game thread where it exists; otherwise each output of a capped frame gets an even slot, and a frame that missed its slot is left to the driver. Vulkan uses the output site under Smooth Motion.
+- **Verified:** unit tests with a virtual clock, including the session's real gaps; disabling the slots fails five of them. **Not run on hardware.** DX12's input site and Vulkan have no measurement yet.
+
 ### 2026-11-06 - Smooth Motion status from NvPresent's worker runs
 
 - **Report:** the status is often lost or never appears, depending on the frame rate. Session `20261106_171629`, Trine 5 DX11, 0.1.7434: 2x for 22 s, status off after 4 s.
