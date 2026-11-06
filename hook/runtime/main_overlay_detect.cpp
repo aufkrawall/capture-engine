@@ -437,6 +437,11 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       // Preserve FFX dynamic registration at the same early-load boundary.
       FFXHook::RegisterDynamicHooks();
     }
+    if (_stricmp(baseName, "dxgi.dll") == 0) {
+      if (!DXGIShared::IsVulkanActive()) {
+        InstallGlobalVTableHooks();
+      }
+    }
   }
 
 

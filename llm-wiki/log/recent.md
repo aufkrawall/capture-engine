@@ -1,18 +1,18 @@
 # llm-wiki Log
 
-### 2026-11-06 - DXUP standalone DXGI discovery: factory vtable and swapchain interception in Mirror's Edge
+### 2026-11-06 - Late dxgi.dll module-load retry for factory vtable and swapchain hooks (Mirror's Edge on DXUP)
 
-- **Session `20261106_131542`, Mirror's Edge x86 with DXUP (D3D9 -> D3D12) and Steam overlay:**
-  When DXUP's `dxgi.dll` was present in the game directory along with `d3d9.dll`, the CE in-game overlay did not appear and logged 0 frames. It previously worked when using only DXUP's `d3d9.dll` without `dxgi.dll`.
+- **Session `20261106_131542` and `20261106_135827`, Mirror's Edge x86 with DXUP and Steam overlay:**
+  When DXUP's `dxgi.dll` was present in the game directory alongside `d3d9.dll`, the CE in-game overlay did not appear and logged 0 frames.
 - **Root cause:**
-  When only DXUP's `d3d9.dll` sat in the game folder, Windows loaded system `dxgi.dll` (`C:\Windows\SysWOW64\dxgi.dll`). `DXGIShared::GetSystemDXGIModuleHandle()` resolved system DXGI by its full path under `GetSystemDirectoryA`, allowing `InstallGlobalVTableHooks()` to hook system DXGI's factory vtable, intercept `CreateSwapChainForHwnd`, install deep Present hooks below Steam, and mark the D3D12 device as created.
-  However, when DXUP's standalone `dxgi.dll` was also present, Windows loaded it directly and never loaded Windows' system `dxgi.dll`. Because `GetSystemDXGIModuleHandle()` looked exclusively for the system directory image, it returned `nullptr`, logging `"DX12: System DXGI module not loaded, deferring native factory vtable hooks"` on every pass. Consequently, factory hooks were never installed, DXUP's D3D12 swapchain was never intercepted, `WasD3D12DeviceCreated()` stayed false, `ShouldSuppressSpeculativeDX12Bootstrap` deferred `DX12Hook::Init()`, and DX9/DX11 hook checks skipped.
-- **Fix in `hook/present/dxgi_shared_hooks.cpp`:**
-  `GetSystemDXGIModuleHandle()` now checks whether system DXGI is absent and `ce::api_translator::IsDxupModuleLoaded("dxgi.dll")` is true. If so, it resolves DXUP's loaded `dxgi.dll` (excluding third-party overlay proxy paths), allowing `InstallGlobalVTableHooks()`, `CreateTempSwapChainViaFactorySlot()`, and `IsAddressInsideSystemDXGI()` to recognize DXUP as the native DXGI implementation.
-- **Steam overlay & third-party compatibility preserved:**
-  `IsAddressInsideSystemDXGI` returning true for DXUP's entry points ensures that `ShouldReserveEntryForLateOverlays` remains active, reserving the public Present entry for Steam's `gameoverlayrenderer.dll` and installing CE's deep body hooks below Steam. Factory vtable slots 10 and 15 remain left to Steam overlay.
+  DXUP's `d3d9.dll` explicitly calls `GetSystemDirectoryA` and `LoadLibraryA("C:\Windows\system32\dxgi.dll")` to create its DXGI factory and swapchain on the system runtime. When `dxgi.dll` is not in the game folder, Steam overlay loads system DXGI at startup, so `InstallGlobalVTableHooks()` finds it immediately on its initial HookThread pass. But when DXUP's `dxgi.dll` is also in the game folder, Steam loads that copy at startup, and system DXGI is only loaded later when `d3d9.dll` executes its first `Direct3DCreate9` call.
+  Previously, `InstallGlobalVTableHooks()` deferred when system DXGI was not loaded yet at startup, but was never retried: `CheckAndInstallHooks()` did not invoke it, `NotifyHookModuleLoaded()` had no `dxgi.dll` handler, and `DX12Hook::Init()` was deferred by `ShouldSuppressSpeculativeDX12Bootstrap` until D3D12 device evidence was seen (which required the very swapchain creation hooks that were deferred).
+- **Fix in `main_overlay_detect.cpp` and `main_install.cpp`:**
+  1. `NotifyHookModuleLoaded()` now triggers `InstallGlobalVTableHooks()` immediately upon `dxgi.dll` load (before `LoadLibraryA` returns to `d3d9.dll`), ensuring factory vtable hooks are installed before `d3d9.dll` calls `CreateDXGIFactory1`.
+  2. `CheckAndInstallHooks()` retries `InstallGlobalVTableHooks()` when `!s_vulkanActive`, ensuring fast recovery if module notifications were missed.
+  3. `GetSystemDXGIModuleHandle()` continues to resolve system DXGI strictly by full path under `GetSystemDirectoryA`, avoiding premature binding to unused proxy images in the game folder.
 - **Verified:**
-  Unit tests `Dx12FactorySlotPolicyTest.NativeModuleLookupResolvesDxupWhenSystemDxgiAbsent`, `Dx12FactorySlotPolicyTest.*`, `DXGISharedSourceTest.*`, `*Dxup*` all compile and pass.
+  Unit tests `Dx12FactorySlotPolicyTest.ColdDxgiLoadTriggersFactoryVTableHookInstall`, `Dx12FactorySlotPolicyTest.*`, `DXGISharedSourceTest.*` all compile and pass.
 
 ### 2026-11-05 - Overlay review: viewport wrapping and retained hardware detail slots
 

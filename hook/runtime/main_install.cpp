@@ -143,6 +143,11 @@ void CheckAndInstallHooks() {
     }
   }
 
+  // Fast D3D factory vtable hooks: install or retry until the system DXGI module is present.
+  if (!s_vulkanActive) {
+    InstallGlobalVTableHooks();
+  }
+
   // DX12: Only initialize the hook instance for state tracking and
   // ExecuteCommandLists hooking. We do NOT install DXGI vtable hooks anymore -
   // wrappers handle Present/ResizeBuffers. NOTE: Skip for Vulkan games to
