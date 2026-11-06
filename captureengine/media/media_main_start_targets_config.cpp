@@ -1,8 +1,10 @@
 #include "media_main_internal.h"
+#include "profile_window_policy.h"
 
 std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targetWindow, uint32_t confirmedPid,
                                                      const std::string& confirmedProcessName,
-                                                     const std::string& confirmedProcessPath) {
+                                                     const std::string& confirmedProcessPath,
+                                                     const WhitelistEntry* selectedWindowTarget) {
     uint32_t sourcePid = 0;
     std::string processName;
     std::string processPath;
@@ -48,8 +50,8 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
         processPath = activeConfigProcessPath;
     }
 
-    if (!forceReload && sourcePid == activeConfigSourcePid && processName == activeConfigProcessName &&
-        processPath == activeConfigProcessPath) {
+    if (!forceReload && !selectedWindowTarget && sourcePid == activeConfigSourcePid &&
+        processName == activeConfigProcessName && processPath == activeConfigProcessPath) {
         return processName;
     }
 
@@ -58,12 +60,20 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
     if (!processName.empty()) {
         LoadConfig(configPath, resolvedConfig, processName, nullptr, processPath);
     }
+    if (selectedWindowTarget) {
+        ce::profile_window::ApplyRecordingOutputProfile(
+            resolvedConfig, *selectedWindowTarget, ProcessTargetIdentity{processName, processPath});
+    }
     // Normalize runtime-only sync state before comparing with the active config. Otherwise a
     // config.ini reload with no real media changes would compare file defaults (usually 0 ms)
     // against the active auto-detected render latency and reload unnecessarily.
     ApplyAutoDetectedRenderLatencyToConfig(resolvedConfig);
 
     const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
+    if (config.activeProfile != resolvedConfig.activeProfile) {
+        LogDebug("[MediaConfig] Recording output profile changed (sourcePid=%u named=%d mediaReload=%d)",
+                 sourcePid, resolvedConfig.activeProfile.empty() ? 0 : 1, mediaConfigChanged ? 1 : 0);
+    }
 
     config = std::move(resolvedConfig);
     if (roleContext.ownsProcess)

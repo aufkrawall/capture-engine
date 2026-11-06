@@ -490,7 +490,8 @@ private:
     void queueWgcRetarget(HWND targetWindow, HMONITOR targetMonitor, bool preferMonitor, const char* reason);
     std::string refreshActiveConfig(bool forceReload, HWND targetWindow = NULL, uint32_t confirmedPid = 0,
                                    const std::string& confirmedProcessName = std::string{},
-                                   const std::string& confirmedProcessPath = std::string{});
+                                   const std::string& confirmedProcessPath = std::string{},
+                                   const WhitelistEntry* selectedWindowTarget = nullptr);
     bool markInjectPreferredTarget(HWND targetWindow, uint32_t sourcePid, const char* reason);
     bool primeWgcMonitorTarget(HMONITOR targetMonitor);
     bool primeConfiguredMonitorTarget(HWND targetWindow, HMONITOR targetHint, const std::string& selectorText,

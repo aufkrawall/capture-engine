@@ -461,12 +461,8 @@ void MediaProcessSession::prepareCaptureForRecordingStart() {
         }
         const bool useProfileDxgi = selectedProfile->resolvedVideoCapture == ApplicationVideoCapture::kDxgiDup;
         const std::string profileMonitorSelector = selectedProfile->captureMonitor;
-        processName =
-            refreshActiveConfig(false, profileWindow, profilePid, profileProcessName, profileIdentity.imagePath);
-        if (config.activeProfile.empty() && selectedProfile) {
-            config.activeProfile = selectedProfile->Name();
-            config.video.activeProfile = config.activeProfile;
-        }
+        processName = refreshActiveConfig(false, profileWindow, profilePid, profileProcessName,
+                                         profileIdentity.imagePath, &profileTarget);
         injectWhitelisted = isInjectCaptureTarget(processName, activeConfigProcessPath);
         if (useProfileDxgi) {
             ce::monitor_selection::Selector parsedProfileSelector;

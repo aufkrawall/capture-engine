@@ -28,6 +28,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Recordings selected by window title:** starting a WGC or desktop-duplication recording through a window-only application profile no longer reads a destroyed profile after configuration refresh, and its name now reaches both video and audio-only output filenames.
+
 - **Session log diagnostics:** the compact log digest no longer hides nonzero hexadecimal failure counters or device-removal codes as harmless zero values, so these failures remain visible in its problem summary.
 
 - **DirectX 12 screenshot device checks:** a stale probe value could make two different devices appear identical and allow a screenshot copy against the wrong device. The check now requires both interfaces to observe a changing probe before accepting them as one device.

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/config/application_profile.h"
+#include "common/config/config.h"
 
 namespace ce::profile_window {
 
@@ -24,6 +24,21 @@ inline bool IsScreenCaptureTarget(const ApplicationProfile* profile) {
     return profile && profile->videoCaptureExplicit &&
            (profile->resolvedVideoCapture == ApplicationVideoCapture::kWgc ||
             profile->resolvedVideoCapture == ApplicationVideoCapture::kDxgiDup);
+}
+
+// Re-select from the newly loaded config: callers keep the target by value across
+// reloads, never a pointer into the previous config's profile vector. Resolve the
+// name before the media engine snapshots the config for recording.
+inline bool ApplyRecordingOutputProfile(AppConfig& config, const WhitelistEntry& target,
+                                        const ProcessTargetIdentity& identity) {
+    if (!config.activeProfile.empty())
+        return false;
+    const ApplicationProfile* profile = SelectedProfile(config.applicationProfiles, target, identity);
+    if (!IsScreenCaptureTarget(profile))
+        return false;
+    config.activeProfile = profile->Name();
+    config.video.activeProfile = config.activeProfile;
+    return true;
 }
 
 }  // namespace ce::profile_window

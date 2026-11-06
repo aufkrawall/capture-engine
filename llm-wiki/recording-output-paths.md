@@ -1,6 +1,6 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-11-04 (recovery-owned spool lifetime across writer teardown and reuse; notice ABI 75)
+Last cross-checked: 2026-11-06 (profile naming source review; follow-up tests/build left for the user)
 
 ## Summary
 
@@ -15,6 +15,12 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 ## Reservation And Publication Invariants
 
 - Filenames contain UTC milliseconds, the writer PID, and an atomic process-local sequence. A collision adds a bounded retry suffix.
+- Window-only profile naming is resolved from the newly loaded profile vector in `refreshActiveConfig`, before
+  `MediaEngineConfigEquals` and `MediaEngine_ReloadConfig`. The selected `WhitelistEntry` is owned across the refresh;
+  a pointer into the previous `AppConfig::applicationProfiles` must never survive its replacement.
+  `profile_window_policy.h::ApplyRecordingOutputProfile` fills both profile-name fields only when no process profile
+  matched and the selected screen-capture route still exists. Focused coverage is in `test_process_selector.cpp`;
+  the 2026-11-06 follow-up was source-reviewed but its tests/build were explicitly left for the user to run.
 - The destination is reserved with `CreateFileW(CREATE_NEW)`. Existing paths are never truncated, removed, or selected as the recording destination.
 - The reservation records the Windows volume/file identity. Failure cleanup deletes only a path that still has the reserved identity.
 - A video muxer opens only an identity-owned same-directory reservation with the container extension. The container format is selected from configured metadata rather than the staging filename. Publication requires positive encoded duration and at least one successfully written video packet; a collision-safe atomic rename then exposes the final collision-safe name. A trailer or close failure with committed video no longer deletes the file (`VideoOutputDisposition::kPublishAfterFinalizeFailure`, 2026-09-23): `av_write_trailer` returns the AVIOContext's sticky error, so one transient write error anywhere in a long recording, or a full disk while the final cues are written, used to delete the whole recording. It is published with an `ERROR` log line; audio-only recordings follow the same rule (`ShouldPublishAudioOnlyOutput`). Warm-up cancellation and output without video still delete only the owned staging identity.

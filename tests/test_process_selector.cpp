@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/config/config.h"
@@ -295,4 +296,75 @@ TEST_F(ConfigOverrideTest, ActiveProfilePopulatesConfigAndVideoConfigWhenMatched
     LoadConfig(tempConfigFile, unprofiledConfig, "notepad.exe");
     EXPECT_TRUE(unprofiledConfig.activeProfile.empty());
     EXPECT_TRUE(unprofiledConfig.video.activeProfile.empty());
+}
+
+TEST_F(ConfigOverrideTest, WindowOnlyRecordingProfileSurvivesConfigReplacement) {
+    WriteConfig(
+        "[Profile.Window capture]\n"
+        "window_title=Selected window\n"
+        "video_capture=wgc\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "WindowOwner.exe");
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    const WhitelistEntry target = config.applicationProfiles.front().target;
+    EXPECT_TRUE(config.activeProfile.empty());
+
+    AppConfig reloaded;
+    LoadConfig(tempConfigFile, reloaded, "WindowOwner.exe");
+    config = std::move(reloaded);
+    ASSERT_TRUE(ce::profile_window::ApplyRecordingOutputProfile(
+        config, target, ProcessTargetIdentity{"WindowOwner.exe", {}}));
+
+    // The engine and encoder take their own snapshots before recording starts.
+    const AppConfig engineConfig = config;
+    const VideoConfig encoderConfig = config.video;
+    config = AppConfig{};
+    EXPECT_EQ(engineConfig.activeProfile, "Window capture");
+    EXPECT_EQ(engineConfig.video.activeProfile, "Window capture");
+    EXPECT_EQ(encoderConfig.activeProfile, "Window capture");
+}
+
+TEST_F(ConfigOverrideTest, WindowRecordingProfileRequiresALiveScreenCaptureRoute) {
+    WriteConfig(
+        "[Profile.Desktop capture]\n"
+        "window_title=Selected window\n"
+        "video_capture=dxgi_dup\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "WindowOwner.exe");
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    const WhitelistEntry target = config.applicationProfiles.front().target;
+    const ProcessTargetIdentity identity{"WindowOwner.exe", {}};
+    EXPECT_TRUE(ce::profile_window::ApplyRecordingOutputProfile(config, target, identity));
+    EXPECT_EQ(config.activeProfile, "Desktop capture");
+    EXPECT_EQ(config.video.activeProfile, "Desktop capture");
+
+    // A removed or disabled profile must not revive a stale selection's name.
+    WriteConfig(
+        "[Profile.Desktop capture]\n"
+        "window_title=Selected window\n"
+        "video_capture=none\n");
+    LoadConfig(tempConfigFile, config, "WindowOwner.exe");
+    EXPECT_FALSE(ce::profile_window::ApplyRecordingOutputProfile(config, target, identity));
+    EXPECT_TRUE(config.activeProfile.empty());
+    EXPECT_TRUE(config.video.activeProfile.empty());
+    config.applicationProfiles.clear();
+    EXPECT_FALSE(ce::profile_window::ApplyRecordingOutputProfile(config, target, identity));
+}
+
+TEST_F(ConfigOverrideTest, WindowRecordingNamePreservesTheMatchedProcessProfile) {
+    WriteConfig(
+        "[Profile.Window capture]\n"
+        "window_title=Selected window\n"
+        "video_capture=wgc\n"
+        "[Profile.Process capture]\n"
+        "process=WindowOwner.exe\n"
+        "video_capture=wgc\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "WindowOwner.exe");
+    const ApplicationProfile* window = FindProfile(config.applicationProfiles, "Profile.Window capture");
+    ASSERT_NE(window, nullptr);
+    EXPECT_FALSE(ce::profile_window::ApplyRecordingOutputProfile(
+        config, window->target, ProcessTargetIdentity{"WindowOwner.exe", {}}));
+    EXPECT_EQ(config.activeProfile, "Process capture");
+    EXPECT_EQ(config.video.activeProfile, "Process capture");
 }
