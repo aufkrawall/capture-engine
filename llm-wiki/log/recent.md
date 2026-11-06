@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-11-07 - Recording stop blocked behind a non-converging native AAC NMR encode
+
+- Session `20261106_223450`, build `0.1.7441`, r0005: encoding stopped near 306.4 s;
+  stop eleven minutes later timed out before acknowledgement. Two dumps retain the same
+  AAC frame; the first shows 1,495,662 outer retries and lambda at `FLT_EPSILON`.
+- Matching archived CE symbols and the mutex owner prove stop/shared-memory detach waits
+  behind that encoder. Independent audio/capture workers keep running. Current dependency
+  pin is the same FFmpeg revision. Details and the unproven initial trigger are in
+  [multi-audio-capture.md](../multi-audio-capture.md#unresolved-native-aac-nmr-retry-hang-2026-11-07).
+- Diagnostic investigation only; no fix or behavioral test claimed. Preserved the supplied
+  dump and staging MKV; terminated the stuck media/audio-worker tree with user authorization.
+
 ### 2026-11-06 - W3 HDR with Steam, ReShade and OptiScaler: false factor flips, screenshot view, DLSS-G override
 
 - **Session `20261106_195839`, 0.1.7438, W3 DX12 HDR, `dlss_fg_mode=dynamic`, one clip each in game and on the desktop:** healthy finalization, exact A/V lengths, no uncovered overlay present across six FG transitions. Four defects:

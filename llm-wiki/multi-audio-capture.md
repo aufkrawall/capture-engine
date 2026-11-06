@@ -3,6 +3,34 @@
 Last cross-checked: 2026-09-25 (cross-pull track fades, intake resampler tail drain, placement drift diagnostic; recording-sticky bootstrap settlement across ordered capture epochs, truthful bootstrap/rejoin drain reasons, timeline-recovery suppression of app-only backlog acceleration, typed source-prime and stop-force-drain diagnostics, inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, the adaptive CFR ingestion reservoir against consumer-overrun starvation, exact finalization, route-local packetless silence, non-destructive backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
+## Unresolved native AAC NMR retry hang (2026-11-07)
+
+Session `20261106_223450`, build `0.1.7441`, recording r0005: video/audio encoding stopped
+at about 306.4 s, eleven minutes before the stop hotkey. Two dumps, at 23:59:38 and
+00:07:07, retain the same AAC encoder `samplesCount=14708736` (306.432 s at 48 kHz).
+The busy encoder thread remains in `avcodec_send_frame`, through `aac_encode_frame`,
+`search_for_quantizers_nmr`, `nmr_solve_group` and band-cost quantization. The original
+dump's outer `aac_encode_frame::its` counter is 1,495,662; `lambda=FLT_EPSILON`.
+This is a non-converging encoder retry, not slow trailer writing. The particular
+signal/quantizer decision that first exceeded the frame budget remains unproven.
+
+The archived matching CE PDBs resolve the stop handler to `DetachFromSharedLiveState`
+-> `MediaEngine_SetSharedMem`. Its recursive mutex is owned by the busy encoder thread;
+the WGC timing getter also waits on it. Stop therefore never reaches acknowledgement
+or finalization, while independent audio/duplication workers continue. The controller
+reports the five-second reply timeout, and the recording manifest never gains
+`media_finalized`. Source anchors: `mediaengine/audio/audio_encoder_encode.cpp`
+(`avcodec_send_frame`), `mediaengine/engine/mediaengine.cpp` (`MediaEngine_SetSharedMem`),
+`captureengine/media/media_main_recording.cpp` (`DetachFromSharedLiveState`), and pinned
+FFmpeg `libavcodec/aacenc.c` (hard-overflow retry and lambda floor).
+
+The installed FFmpeg reports `fb30650940`, matching `FFMPEG_SOURCE_REF` in
+`tools/build/build_linux_msys2.py`; a newer CE build alone does not establish a fix.
+No codec/policy change or regression reproduction was made during this investigation.
+The unpublished MKV retained AV1 video and two AAC tracks; recovery/content validation
+is separate from proving the hang. Do not delete staging output or claim the missing
+post-hang interval can be recovered. See [recording-output-paths.md](recording-output-paths.md).
+
 ## Live profile exclusions (2026-10-31)
 
 `process_loopback_session_policy.h` resolves process-tree ownership before session-qualification recovery.
