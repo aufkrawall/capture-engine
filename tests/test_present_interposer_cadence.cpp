@@ -463,79 +463,101 @@ TEST(PresentInterposerSourceClassificationTest, TheMeasuredRatioIsTheGenerationF
     EXPECT_EQ(idle.multiplier, 1);
 }
 
-// Source-policy: the DX11 present path must actually feed both streams, or the tracker never
-// closes a window and the getters silently fall back to the unclassified rate.
-TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
+// Source-policy: every API's output stream has to reach the status, before the present's early returns.
+TEST(PresentInterposerSourceTest, EveryOutputStreamReachesTheStatus) {
     namespace fs = std::filesystem;
-    // Classifying a present feeds the application stream as a side effect, so both streams reach
-    // the tracker from the one place that resolves the source.
-    const std::string tracking0 =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "present_interposer_tracking.cpp");
-    ASSERT_FALSE(tracking0.empty());
-    const size_t classify = tracking0.find("void ClassifyPresentInterposerPresentSource()");
-    ASSERT_NE(classify, std::string::npos);
-    EXPECT_NE(tracking0.find("NoteApplicationPresentUnderPresentInterposer()", classify), std::string::npos)
-        << "the application stream has to be fed, not just the output stream";
-
-    // The classifier's evidence comes from the game's own context, and counting must stay off
-    // until an interposer exists so the ordinary draw path is untouched.
-    const std::string fgDetection =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "fg" / "fg_detection.cpp");
-    ASSERT_FALSE(fgDetection.empty());
-    EXPECT_NE(fgDetection.find("IsApplicationSourcedInterposerPresent("), std::string::npos);
-    // The classifier must gate the constant-1 record, not sit beside it: an unconditional
-    // RecordFrame(1) is exactly what reported the interposer's output rate as the game's fps.
-    const size_t classifier = fgDetection.find("IsApplicationSourcedInterposerPresent(");
-    const size_t neutralRecord = fgDetection.find("RecordFrame(1);");
-    ASSERT_NE(neutralRecord, std::string::npos);
-    EXPECT_NE(fgDetection.find("IsApplicationSubmissionCountingEnabled()"), std::string::npos)
-        << "the neutral constant-1 sample must be reachable only while no interposer is registered";
-    EXPECT_LT(neutralRecord, classifier)
-        << "the neutral sample is the early-out; the classified record is what follows it";
-
     const std::string tracking =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "present_interposer_tracking.cpp");
     ASSERT_FALSE(tracking.empty());
+    EXPECT_NE(tracking.find("g_FGCompat.NoteInterposerOutputPresent(GetCurrentThreadId()"), std::string::npos);
+    EXPECT_NE(tracking.find("g_FGCompat.NoteInterposerApplicationPresent("), std::string::npos);
     EXPECT_NE(tracking.find("SetApplicationSubmissionCountingEnabled(true)"), std::string::npos);
+    for (const char* presentUnit : {"dxgi_shared_present.cpp", "dxgi_shared_present1.cpp"}) {
+        const std::string present = ce::test_source::ReadFile(ce::test_source::FindSource("hook", presentUnit));
+        ASSERT_FALSE(present.empty()) << presentUnit;
+        EXPECT_NE(present.find("NotePresentInterposerOutputPresent(pSwapChain);"), std::string::npos) << presentUnit;
+    }
+    const std::string layer =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
+    ASSERT_FALSE(layer.empty());
+    EXPECT_NE(layer.find("g_FGCompat.NoteInterposerOutputPresent(GetCurrentThreadId()"), std::string::npos);
 }
 
-
-// Witcher 3, session 20260919_180154, driver vsync forced to 144. The classifier was already
-// right - the cadence window read `application=144.0 fps output=288.0 fps` - but the overlay still
-// showed 288, because the application frame-rate metric is advanced once per Present and on an
-// interposer's private output chain that is once per OUTPUT frame. DX12 never had this problem:
-// its metric is fed by the app-facing swapchain wrapper, which is 1x by construction.
-TEST(PresentInterposerSourceTest, TheFrameRateMetricSkipsGeneratedPresents) {
+// The presentation series is what reaches the screen, the FG row says how much of it the game rendered. Skipping what
+// counted as generated halved the frame rate and the graph in DX11 wherever the display stream was not available.
+TEST(PresentInterposerSourceTest, ThePresentationSeriesHoldsEveryOutputPresent) {
     namespace fs = std::filesystem;
     const std::string routing =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_steam_routing.cpp");
     ASSERT_FALSE(routing.empty());
-    const size_t guard = routing.find("HasPresentInterposerPresentSourceClassification()");
-    ASSERT_NE(guard, std::string::npos)
-        << "the application frame-rate metric must know whether this present carries a game frame";
-    const size_t update = routing.find("dxgi_shared_g_DXGIPerfMetrics.Update(", guard);
+    const size_t update = routing.find("void UpdateDXGIPresentMetricsAndPublish(");
     ASSERT_NE(update, std::string::npos);
-    EXPECT_NE(routing.find("IsPresentInterposerPresentApplicationSourced()", guard), std::string::npos);
+    EXPECT_NE(routing.find("PublishDXGIPresentMetrics(true, true, publicationSource);", update), std::string::npos);
 
-    // The source must be resolved BEFORE anything measures a rate from the present, in both entries.
-    for (const char* presentUnit : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
-        const std::string present =
-            ce::test_source::ReadFile(ce::test_source::FindSource("hook", presentUnit));
-        ASSERT_FALSE(present.empty()) << presentUnit;
-        const size_t classify = present.find("ClassifyPresentInterposerPresentSource()");
-        ASSERT_NE(classify, std::string::npos) << presentUnit;
-        const size_t publish = present.find("UpdateDXGIPresentMetricsAndPublish(");
-        if (publish != std::string::npos) {
-            EXPECT_LT(classify, publish) << presentUnit << ": classified after the metric already advanced";
-        }
-    }
-
-    // And it must be resolved exactly once: the submission counter is consumed by the read.
+    // The history entry is written exactly once per present.
     const std::string dx11Device =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook_device.cpp");
     ASSERT_FALSE(dx11Device.empty());
-    EXPECT_NE(dx11Device.find("!DXGIShared::HasPresentInterposerPresentSourceClassification()"), std::string::npos)
-        << "a second classification would consume the submission counter twice";
+    EXPECT_NE(dx11Device.find("!DXGIShared::HasPresentInterposerPresentSourceClassification()"), std::string::npos);
+}
+
+// The interposer's device is its own: forced AF's bootstrap on it retried on every Present (20261106_171629).
+TEST(PresentInterposerSourceTest, TheDeferredAFBootstrapStaysOffTheInterposersChain) {
+    namespace fs = std::filesystem;
+    const std::string present =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook_present.cpp");
+    ASSERT_FALSE(present.empty());
+    const size_t handler = present.find("void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame)");
+    ASSERT_NE(handler, std::string::npos);
+    const size_t guard = present.find("if (!IsPresentOnPresentInterposerPrivateOutputChain())", handler);
+    const size_t bootstrap = present.find("ApplyDeferredSamplerOverrides11(pSwapChain);", handler);
+    ASSERT_NE(guard, std::string::npos);
+    ASSERT_NE(bootstrap, std::string::npos);
+    EXPECT_LT(guard, bootstrap);
+}
+
+// Below 20 fps a one-second window never held enough frames, and each undecided window cleared the status.
+TEST(PresentInterposerCadenceTest, ALongWindowDecidesOnFewerFrames) {
+    EXPECT_FALSE(ClassifyInterposerCadence(kMinApplicationPresentsForVerdict - 1, 40, kWindowUs).decided);
+    EXPECT_FALSE(ClassifyInterposerCadence(kMinApplicationPresentsForLongWindow - 1, 8, kLongWindowUs).decided);
+    const CadenceVerdict verdict = ClassifyInterposerCadence(kMinApplicationPresentsForLongWindow, 10, kLongWindowUs);
+    EXPECT_TRUE(verdict.decided);
+    EXPECT_TRUE(verdict.generating);
+    EXPECT_EQ(verdict.multiplier, 2);
+}
+
+TEST(PresentInterposerCadenceTest, ASlowGamesWindowStaysOpenUntilItHoldsEnoughFrames) {
+    CadenceTracker tracker;
+    CadenceVerdict verdict;
+    constexpr int64_t kFramePeriodUs = 100'000;  // 10 fps: 2 s to the 20 frames a verdict needs.
+    EXPECT_FALSE(tracker.NoteApplicationPresent(0, &verdict));
+    int closedAtFrame = 0;
+    for (int frame = 1; frame <= 40 && closedAtFrame == 0; ++frame) {
+        tracker.NoteOutputPresent();
+        tracker.NoteOutputPresent();
+        if (tracker.NoteApplicationPresent(frame * kFramePeriodUs, &verdict)) {
+            closedAtFrame = frame;
+        }
+    }
+    EXPECT_EQ(closedAtFrame, kMinApplicationPresentsForVerdict - 1);
+    EXPECT_TRUE(verdict.decided);
+    EXPECT_TRUE(verdict.generating);
+    EXPECT_EQ(verdict.multiplier, 2);
+    EXPECT_NEAR(verdict.applicationFps, 10.0f, 1.0f);
+}
+
+// That longer window must not read as stopped frames, which the window's age used to prove.
+TEST(PresentInterposerCadenceTest, ASlowGameWithALongWindowIsNotAStoppedOne) {
+    CadenceTracker tracker;
+    CadenceVerdict verdict;
+    constexpr int64_t kFramePeriodUs = 200'000;  // 5 fps, outputs at 40 per frame.
+    EXPECT_FALSE(tracker.NoteApplicationPresent(0, &verdict));
+    for (int frame = 1; frame <= 15; ++frame) {
+        for (int output = 0; output < 40; ++output) {
+            EXPECT_FALSE(tracker.NoteOutputPresent((frame - 1) * kFramePeriodUs + output * 5'000, &verdict));
+        }
+        EXPECT_FALSE(tracker.NoteApplicationPresent(frame * kFramePeriodUs, &verdict));
+    }
 }
 
 }  // namespace

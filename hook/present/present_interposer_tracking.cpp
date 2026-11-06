@@ -11,8 +11,7 @@
 // same failure ffx_routing.h documents for the DLSS-G render queue. This unit is therefore the
 // swapchain -> owning-queue association for those chains.
 //
-// It also measures the two present streams against each other, which is the only Smooth Motion
-// evidence available in DX12 (present_interposer_cadence.h).
+// It also feeds the two present streams to the Smooth Motion status (present_interposer_evidence.h).
 namespace DXGIShared {
 namespace {
 struct InterposerOutputChain {
@@ -46,58 +45,35 @@ void PublishInterposerCounts() {
     s_compositableInterposerChainCount.store(compositable, std::memory_order_release);
 }
 
-ce::present_interposer::CadenceTracker& InterposerCadence() {
-    static ce::present_interposer::CadenceTracker tracker;
-    return tracker;
-}
-
 // The interposer presents its private chain on its own thread while the
 // application presents the proxy on the render thread, so this classification
 // is per-Present and per-thread, never a process-wide latch.
 thread_local bool t_presentInterposerPrivateOutputChainScope = false;
-// The per-present source verdict, resolved once at the top of the present path.
-// Both the application frame-rate metric and the DX11 overlay path read it, and
-// resolving it twice would consume the submission counter twice.
+// What the top of the present path found out about this present, for the frame
+// history entry the DX11/DX10 path writes further down, exactly once.
+thread_local ce::present_interposer::OutputPresentClass t_presentInterposerOutputClass;
 thread_local bool t_presentInterposerSourceClassified = false;
-thread_local bool t_presentInterposerApplicationSourced = false;
 }  // namespace
 
 void SetPresentInterposerPrivateOutputChainScope(bool active) {
     t_presentInterposerPrivateOutputChainScope = active;
     t_presentInterposerSourceClassified = false;
-    t_presentInterposerApplicationSourced = false;
 }
 
 bool IsPresentOnPresentInterposerPrivateOutputChain() {
     return t_presentInterposerPrivateOutputChainScope;
 }
 
-// Resolve this present's stream before anything measures a frame rate from it.
-//
-// The application frame-rate metric is advanced once per Present, and on an
-// interposer's private output chain that is once per OUTPUT frame, not once per
-// game frame - the overlay then reads the interposer's submission rate as the
-// game's. DX12 does not have this problem: its metric is fed by the app-facing
-// swapchain wrapper, which is 1x by construction. Witcher 3 session
-// 20260919_180154, driver vsync forced to 144: `application=144.0 fps
-// output=288.0 fps`, and the overlay showed 288.
 void ClassifyPresentInterposerPresentSource() {
     if (!t_presentInterposerPrivateOutputChainScope || t_presentInterposerSourceClassified) {
         return;
     }
-    t_presentInterposerApplicationSourced = g_FGCompat.RecordPresentForNvidiaSmoothMotion();
+    g_FGCompat.RecordPresentForNvidiaSmoothMotion(t_presentInterposerOutputClass);
     t_presentInterposerSourceClassified = true;
-    if (t_presentInterposerApplicationSourced) {
-        NoteApplicationPresentUnderPresentInterposer();
-    }
 }
 
 bool HasPresentInterposerPresentSourceClassification() {
     return t_presentInterposerSourceClassified;
-}
-
-bool IsPresentInterposerPresentApplicationSourced() {
-    return t_presentInterposerApplicationSourced;
 }
 
 void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* pOutputQueue) {
@@ -151,30 +127,18 @@ void NotePresentInterposerOutputPresent(IDXGISwapChain* pSwapChain) {
     if (!HasPresentInterposerPrivateSwapchains() || !DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
         return;
     }
-    InterposerCadence().NoteOutputPresent();
+    t_presentInterposerOutputClass =
+        g_FGCompat.NoteInterposerOutputPresent(GetCurrentThreadId(), PerfLogger::GetQpcUs());
 }
 
 void NoteApplicationPresentUnderPresentInterposer() {
     if (!HasPresentInterposerPrivateSwapchains()) {
         return;
     }
-    ce::present_interposer::CadenceVerdict verdict;
-    if (!InterposerCadence().NoteApplicationPresent(PerfLogger::GetQpcUs(), &verdict)) {
-        return;
-    }
-    g_FGCompat.NotePresentInterposerCadence(verdict);
-
-    static std::atomic<int> s_windowLogCount{0};
-    const int windowNum = s_windowLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (windowNum <= 5 || (windowNum % 60) == 0) {
-        HookLogImportant(
-            "DetourPresent: Present interposer output cadence window #%d — application=%.1f fps output=%.1f fps "
-            "generating=%d multiplier=%d",
-            windowNum, verdict.applicationFps, verdict.outputFps, verdict.generating ? 1 : 0, verdict.multiplier);
-    }
+    g_FGCompat.NoteInterposerApplicationPresent(PerfLogger::GetQpcUs());
 }
 
 void ResetPresentInterposerCadence() {
-    InterposerCadence().Reset();
+    g_FGCompat.ResetInterposerEvidence();
 }
 }  // namespace DXGIShared

@@ -23,8 +23,18 @@ inline constexpr int kMinApplicationPresentsForVerdict = 20;
 // miscounted window from publishing an absurd multiplier into the overlay.
 inline constexpr int kMaxInterposerMultiplier = 4;
 inline constexpr int64_t kWindowUs = 1000000;
-// An application frame closes a window once it is a window old, so a window twice that old had none for a whole one.
+// A slow game gets a longer window instead of no verdict: below 20 fps a one-second window never held enough frames,
+// which read as "not generating" and hid Smooth Motion at low frame rates. Past this age a few frames must do.
+inline constexpr int64_t kLongWindowUs = 4 * kWindowUs;
+inline constexpr int kMinApplicationPresentsForLongWindow = 5;
+// No application frame for this long means they stopped, not that the game is slow.
 inline constexpr int64_t kApplicationStoppedWindowUs = 2 * kWindowUs;
+
+// Pure: does a window of this age hold enough application frames to say anything?
+inline bool HasEnoughApplicationFrames(int applicationPresents, int64_t windowUs) {
+    return applicationPresents >= kMinApplicationPresentsForVerdict ||
+           (windowUs >= kLongWindowUs && applicationPresents >= kMinApplicationPresentsForLongWindow);
+}
 
 struct CadenceVerdict {
     bool generating = false;
@@ -43,7 +53,7 @@ struct CadenceVerdict {
 // frame — Smooth Motion loaded and not engaged, which must read as "no frame generation" rather
 // than as a 1x generator.
 inline bool IsInterposerGeneratingFrames(int applicationPresents, int outputPresents) {
-    if (applicationPresents < kMinApplicationPresentsForVerdict || outputPresents <= applicationPresents) {
+    if (applicationPresents <= 0 || outputPresents <= applicationPresents) {
         return false;
     }
     return outputPresents * 2 >= applicationPresents * 3;
@@ -65,7 +75,7 @@ inline int ResolveInterposerMultiplier(int applicationPresents, int outputPresen
 // Pure: the full verdict for one measurement window.
 inline CadenceVerdict ClassifyInterposerCadence(int applicationPresents, int outputPresents, int64_t windowUs) {
     CadenceVerdict verdict;
-    if (applicationPresents < kMinApplicationPresentsForVerdict || windowUs <= 0) {
+    if (windowUs <= 0 || !HasEnoughApplicationFrames(applicationPresents, windowUs)) {
         return verdict;
     }
     const float windowSeconds = static_cast<float>(windowUs) / 1000000.0f;
@@ -109,7 +119,10 @@ public:
             windowStartUs_.store(nowUs, std::memory_order_relaxed);
             return false;
         }
-        if (nowUs - windowStartUs < kApplicationStoppedWindowUs ||
+        // A slow game's window stays open for longer than this, so the last frame says whether frames stopped.
+        const int64_t lastApplicationUs = lastApplicationUs_.load(std::memory_order_relaxed);
+        const int64_t lastActivityUs = lastApplicationUs > windowStartUs ? lastApplicationUs : windowStartUs;
+        if (nowUs - lastActivityUs < kApplicationStoppedWindowUs ||
             outputPresents < kMinApplicationPresentsForVerdict ||
             !windowStartUs_.compare_exchange_strong(windowStartUs, nowUs, std::memory_order_relaxed)) {
             return false;
@@ -127,6 +140,7 @@ public:
     bool NoteApplicationPresent(int64_t nowUs, CadenceVerdict* out) {
         const bool firstApplicationFrame = !applicationWindowStarted_.exchange(true, std::memory_order_relaxed);
         const int applicationPresents = applicationPresents_.fetch_add(1, std::memory_order_relaxed) + 1;
+        lastApplicationUs_.store(nowUs, std::memory_order_relaxed);
         int64_t windowStartUs = windowStartUs_.load(std::memory_order_relaxed);
         if (firstApplicationFrame || windowStartUs < 0) {
             // Only what follows belongs to the window. Talos sends XeFG its first present ID when it enables
@@ -142,7 +156,10 @@ public:
         // Back from a stop nothing is measured yet, and the undecided verdict says so now, not a window later.
         const bool resumed = applicationStopped_.load(std::memory_order_relaxed);
         const int64_t elapsedUs = nowUs - windowStartUs;
-        if ((!resumed && elapsedUs < kWindowUs) ||
+        // Too few frames keep the window open until it is long enough to decide on fewer, or to say it cannot.
+        const bool windowDue = elapsedUs >= kWindowUs && (applicationPresents >= kMinApplicationPresentsForVerdict ||
+                                                          elapsedUs >= kLongWindowUs);
+        if ((!resumed && !windowDue) ||
             !windowStartUs_.compare_exchange_strong(windowStartUs, nowUs, std::memory_order_relaxed)) {
             return false;
         }
@@ -162,6 +179,7 @@ public:
         applicationPresents_.store(0, std::memory_order_relaxed);
         outputPresents_.store(0, std::memory_order_relaxed);
         windowStartUs_.store(kNoWindow, std::memory_order_relaxed);
+        lastApplicationUs_.store(kNoWindow, std::memory_order_relaxed);
         applicationStopped_.store(false, std::memory_order_relaxed);
         applicationWindowStarted_.store(false, std::memory_order_relaxed);
     }
@@ -173,6 +191,7 @@ private:
     std::atomic<int> applicationPresents_{0};
     std::atomic<int> outputPresents_{0};
     std::atomic<int64_t> windowStartUs_{kNoWindow};
+    std::atomic<int64_t> lastApplicationUs_{kNoWindow};
     std::atomic<bool> applicationStopped_{false};
     std::atomic<bool> applicationWindowStarted_{false};
 };

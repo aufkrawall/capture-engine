@@ -382,36 +382,6 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
     }
 }
 
-bool FGCompatibility::RecordPresentForNvidiaSmoothMotion() {
-    if (!IsNvPresentLoaded()) {
-        return true;
-    }
-
-    // DX11 and D3D10 have no command-list population to classify a present by,
-    // so this used to record a constant 1 and every present on the interposer's
-    // output chain counted as an application frame. The overlay then reported
-    // the interposer's OUTPUT rate as the game's frame rate - the ~2x reading in
-    // Witcher 3 session 20260919_160555.
-    //
-    // The application's own immediate context supplies the missing half. A
-    // generated frame is produced entirely inside the interposer, so the game
-    // submits nothing across it; one or more submissions since the previous
-    // present means this present carries an application frame. Zero-vs-nonzero,
-    // no threshold and no timing. When counting is off (no interposer chain
-    // registered) the old neutral sample is kept.
-    if (!IsApplicationSubmissionCountingEnabled()) {
-        explicitSourceClassification.store(false, std::memory_order_release);
-        RecordFrame(1);
-        return true;
-    }
-
-    const uint64_t submissions = applicationSubmissions.exchange(0, std::memory_order_acq_rel);
-    const bool applicationSourced = ce::fg_runtime::IsApplicationSourcedInterposerPresent(submissions);
-    explicitSourceClassification.store(true, std::memory_order_release);
-    RecordFrame(applicationSourced ? 1 : 0);
-    return applicationSourced;
-}
-
 void FGCompatibility::UpdateMetrics() {
     // DORMANT MODE: Skip metrics calculation
     if (dormantMode.load()) {
@@ -576,7 +546,9 @@ void FGCompatibility::DetectPattern() {
     const auto snapshot = CaptureDetectionSnapshot();
     const int mult = cachedMultiplier.load(std::memory_order_acquire);
     const bool patternEligible = ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(snapshot);
-    if (mult == 2 && patternEligible) {
+    // The windows decide once they can. This pass re-detected 40-100 ms after every window that said otherwise, which
+    // made the status flip twice a second (20261106_171629).
+    if (mult == 2 && patternEligible && !interposerCadenceDecided.load(std::memory_order_acquire)) {
         int confirmCount = nvidiaSMConfirmCount.load(std::memory_order_acquire);
         if (confirmCount < NVIDIA_SM_CONFIRM_THRESHOLD) {
             confirmCount = nvidiaSMConfirmCount.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -594,33 +566,6 @@ void FGCompatibility::DetectPattern() {
     }
     // Preserve partial confirmation across cap, scene, and driver-pacing
     // changes. Only explicit competing FG evidence resets the NvPresent epoch.
-}
-
-void FGCompatibility::NotePresentInterposerCadence(const ce::present_interposer::CadenceVerdict& verdict) {
-    nvidiaSMMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
-    nvidiaSMMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
-    nvidiaSMMeasuredMultiplier.store(verdict.generating ? verdict.multiplier : 0, std::memory_order_release);
-
-    // The cadence is the authority for the interposer, but never over a real in-process FG
-    // runtime: DLSS-G and FFX own the swapchain themselves and their presents are not an
-    // interposer's output chain.
-    if (!ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(CaptureDetectionSnapshot())) {
-        return;
-    }
-
-    const bool wasDetected = nvidiaSmoothMotionDetected.exchange(verdict.generating, std::memory_order_acq_rel);
-    if (wasDetected != verdict.generating) {
-        HookLog(
-            "FG: NVIDIA Smooth Motion %s from the present interposer's output cadence "
-            "(multiplier=%d output=%.1f fps application=%.1f fps)",
-            verdict.generating ? "ACTIVE" : "inactive", verdict.multiplier, verdict.outputFps,
-            verdict.applicationFps);
-    }
-    if (verdict.generating) {
-        // Keep the heuristic confirmation counter satisfied so a later DetectPattern() pass
-        // cannot walk the structural verdict back down.
-        nvidiaSMConfirmCount.store(NVIDIA_SM_CONFIRM_THRESHOLD, std::memory_order_release);
-    }
 }
 
 void FGCompatibility::SetXeFGState(bool presenterActive, bool enabled, int interpolatedFrames) {

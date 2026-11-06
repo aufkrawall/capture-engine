@@ -97,15 +97,7 @@ void CleanupDX11Resources(bool releaseDeviceContext) {
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
     if (ce::translated_swapchain::HasNativeOwner(pSwapChain)) return;
     (void)isRealFrame;
-    // Under a present interposer CE's only Present view is the interposer's
-    // OUTPUT chain, so both cadence streams have to be separated here: every
-    // present is an output present (counted in the present entry), and only the
-    // ones carrying application work are application presents. With both streams
-    // the shared CadenceTracker measures the generation factor and the base rate
-    // exactly as it does for DX12, instead of reporting the output rate as the
-    // game's frame rate.
-    // The present path already resolved and consumed this present's source when it runs through
-    // the shared entries; the submission counter must not be consumed twice.
+    // The present path already wrote this present's history entry when it runs through the shared entries.
     if (!DXGIShared::HasPresentInterposerPresentSourceClassification()) {
         g_FGCompat.RecordPresentForNvidiaSmoothMotion();
     }

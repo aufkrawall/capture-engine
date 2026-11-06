@@ -369,14 +369,12 @@ bool HasCompositablePresentInterposerOutputChain();
 // Thread-local, because the interposer and the application can present on different threads.
 void SetPresentInterposerPrivateOutputChainScope(bool active);
 bool IsPresentOnPresentInterposerPrivateOutputChain();
-// Resolve which stream this present belongs to, once, before any frame rate is measured from it.
-// Feeds the application stream of the cadence tracker as a side effect.
+// Writes this present's frame history entry, once, from what NotePresentInterposerOutputPresent found.
 void ClassifyPresentInterposerPresentSource();
 bool HasPresentInterposerPresentSourceClassification();
-bool IsPresentInterposerPresentApplicationSourced();
 
-// Smooth Motion status comes from the ratio between the interposer's private output chain and the
-// application's own present stream — the only evidence there is in DX12 (present_interposer_cadence.h).
+// Smooth Motion's status comes from the interposer's output stream against the application's frames,
+// wherever those can be told (present_interposer_evidence.h).
 void NotePresentInterposerOutputPresent(IDXGISwapChain* pSwapChain);
 void NoteApplicationPresentUnderPresentInterposer();
 void ResetPresentInterposerCadence();

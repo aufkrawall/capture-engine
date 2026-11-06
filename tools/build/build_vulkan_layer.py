@@ -68,6 +68,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     ]
     hook_common_sources = [
         os.path.join(PROJECT_ROOT, "hook", "fg", "fg_detection.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "fg", "fg_interposer_status.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "runtime", "ipc_client.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "metrics", "system_metrics.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "metrics", "system_metrics_gpu.cpp"),

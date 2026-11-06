@@ -74,13 +74,14 @@ inline bool CanEvaluateNvidiaSmoothMotionPattern(const DetectionSnapshot& snapsh
 // 6962 presents in 40.8 s, 3231 groups of exactly two, i.e. ~85 application fps shown as ~171).
 //
 // The discriminator is not timing and not a threshold. A generated frame is produced entirely
-// inside the interposer, so the APPLICATION's own immediate context is idle across it: it
-// submits no draw, dispatch or clear between the real present and its generated partner. One
-// or more application submissions since the previous present therefore means this present
-// carries an application frame, and none means the interposer generated it.
+// inside the interposer, so no application submission since the previous present means the
+// interposer generated this one. The other direction holds only for a game that is idle across
+// its frame's presents: Trine 5 still draws when NvPresent's workers present, so most generated
+// frames count as application frames here. That makes this the last evidence
+// (present_interposer_evidence.h), for an interposer whose runs say nothing.
 //
 // Counting is on the game's device only. CE's overlay and the interposer's interpolation both
-// run on the interposer's own device under Smooth Motion, so neither can inflate this.
+// run on the interposer's own device, which CE does not wrap, so neither can inflate this.
 inline bool IsApplicationSourcedInterposerPresent(uint64_t applicationSubmissionsSincePreviousPresent) {
     return applicationSubmissionsSincePreviousPresent > 0;
 }

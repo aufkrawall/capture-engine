@@ -20,7 +20,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     ce::present_stage_cost::DetourRecorder stageCost;
     EnterStage(CostStage::kEntry);
 
-    g_FGCompat.RecordPresentForNvidiaSmoothMotion();
+    // The loader lists a driver's implicit layers first, so VK_LAYER_NV_present should sit above this one and Smooth
+    // Motion's outputs reach this entry. If not, one thread presents everything and the status stays with the heuristics.
+    g_FGCompat.RecordPresentForNvidiaSmoothMotion(
+        g_FGCompat.NoteInterposerOutputPresent(GetCurrentThreadId(), PerfLogger::GetQpcUs()));
 
     // Performance metrics for this frame
     FrameMetrics perfMetrics;

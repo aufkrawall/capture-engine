@@ -7,7 +7,7 @@
 
 #include "fg_runtime_state.h"
 #include "output_ratio_window.h"
-#include "hook/present/present_interposer_cadence.h"
+#include "hook/present/present_interposer_evidence.h"
 
 // Forward declaration for HookLog
 void HookLog(const char* fmt, ...);
@@ -32,12 +32,19 @@ public:
     // Per-frame tracking - call from DetourPresent with command list count
     // NOTE: In dormant mode, this only tracks basic stats, no pattern detection
     void RecordFrame(int commandListsExecuted);
-    // Returns true when this present carries an application frame. Without an
-    // interposer there is nothing to separate, so every present is application-sourced.
-    bool RecordPresentForNvidiaSmoothMotion();
+    // One present on a present interposer's output stream, before any routing decision: its private chain in DXGI,
+    // and whatever reaches CE's layer in Vulkan, which sits below VK_LAYER_NV_present. Says whether it carries an
+    // application frame and, from those, keeps the Smooth Motion status and rates (present_interposer_evidence.h).
+    ce::present_interposer::OutputPresentClass NoteInterposerOutputPresent(uint32_t threadId, int64_t nowUs);
+    // One application-facing present, where CE has that view: the exact second stream.
+    void NoteInterposerApplicationPresent(int64_t nowUs);
+    // A retired chain leaves measurements that no longer describe anything. The status stands.
+    void ResetInterposerEvidence();
+    // This present's entry in the frame history, for the paths without command-list counts.
+    void RecordPresentForNvidiaSmoothMotion(ce::present_interposer::OutputPresentClass source = {});
 
-    // Application submission accounting for the DX11/DX10 present-interposer
-    // classifier. Counting stays off until an interposer's private output chain
+    // Application submission accounting: the evidence left when one thread presents
+    // everything. Counting stays off until an interposer's private output chain
     // is registered, so the ordinary draw path pays one relaxed atomic load.
     void SetApplicationSubmissionCountingEnabled(bool enabled) {
         applicationSubmissionCounting.store(enabled, std::memory_order_release);
@@ -169,12 +176,6 @@ public:
     }
     void DetectNvidiaSmoothMotion();
 
-    // Structural Smooth Motion evidence: the measured ratio between the present interposer's
-    // private output chain and the application's own present stream. In DX12 this is the only
-    // evidence there is — the application presents once per rendered frame however many frames
-    // the driver generates, so the command-list and present-gap heuristics below never fire.
-    void NotePresentInterposerCadence(const ce::present_interposer::CadenceVerdict& verdict);
-
     // Intel XeSS frame generation (hook/xefg): an XeFG swapchain presents the displayed frames
     // (`presenterActive`), generation is on (xefgSwapChainSetEnabled) and the configured number of
     // generated frames per application frame (xefgSwapChainSetNumInterpolatedFrames, 1 by default).
@@ -272,6 +273,12 @@ public:
         // re-detected within 3 frames, triggering a phantom FG transition
         // and a second unnecessary cooldown.
         cachedMultiplier.store(1, std::memory_order_release);
+        {
+            // The status starts over, so a window half measured under the old state must not bring it back.
+            std::lock_guard<std::mutex> lock(interposerEvidenceLock);
+            interposerEvidence.Reset();
+            interposerLatch.Reset();
+        }
         if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
             HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup)");
         }
@@ -308,13 +315,21 @@ private:
     std::atomic<int> historyIndex{0};
     std::atomic<int> totalFramesRecorded{0};
 
-    // DX11/DX10 present-interposer classification. `commandLists` then carries a
+    // DX11/DX10 and Vulkan present-interposer classification. `commandLists` then carries a
     // 1/0 verdict the caller already resolved rather than a work population, so
     // UpdateMetrics must compare against zero instead of deriving a threshold
     // from the busiest frame in the window.
     std::atomic<bool> explicitSourceClassification{false};
     std::atomic<bool> applicationSubmissionCounting{false};
     std::atomic<uint64_t> applicationSubmissions{0};
+
+    // The interposer's streams and the status decided from them (fg_interposer_status.cpp).
+    void NotePresentInterposerCadence(const ce::present_interposer::WindowReport& report);
+    std::mutex interposerEvidenceLock;
+    ce::present_interposer::InterposerEvidence interposerEvidence;  // guarded by interposerEvidenceLock
+    ce::present_interposer::GenerationLatch interposerLatch;        // guarded by interposerEvidenceLock
+    // A window decided the status: from here the heuristics below have no say in it.
+    std::atomic<bool> interposerCadenceDecided{false};
 
     // Cached metrics (updated periodically)
     std::atomic<float> cachedOutputFPS{0.0f};

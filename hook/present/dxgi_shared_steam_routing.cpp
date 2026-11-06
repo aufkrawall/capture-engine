@@ -166,18 +166,11 @@ void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicatio
 
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, publicationSource);
 
-    // The overlay's frame rate is the APPLICATION's, not the interposer's submission rate. On a
-    // present interposer's private output chain this hook fires once per output frame, so
-    // advancing the metric here unconditionally reports the generated rate as the game's - Witcher
-    // 3 session 20260919_180154 showed 288 with the driver holding the game at 144. DX12 never had
-    // this problem because its metric is fed by the app-facing swapchain wrapper, which is 1x by
-    // construction; gating the generated presents out gives DX11 the same view. The output stream
-    // is still measured in full by NotePresentInterposerOutputPresent, so the FG row keeps both
-    // rates.
-    const bool suppressGeneratedPresentForMetrics =
-        DXGIShared::HasPresentInterposerPresentSourceClassification() &&
-        !DXGIShared::IsPresentInterposerPresentApplicationSourced();
-    PublishDXGIPresentMetrics(true, !suppressGeneratedPresentForMetrics, publicationSource);
+    // Every present here is a frame on its way to the screen, generated or not, as it is under every other frame
+    // generation: the presentation series holds what reaches the display, the FG row says how much of it the game
+    // rendered. It used to skip what it took for generated presents in DX11, which halved the frame rate and the graph
+    // wherever the display stream was not available.
+    PublishDXGIPresentMetrics(true, true, publicationSource);
 }
 
 void PublishDXGIPresentMetrics(bool isFirstHook, bool advanceApplicationFrameRate, const char* publicationSource) {

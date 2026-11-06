@@ -25,6 +25,10 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **NVIDIA Smooth Motion status:** the overlay lost `NVIDIA SM 2x` after a few flickering seconds, or never showed it at low frame rates, while the driver kept generating frames. Seen in Trine 5 (DX11). CaptureEngine now tells the game's frames from generated ones by how the driver presents them, so the status and factor hold at any refresh rate, frame rate or GPU load, with or without vsync. DX12 keeps its direct view and gains this where that view is missing; Vulkan uses it too.
+
+- **NVIDIA Smooth Motion frame rate on DirectX 11:** the frame rate and frame-time graph are no longer halved while display timing is unavailable.
+
 - **CaptureEngine in NVIDIA Smooth Motion's own pipeline (DX11):** the driver's interpolation device no longer runs through CaptureEngine's wrappers or forced anisotropic filtering, which also stopped a hook retry on every frame that made up 87% of the debug log.
 
 - **B-frames with AMD AMF encoders:** setting `[Video] b_frames` (> 0) now properly enables B-frames on H.264 and AV1 AMF hardware encoders (`h264_amf`, `av1_amf`) without requiring explicit `custom_options="bf=N"`. CaptureEngine now passes both `bf` and `max_b_frames` options to the encoder; previously only `max_b_frames` was generated, which FFmpeg's AMF wrapper assigned to `max_consecutive_b_frames` while leaving `B_PIC_PATTERN` and DTS delay unset.
