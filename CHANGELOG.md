@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **NVIDIA Smooth Motion status after frame-generation switches:** clearing detection state no longer permanently disables the fallback needed when the driver presents from one thread, allowing the overlay to detect Smooth Motion again after a switch.
+
 - **NVIDIA Smooth Motion status:** the overlay lost `NVIDIA SM 2x` after a few flickering seconds, or never showed it at low frame rates, while the driver kept generating frames. Seen in Trine 5 (DX11). CaptureEngine now tells the game's frames from generated ones by how the driver presents them, so the status and factor hold at any refresh rate, frame rate or GPU load, with or without vsync. DX12 keeps its direct view and gains this where that view is missing; Vulkan uses it too.
 
 - **NVIDIA Smooth Motion frame rates:** the output rate now shows what reaches the screen, so driver vsync no longer reads as double the panel's rate, and the base rate is the game's measured rate. On DirectX 11 the frame rate and frame-time graph are no longer halved while display timing is unavailable.

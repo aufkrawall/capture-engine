@@ -273,14 +273,18 @@ public:
         // re-detected within 3 frames, triggering a phantom FG transition
         // and a second unnecessary cooldown.
         cachedMultiplier.store(1, std::memory_order_release);
+        bool resetCadenceAuthority = false;
         {
             // The status starts over, so a window half measured under the old state must not bring it back.
             std::lock_guard<std::mutex> lock(interposerEvidenceLock);
             interposerEvidence.Reset();
             interposerLatch.Reset();
+            resetCadenceAuthority = interposerCadenceDecided.exchange(false, std::memory_order_acq_rel);
         }
-        if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
-            HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup)");
+        const bool wasDetected = nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel);
+        if (wasDetected || resetCadenceAuthority) {
+            HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup, cadenceAuthorityReset=%d)",
+                    resetCadenceAuthority ? 1 : 0);
         }
     }
 

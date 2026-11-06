@@ -148,7 +148,10 @@ need it.
   window starts that count over.
 - A gap of a second in the output stream restarts the window, so an alt-tab publishes no rate.
 - Once a window decided, `DetectPattern` cannot set the status any more. Before, it re-detected 40-100 ms after each
-  window that disagreed. `ClearNvidiaSMState` starts the evidence and the latch over.
+  window that disagreed. `ClearNvidiaSMState` starts the evidence, latch and cadence authority over together, so a new
+  epoch without decisive windows can use the heuristic fallback again. The clear log reports `cadenceAuthorityReset=1`
+  once when releasing that authority, even if Smooth Motion was already inactive. Virtual-clock regressions in
+  `tests/test_present_interposer_evidence.cpp` cover recovery after both generating and forwarding windows.
 
 ### What the overlay shows
 

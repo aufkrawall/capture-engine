@@ -12,6 +12,7 @@
 
 #include "hook/fg/fg_detection.h"
 #include "hook/present/present_interposer_evidence.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 
@@ -422,5 +423,44 @@ TEST(SmoothMotionStatusTest, ClearingTheStateClearsTheLatch) {
     PlayJobs({6'944, 0, 1}, 300, nowUs, note);
     EXPECT_EQ(fg->GetRuntimeMode(), RuntimeMode::kOff);
 }
+
+class SmoothMotionEpochTest : public ::testing::TestWithParam<bool> {
+protected:
+    void SetUp() override {
+        ce::hook_clock::EnableVirtual();
+    }
+    void TearDown() override {
+        ce::hook_clock::Virtual().enabled.store(false, std::memory_order_release);
+    }
+};
+
+// A decided window owns only its epoch. After clearing, a dedicated presenter without application/submission
+// evidence needs the paired-gap fallback again, whether the old window said generating or forwarding.
+TEST_P(SmoothMotionEpochTest, ClearingRestoresHeuristicsForADedicatedPresenter) {
+    auto fresh = MakeWithNvPresent();
+    auto cleared = MakeWithNvPresent();
+    PlayJobs({16'000, 1'000, GetParam() ? 2 : 1}, 200, 0, [&](uint32_t worker, int64_t nowUs) {
+        cleared->NoteInterposerOutputPresent(worker, nowUs);
+    });
+    ASSERT_EQ(cleared->IsNvidiaSmoothMotionActive(), GetParam());
+    cleared->ClearNvidiaSMState();
+    ASSERT_EQ(cleared->GetRuntimeMode(), RuntimeMode::kOff);
+
+    int64_t nowUs = 10'000'000;
+    for (int frame = 0; frame < 600; ++frame) {
+        for (int output = 0; output < 2; ++output) {
+            const int64_t gapUs = output == 0 ? 15'000 : 1'000;
+            ce::hook_clock::AdvanceMicroseconds(gapUs);
+            nowUs += gapUs;
+            for (FGCompatibility* fg : {fresh.get(), cleared.get()}) {
+                fg->RecordPresentForNvidiaSmoothMotion(fg->NoteInterposerOutputPresent(0x1234, nowUs));
+            }
+        }
+    }
+    ASSERT_EQ(fresh->GetRuntimeMode(), RuntimeMode::kNvidiaSmoothMotion);
+    EXPECT_EQ(cleared->GetRuntimeMode(), fresh->GetRuntimeMode());
+}
+
+INSTANTIATE_TEST_SUITE_P(PreviousCadence, SmoothMotionEpochTest, ::testing::Bool());
 
 }  // namespace
