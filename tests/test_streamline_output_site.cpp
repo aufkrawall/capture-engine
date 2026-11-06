@@ -62,19 +62,23 @@ std::string ReadHook(const char* fileName) {
 TEST(StreamlineOutputSiteTest, BothNormalRoutesPaceStreamlineOutputsThroughTheVerdict) {
     const std::string core = ReadHook("dxgi_shared_present_core.cpp");
     const size_t verdict = core.find("IsStreamlineFinalOutputForLimiter(");
-    const size_t site = core.find("ResolveDxgiPresentSite(\n                                 runtimeOutput, "
-                                  "IsStreamlineFinalOutputForLimiter(");
+    const size_t site = core.find("ResolveDxgiPresentSite(\n                                 runtimeOutput,\n"
+                                  "                                 IsStreamlineFinalOutputForLimiter(");
     ASSERT_NE(verdict, std::string::npos);
     EXPECT_NE(site, std::string::npos);
     EXPECT_NE(core.find("ctx.callerFromStreamlineModule,", verdict), std::string::npos);
-    EXPECT_NE(core.find("ctx.callerFromFFXFrameGenerationModule, runtimeOutput)));", verdict), std::string::npos);
+    EXPECT_NE(core.find("ctx.callerFromFFXFrameGenerationModule,\n                                     runtimeOutput),",
+                        verdict),
+              std::string::npos);
 
     const std::string present1 = ReadHook("dxgi_shared_present1.cpp");
     const size_t present1Verdict =
         present1.find("const bool slOutputBoundary = IsStreamlineFinalOutputForLimiter(");
+    const size_t present1Site = present1.find("ResolveDxgiPresentSite(\n                             "
+                                              "callbackProvenRuntimeOutput, slOutputBoundary,");
     ASSERT_NE(present1Verdict, std::string::npos);
-    EXPECT_LT(present1Verdict,
-              present1.find("ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary)"));
+    ASSERT_NE(present1Site, std::string::npos);
+    EXPECT_LT(present1Verdict, present1Site);
 }
 
 TEST(StreamlineOutputSiteTest, TheWrapperRecordsItsPacedSwapchainBeforeItsLimiterStage) {
@@ -85,7 +89,9 @@ TEST(StreamlineOutputSiteTest, TheWrapperRecordsItsPacedSwapchainBeforeItsLimite
                                  ", \"CE's swapchain wrapper\");";
         const size_t at = wrapper.find(note);
         ASSERT_NE(at, std::string::npos) << real;
-        EXPECT_EQ(wrapper.find(std::string("DXGIShared::ApplyFpsLimiterStage(") + real + ", true,", at),
+        EXPECT_EQ(wrapper.find(std::string("DXGIShared::ApplyFpsLimiterStage(") + real +
+                                   ", !m_PresentInvisibleToDetourHook,",
+                               at),
                   wrapper.find('\n', at) + 5)
             << real << ": the record precedes the limiter stage";
     }

@@ -282,7 +282,8 @@ TEST(PresentPacingPolicySourceTest, DXGIPresentBoundariesGateEveryApplyOnTheCade
         ASSERT_FALSE(source.empty()) << boundary.path;
 
         int sites = 0;
-        for (const char* site : {"PresentSite::kUniqueApplicationPresent", "ResolveDxgiPresentSite("}) {
+        for (const char* site :
+             {"PresentSite::kUniqueApplicationPresent", "ResolveDxgiPresentSite(", "ResolveWrapperPresentSite("}) {
             for (size_t pos = source.find(site); pos != std::string::npos; pos = source.find(site, pos + 1)) {
                 ++sites;
             }

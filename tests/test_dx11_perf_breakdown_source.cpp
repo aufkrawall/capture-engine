@@ -99,8 +99,9 @@ TEST(DX11PerfBreakdownSourceTest, TheWrappedPresent1LogsTheSameRowAsPresent) {
               npos);
     const size_t limiterStart = body.find("const int64_t limiterStartUs = perfRow.NowUs();");
     const size_t limiter =
-        body.find("DXGIShared::ApplyFpsLimiterStage(pReal1Cached, true,\n"
-                  "                                     ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);");
+        body.find("DXGIShared::ApplyFpsLimiterStage(pReal1Cached, !m_PresentInvisibleToDetourHook,\n"
+                  "                                     ce::interposer_output_pacing::ResolveWrapperPresentSite(\n"
+                  "                                         m_PresentInvisibleToDetourHook));");
     const size_t limiterEnd = body.find("perfRow.NoteFpsLimitWaitSince(limiterStartUs);");
     ASSERT_NE(limiterStart, npos);
     ASSERT_NE(limiter, npos);
@@ -136,7 +137,9 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
     const size_t limiterStart = body.find("const int64_t limiterStartUs = perfRow.NowUs();");
     const size_t limiter = body.find(
         "ApplyFpsLimiterStage(pSwapChain, true,\n                         "
-        "ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary));");
+        "ce::fps_limiter_policy::ResolveDxgiPresentSite(\n                             "
+        "callbackProvenRuntimeOutput, slOutputBoundary,\n                             "
+        "IsPresentOnPresentInterposerPrivateOutputChain()));");
     const size_t limiterEnd = body.find("perfRow.NoteFpsLimitWaitSince(limiterStartUs);");
     ASSERT_NE(limiterStart, npos);
     ASSERT_NE(limiter, npos);

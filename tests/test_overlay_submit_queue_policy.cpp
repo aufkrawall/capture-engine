@@ -595,13 +595,15 @@ TEST(OverlaySubmitQueuePolicySourceTest, VulkanReflexUsesDriverSignaledPostPrese
     // generated frames included, reaches this hook, so it must hand the limiter
     // that contract instead of the legacy duplicate-present window. A DXVK
     // D3D11 wrapper present is not that boundary and keeps the legacy site.
+    // ResolveVulkanFinalOutputSite answers kFinalOutputBoundary for everything
+    // but Smooth Motion (test_fps_limiter_interposer_output.cpp).
     const size_t vulkanApply = present.find("g_SharedFpsLimiter.Apply(true,");
     ASSERT_NE(vulkanApply, std::string::npos);
     const size_t vulkanApplyEnd = present.find(");", vulkanApply);
     ASSERT_NE(vulkanApplyEnd, std::string::npos);
     const std::string vulkanApplyCall = present.substr(vulkanApply, vulkanApplyEnd - vulkanApply);
     EXPECT_NE(vulkanApplyCall.find("nativeVulkanPresent"), std::string::npos);
-    EXPECT_NE(vulkanApplyCall.find("PresentSite::kFinalOutputBoundary"), std::string::npos);
+    EXPECT_NE(vulkanApplyCall.find("ResolveVulkanFinalOutputSite("), std::string::npos);
     EXPECT_NE(vulkanApplyCall.find("PresentSite::kDuplicateProne"), std::string::npos);
     EXPECT_NE(present.find("g_SharedFpsLimiter.ApplyPostPresent()"), std::string::npos);
     EXPECT_NE(entry.find("Capture_vkSetLatencySleepModeNV"), std::string::npos);
