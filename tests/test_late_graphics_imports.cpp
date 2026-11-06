@@ -32,7 +32,7 @@ TEST(LateGraphicsImports, LoaderTimeImportSlotsRequireResolvedCodeAndShareOverla
     const auto local = ce::test_source::ReadFile(root / "hook/hooking/iat_hook_loaded_module.cpp");
     EXPECT_NE(local.find("IsGraphicsImportHookTargetModulePath(path)"), std::string::npos);
     for (const char* name : {"IsThirdPartyOverlayModulePath", "IsNonSystemGraphicsProxyModulePath",
-                             "IsStreamlineFrameGenerationModulePath"})
+                             "IsStreamlineFrameGenerationModulePath", "IsPresentInterposerModulePath"})
         EXPECT_NE(local.find(name), std::string::npos);
 }
 

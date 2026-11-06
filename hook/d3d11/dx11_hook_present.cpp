@@ -263,8 +263,14 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
     if (HookIsShuttingDown())
         return;
     // Deferred AF bootstrap: capture already-bound samplers/SRVs once so later
-    // SRV changes can reconcile forced AF with resource context.
-    ApplyDeferredSamplerOverrides11(pSwapChain);
+    // SRV changes can reconcile forced AF with resource context. Not through a
+    // present interposer's private chain: its device is the interposer's own, the
+    // game's forced AF has no business there, and it binds no samplers between
+    // Presents, so the bootstrap retried on every Present forever (58684 lines in
+    // 26 s, 87% of the log, 20261106_171629).
+    if (!IsPresentOnPresentInterposerPrivateOutputChain()) {
+        ApplyDeferredSamplerOverrides11(pSwapChain);
+    }
 
     ::HandleDX11ProcessFrame(pSwapChain, isRealFrame);
 }

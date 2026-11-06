@@ -7,10 +7,14 @@
 namespace IATHook {
 
 bool IsGraphicsImportHookTargetModulePath(const wchar_t* path) {
+    // A present interposer's devices and factories are its own pipeline, not the game's. Handing it CE's wrappers put
+    // every draw of its interpolator and of CE's overlay on the private chain through the application's wrapped
+    // context, where they counted as the game's frames (20261106_171629: application=144 output=144 at 72 x 2).
     return path && !wcsstr(path, L"capture_hook") && !wcsstr(path, L"d3d12_wrappers") &&
            !ce::overlay_compat::IsThirdPartyOverlayModulePath(path) &&
            !IsNonSystemGraphicsProxyModulePath(path) &&
-           !ce::overlay_compat::IsStreamlineFrameGenerationModulePath(path);
+           !ce::overlay_compat::IsStreamlineFrameGenerationModulePath(path) &&
+           !ce::overlay_compat::IsPresentInterposerModulePath(path);
 }
 
 void PatchDynamicGraphicsImportsForLoadedModule(HMODULE module) {

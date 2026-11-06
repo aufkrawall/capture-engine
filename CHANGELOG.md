@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **CaptureEngine in NVIDIA Smooth Motion's own pipeline (DX11):** the driver's interpolation device no longer runs through CaptureEngine's wrappers or forced anisotropic filtering, which also stopped a hook retry on every frame that made up 87% of the debug log.
+
 - **B-frames with AMD AMF encoders:** setting `[Video] b_frames` (> 0) now properly enables B-frames on H.264 and AV1 AMF hardware encoders (`h264_amf`, `av1_amf`) without requiring explicit `custom_options="bf=N"`. CaptureEngine now passes both `bf` and `max_b_frames` options to the encoder; previously only `max_b_frames` was generated, which FFmpeg's AMF wrapper assigned to `max_consecutive_b_frames` while leaving `B_PIC_PATTERN` and DTS delay unset.
 
 - **Vulkan startup with late-loaded DXGI:** factory-hook retries now respect an already loaded CaptureEngine Vulkan layer before renderer detection finishes, preventing D3D hooks from modifying the Vulkan driver's private presentation objects.
