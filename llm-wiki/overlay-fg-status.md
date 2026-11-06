@@ -59,18 +59,16 @@ This page records how the current tree publishes visible FG status to the overla
   from `DX12_ProcessFrame`. Those heuristics only ever reported 2x while CE was processing NvPresent64's PRIVATE
   output chain, which is exactly what removed the D3D12 device in session `20260914_102700`. Do not "restore" them
   by putting CE back on that chain.
-- The authoritative DX12 signal is the ratio between the two present streams CE legitimately sees: the interposer's
-  private-chain presents (counted at the top of `DetourPresent`/`DetourPresent1`, before every early return) against
-  the application's presents (counted in `CWrapDXGISwapChain::Present` while that wrapper is CE's only Present view).
-  One second per window, at least 20 application presents, >= 1.5x to count as generating, rounded and clamped to 4x.
+- The authoritative signal is the interposer's output presents against the application's frames, which come from the
+  application's own presents where CE has them and otherwise from the runs on NvPresent's workers: all of a frame's
+  outputs come from one thread. `present-interposers.md` has the evidence, the windows and the status latch.
   Session `20260914_105853` measures exactly two private-chain presents per application present.
 - 1:1 forwarding means Smooth Motion is loaded and NOT engaged. It must publish as no frame generation, never as a
   1x generator.
-- Base and output FPS for Smooth Motion come from those same two measured streams, not from `cachedOutputFPS`: the
-  frame history only holds the application's presents, so the cached rate is the BASE rate and dividing it by the
-  multiplier would halve it.
-- The 2026-07-29 command-work and paired-gap heuristics remain in place for the DX11 and Vulkan paths, where CE has
-  no second stream to measure. `NotePresentInterposerCadence()` cannot override an active in-process FG runtime:
+- The FG row's output rate is what reaches the screen (the display stream), and its base rate is the measured
+  application rate, never above that. Neither comes from `cachedOutputFPS`.
+- The 2026-07-29 command-work and paired-gap heuristics remain only until a window has decided, for an interposer whose
+  frames cannot be told apart at all. The cadence cannot override an active in-process FG runtime:
   DLSS-G and FFX own the swapchain themselves and their presents are not an interposer's output chain.
 - Forced vsync IS reachable under Smooth Motion, but only on the interposer's own output flip - never above it.
   See `present-interposers.md`.
@@ -91,14 +89,13 @@ This page records how the current tree publishes visible FG status to the overla
   instead alternated between short and long gaps (typically about 0.6/13.8 ms; 96% contrasting in the steady
   region), consistent with NvPresent pacing generated output below the callback/flip-metering boundary.
 - Paired-callback evidence is relative rather than tied to 138 FPS: after at least 20 gaps, 80% of adjacent gaps must
-  contrast by at least 3x. This scales across varying frame rates and caps. Direct DX11 and Vulkan paths feed the same
+  contrast by at least 3x. It misses pairs the driver spreads further (10000/3900 us in `20261106_171629` reads 2:1), so
+  it only speaks while no window has decided. Direct DX11 and Vulkan paths feed the same
   history; DX12 also retains its independent two-work-population proof. Confirmation requires three qualifying
-  evaluations, which need not be adjacent, then latches for the NvPresent session across transient or sustained
-  cap/scene/flip-metering cadence changes. Active Streamline/DLSS/FSR evidence or explicit FG cleanup still clears it
-  immediately. The visible Smooth Motion multiplier is always 2x rather than the apparent command-queue or
-  Present-callback ratio.
+  evaluations, which need not be adjacent. Active Streamline/DLSS/FSR evidence or explicit FG cleanup still clears the
+  status immediately.
 - Smooth Motion pattern evaluation is blocked by active Streamline/DLSS/FSR evidence, but not by an idle Streamline
-  module. Once confirmed, transient callback-shape changes cannot make the visible status oscillate.
+  module.
 - Direct DX11 processing invokes that adapter before `ProcessDX11FrameWithOverlayOrdering()`. This covers the
   DX11-owned Present/wrapper paths even when the outer shared DXGI publisher is not the active route.
 - Vulkan invokes the same adapter immediately after updating its `PerformanceMetrics` and before recording/waiting

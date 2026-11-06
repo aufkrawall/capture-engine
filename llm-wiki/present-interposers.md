@@ -1,18 +1,22 @@
 # Present Interposers (NVIDIA Smooth Motion)
 
-Last verified: 2026-09-14 (build 0.1.6559, Strange Brigade DX12 sessions `20260914_102700` / `105242` / `105853`.
-The output-chain topology below is NOT yet hardware-confirmed: the app-facing fallback was, in 0.1.6555/0.1.6556.)
+Last verified: 2026-11-06 (the worker-run evidence is measured from Trine 5 DX11 sessions `20261106_151156` / `171629`,
+its fix has not run on hardware yet. Strange Brigade DX12 sessions `20260914_102700` / `105242` / `105853` for the DX12
+topology, whose output-chain route is NOT yet hardware-confirmed: the app-facing fallback was, in 0.1.6555/0.1.6556.)
 
 Primary sources:
 - `hook/overlay/overlay_compat_detail/module_table.h` (`IsPresentInterposerModulePath` and friends)
 - `hook/overlay/overlay_compat_detail/routing_policy.h`
+- `hook/present/present_interposer_evidence.h` (which evidence, the worker runs, the status latch)
 - `hook/present/present_interposer_cadence.h`
 - `hook/present/present_interposer_tracking.cpp`
+- `hook/fg/fg_interposer_status.cpp` (status and rates, both DLLs)
 - `hook/present/dxgi_shared.cpp` (`IsSwapchainPresentCoveredByDeepBodyHook`, the private-chain registry)
 - `hook/present/dxgi_shared_present.cpp`, `dxgi_shared_present1.cpp`, `dxgi_shared_present_core.cpp`
 - `hook/d3d12/dx12_hook_swapchain_create.cpp`, `dx12_hook_swapchain_wrap_policy.cpp`
 - `hook/wrappers/dxgi_factory_wrap.cpp`, `dxgi_swapchain_wrap_present.cpp`, `dxgi_swapchain_wrap_internal.h`
-- `tests/test_present_interposer_cadence.cpp`, `tests/test_overlay_compat.cpp`, `tests/test_dxgi_shared_part11.cpp`
+- `tests/test_present_interposer_evidence.cpp`, `tests/test_smooth_motion_rates.cpp`,
+  `tests/test_present_interposer_cadence.cpp`, `tests/test_overlay_compat.cpp`, `tests/test_dxgi_shared_part11.cpp`
 
 ## Summary
 A **present interposer** replaces DXGI for the application instead of working inside the application's swapchain the
@@ -56,6 +60,10 @@ its attribution, queue rebinding and limiter site differ: `frame-generation/xefg
 6. **Everything above the interposer stays untouched.** No present-mode override, no interval override, no extra
    GPU work on the application's queue. The generated group must arrive at DXGI already spread by the driver's own
    metering; CE's only contract is stated on the final flip (see Forced vsync).
+7. **The interposer's own pipeline carries no CE wrappers.** `IsGraphicsImportHookTargetModulePath` keeps NvPresent out
+   of the import patches, so its `D3D11CreateDevice` and `GetProcAddress` are the real ones. A wrapped device there runs
+   its draws and CE's overlay through a wrapper context, where they looked like the game's (Trine 5, below), and forced
+   AF has no business on it.
 
 ## Where CE's overlay goes
 On the interposer's **output** chain, through the deep `dxgi!Present` body hook, submitted on that chain's own queue.
@@ -97,49 +105,68 @@ its own back buffer is exactly what an overlay is supposed to do. What changes i
 carries the per-Present, per-thread answer down to the DX11/DX10 overlay.
 
 ## Smooth Motion status
-The generation factor is the ratio between the two present streams: the interposer's private-chain presents
-(counted at the top of `DetourPresent`/`DetourPresent1`, before every early return) against the application's
-presents (counted in `CWrapDXGISwapChain::Present` while that wrapper is CE's only Present view). One-second
-windows, at least 20 application presents, `>= 1.5x` counts as generating, rounded and clamped to 4x. 1:1 forwarding
-is Smooth Motion loaded and NOT engaged, and publishes as no frame generation rather than as a 1x generator.
+The generation factor is the interposer's output presents against the application's frames. Output presents are
+counted at the top of `DetourPresent`/`DetourPresent1`, before every early return, or at the top of the Vulkan layer's
+present. `FGCompatibility::NoteInterposerOutputPresent` owns everything from there; 1:1 forwarding is Smooth Motion
+loaded and NOT engaged, and publishes as no frame generation rather than as a 1x generator.
 
-Base and output FPS come from those same two measured streams: the FG frame history only holds the application's
-presents, so `cachedOutputFPS` is the BASE rate there and dividing it by the multiplier would halve it.
+### Where the application's frames come from
 
-### DX11/DX10: the second stream comes from the application's own context
+`ce::present_interposer::InterposerEvidence` uses the best of three, and the window line names which
+(`stream=application-presents|worker-runs`):
 
-CE has no application-facing Present view under an interposer in DX11 — NvPresent64 intercepts the create above CE,
-so both chains CE sees are the interposer's. The second stream is recovered from the game's own submissions instead:
+1. **The application's own presents**, where CE has that view: `CWrapDXGISwapChain::Present` when the game's create
+   reached CE's factory wrapper, which is DX12's normal case. Exact. A window with worker runs beside it logs them too,
+   which cross-checks (2) on DX12 (`modalRun`).
+2. **Runs on the interposer's workers.** NvPresent hands each application frame to one of its workers, which presents
+   all of that frame's outputs. A run is the presents between two thread changes; the factor is the most common run
+   length, and a longer run counts as that many frames, because a worker can get two frames in a row. Trine 5 DX11, sessions `20261106_151156` and `171629`: **51574 presents in 25711 runs, 25639 of length 2,
+   70 of 4 or 6, 2 of 1**, at 20 to 234 base fps, capped and uncapped, with gaps inside the pair of 500 us to 10 ms. No
+   timing and no threshold: the cadence is whatever it is. 32 presents on one thread is a dedicated presenter, whose runs
+   say nothing, and it logs `FG: The present interposer's output stream is on one thread`. Replaying those thread
+   sequences through the class: 305 windows over nine game runs, all decided 2x, status never lost (log timestamps have
+   1 ms resolution, which the rates can absorb and the runs do not use).
+3. **The game's own submissions** (`IsApplicationSourcedInterposerPresent`), only for a dedicated presenter in DX11.
+   Zero draws since the last present proves a generated frame. The other direction proves nothing: a game still drawing
+   while the interposer presents counts every present as its own, so this can only undercount the factor. It was the
+   only DX11 evidence until 2026-11-06.
 
-- CE wraps the game's `ID3D11DeviceContext`, so it can count draws and dispatches on it.
-- A **generated** frame is produced entirely inside the interposer, so the application's context is idle across it.
-  One or more application submissions since the previous present therefore means this present carries an application
-  frame, and none means the interposer generated it (`ce::fg_runtime::IsApplicationSourcedInterposerPresent`).
-- Zero-versus-nonzero. No threshold, no gap window, no timing — a very light application frame is still an
-  application frame, and the rule does not care how the driver spaces its output.
-- Counting is enabled only once an interposer's private output chain is registered, so the ordinary draw path pays a
-  single relaxed atomic load.
+Why DX11 has no view (1) in Trine 5: `CWrapD3D11Device::QueryInterface(IDXGIDevice)` returns the real object, so
+`GetAdapter` and `GetParent` reach the real factory and the game's create never touches CE's wrapper. Returning
+`CWrapDXGIDevice` there would give the view, at the cost of changing the DXGI identity of every DX11 game; (2) does not
+need it.
 
-The classified presents feed the same `CadenceTracker` DX12 uses: every present on the private chain is an output
-present, and the application-sourced subset is an application present. The ratio is the generation factor, and
-`cachedBaseFPS`/`cachedOutputFPS` become the application and output rates rather than two views of one stream.
+### From windows to status
 
-**The overlay's frame rate is the application's.** The application frame-rate metric
-(`dxgi_shared_g_DXGIPerfMetrics`) is advanced once per Present, and on this chain that is once per OUTPUT frame, so
-it has to skip the generated ones. DX12 never needed this: its metric is fed by the app-facing swapchain wrapper,
-which is 1x by construction. Session `20260919_180154`, driver vsync forced to 144, shows why measuring correctly is
-not enough on its own - the cadence window already read `application=144.0 fps output=288.0 fps` while the overlay
-still displayed 288. The source is therefore resolved at the top of both present entries
-(`ClassifyPresentInterposerPresentSource`), before anything measures a rate from the present, and exactly once -
-reading it consumes the submission counter.
+- A window needs a second and 20 application frames, or 4 s and 5 frames. Fewer in 4 s closes it undecided.
+- **An undecided window says nothing.** It used to clear the status: every window of a game below 20 fps did.
+- `>= 1.5x` counts as generating, rounded and clamped to 4x.
+- `GenerationLatch`: three decided windows in a row must say "not generating" before the status clears, one generating
+  window starts that count over.
+- A gap of a second in the output stream restarts the window, so an alt-tab publishes no rate.
+- Once a window decided, `DetectPattern` cannot set the status any more. Before, it re-detected 40-100 ms after each
+  window that disagreed. `ClearNvidiaSMState` starts the evidence and the latch over.
 
-Without this the overlay reported the interposer's OUTPUT rate as the game's frame rate. Witcher 3, session
-`20260919_160555`: `RecordPresentForNvidiaSmoothMotion` recorded a constant `1` for every present, so
-`realFrames` was the whole population — 6962 presents in 40.8 s, in 3231 groups of exactly two, i.e. ~85 application
-fps shown as ~171, with the FG row then doubling it again.
+### What the overlay shows
 
-Vulkan still has no second stream and keeps the 2026-07-29 command-work and paired-gap heuristics.
-See `overlay-fg-status.md` for why they cannot work in DX12.
+- **The output rate is what reaches the screen**, from the display stream, as for every generator. With vsync the
+  interposer can submit more than the panel shows (Witcher 3: 288/s on 143 Hz). The interposer's rate stands in while
+  there is no display stream.
+- **The base rate is the measured application rate**, never above the output rate. Dividing output by the factor is
+  wrong exactly when the driver generates past the panel.
+- **The presentation series holds every output present**, as under every other generator: it is the fallback for the
+  main frame rate and the graph when the display stream is not available. DX11 used to skip presents classified as
+  generated, which halved both. `frameTimeSource=display-change` is unaffected either way.
+
+### Session `20261106_171629`: how status was lost
+
+Trine 5 DX11, 0.1.7434, 144 Hz: Smooth Motion ran 2x for all 22 s (present gaps 10000/3900 us at exactly 144/s), and
+every window read `application=144.0 output=144.0 generating=0`. NvPresent64's `D3D11CreateDevice` was CE-patched, so its
+device was a CE wrapper; `GetDevice` on the private chain returned it, and CE's overlay and NvPresent's own draws all ran
+through `CWrapD3D11DeviceContext`, counting as application submissions on every present. The status flipped every second
+between that window and `DetectPattern` for 4 s and then stayed off, once the pair gaps stopped reading 3:1
+(`smCadence=0`). The deferred AF bootstrap also retried on that uncooperative wrapper every Present, writing 17 hook
+warnings per Present: 87% of the log.
 
 ## Diagnostics / failure modes
 - `DetourCreateSwapChainGlobal: Present interposer <path> created its output swapchain <ptr> on queue <ptr>` — the
@@ -159,9 +186,13 @@ See `overlay-fg-status.md` for why they cannot work in DX12.
 - `DX11: Creating transient RTV for SwapChain <ptr>` / `DX11: Releasing <n> retained swapchain RTV(s) — this Present
   is on a present interposer's private chain` — retention actually dropped. A `Creating retained RTV` line for a chain
   the create log called the interposer's is the regression.
-- `DetourPresent: Present interposer output cadence window #N — application=... output=... generating=... multiplier=...`
-  This line now appears for DX11 too. `application` far above the game's real rate means the source classifier is
-  not separating the streams — check that the game's immediate context is CE-wrapped.
+- `FG: Present interposer output cadence window #N - application=... output=... generating=... multiplier=... decided=...
+  stream=... runs=... modalRun=...` First five, every 60th, every change, for every API. `modalRun=1` with `stream=worker-runs`
+  while the screen says otherwise means the driver stopped presenting a frame's outputs on one worker: read the present
+  threads before anything else.
+- `FG: NVIDIA Smooth Motion ACTIVE|inactive from the present interposer's output cadence` — the status itself.
+- `[Overlay] FG rates diverged from the runtime's figures` under `type=3` — what the interposer submits is not what the
+  screen shows, which is expected when it generates past the panel.
 - **Device removed with `DXGI_ERROR_ACCESS_DENIED` (`0x887A002B`) out of `GetDeviceRemovedReason()` right after CE's
   first overlay `ExecuteCommandLists`, with no TDR in the Windows System log** — CE is drawing into one queue's
   backbuffers while submitting on another. That is this page's founding bug (session `20260914_102700`): the game
@@ -198,8 +229,12 @@ are those. Nothing above the generator is touched, no timer is added and no driv
 - Forcing the present MODE, or any interval, ABOVE the interposer. That is what unpaces a metered generator.
 - Restoring the old Smooth Motion heuristics by putting CE back on the driver's private chain.
 - Retaining ANY resource built from an interposer's private chain across Presents, in any API.
-- Separating the two present streams by a gap threshold. The pairing is driver metering, not a contract;
-  the application's own submissions answer the same question structurally.
+- Separating the two present streams by a gap threshold. The pairing is driver metering, not a contract:
+  the same pairs ran 10000/3900 us and 6000/500 us in one session.
+- Telling frames apart by the game's submissions alone. It looks structural, and a game that is still drawing while
+  the workers present breaks it. It survives only as the last evidence.
+- Hooking the proxy's Present through NvPresent64's vtable. Its RTTI has no swapchain class, so finding the table is a
+  scan that the next driver can break, and the worker runs answer the same question without touching it.
 - Adopting the render target bound at Present entry as the overlay target on an interposer's private chain.
 - Deciding the interposer route inside a per-API branch. It is a property of who owns the chain, not of the API; the
   Witcher 3 crash below is what that mistake cost.
@@ -236,7 +271,15 @@ The same audit found the D3D10 sampler hook writing `ID3D10Device` slot 9, which
   `devRemoved=0x887A002B` on the first `Reinit SUBMIT`: if it returns, the queue was not the whole story and the
   next suspects are the backbuffer resource state NvPresent64 leaves before Present, and whether it tracks
   submissions on its own queue.
-- The visible `NVIDIA SM` label from the cadence path has not been confirmed on hardware either.
+- The visible `NVIDIA SM` label from the worker runs has not been confirmed on hardware.
+- **The worker runs are a driver implementation detail**, measured on r621 in DX11 only. Stale-risk **high** on a driver
+  update. A driver that presents each output on its own worker reads `modalRun=1`, not generating. Nothing else
+  would catch that in DX11: compare with the display rate if it ever happens.
+- **Vulkan topology is inferred, not observed.** `nv-vk64.json` declares `VK_LAYER_NV_present` as a driver implicit layer,
+  and the loader lists those before registry layers, so it should sit above CE's layer and CE should see the outputs. The
+  next Vulkan Smooth Motion run answers it: `stream=worker-runs` is that case; the one-thread line means CE sits above it
+  or NvPresent presents from one thread, and only the 2026-07-29 heuristics are left.
+- A DX12 run's `modalRun` beside `stream=application-presents` shows whether the worker runs hold there too.
 - DX11 Smooth Motion **does** have the same proxy topology — confirmed on hardware, Witcher 3, session
   `20260919_154534`: NvPresent64 created two private output chains on the real factory and CE's only Present view
   was those chains, never the application's. CE's overlay device there (`0000022DD76731C0`) is NvPresent64's own
@@ -245,7 +288,5 @@ The same audit found the D3D10 sampler hook writing `ID3D10Device` slot 9, which
 - Still open in DX11: the overlay device/context are cached from the FIRST chain CE draws on, while Smooth Motion
   creates TWO private chains on two different devices. A Present on the second chain would build its RTV with the
   first chain's device. Not observed (only chain #1 ever presented that session), not ruled out.
-- Vulkan Smooth Motion still relies on the older heuristics and the invisible-window guards
-  (`ShouldSkipWindowForNvPresent`); whether that path has the same proxy topology is unverified.
 - CE's factory wrapper is what sees the application-facing create. A game that reaches the real DXGI factory without
   it would leave CE with no app-facing view at all under an interposer; not observed, but not ruled out.

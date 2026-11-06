@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-11-06 - Smooth Motion status from NvPresent's worker runs
+
+- **Report:** the status is often lost or never appears, depending on the frame rate. Session `20261106_171629`, Trine 5 DX11, 0.1.7434: 2x for 22 s, status off after 4 s.
+- **Root causes:** NvPresent's D3D11 device was CE-wrapped through an import patch, so its draws and CE's overlay counted as the game's submissions and every present read as an application frame. An undecided window (below 20 fps) cleared the status. `DetectPattern` and the windows fought each other.
+- **Decisive evidence:** per-present thread IDs reconstructed from the flood in both Trine sessions: 51574 presents in 25711 runs, 25639 of length 2. NvPresent64's RTTI has no swapchain class to find the proxy's vtable by.
+- **Fix:** `present_interposer_evidence.h` (application presents, then worker runs, then submissions), status latch, longer windows for slow games, no wrappers in NvPresent's pipeline, no AF bootstrap on its chain, on-screen output rate, every output in the presentation series. Vulkan's layer feeds the same path. Details in `present-interposers.md`.
+- **Verified by replay:** those sessions' thread sequences through `InterposerEvidence` and `GenerationLatch`: 305 windows over nine game runs, all decided 2x, status never lost, 20 to 234 base fps.
+- **Not run on hardware.** Stale-risk: the runs are a driver implementation detail; the Vulkan layer order is inferred.
+
 ### 2026-11-06 - AMF B-frame configuration: emit both "bf" and "max_b_frames"
 
 - **Symptom:** Setting `[Video] b_frames` (> 0) worked with NVENC but produced 0 B-frames with AMD AMF (`h264_amf`, `av1_amf`), requiring explicit `custom_options="bf=N"` for B-frames to work on AMF.
