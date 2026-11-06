@@ -148,8 +148,11 @@ inline void FpsLimiter::Shutdown() {
     {
         std::lock_guard<std::mutex> admissionLock(admissionMutex_);
         groupAdmission_.Reset();
+        interposerGroups_.Reset();
         lastAdmissionKey_ = 0;
     }
+    interposerSchedule_.Clear();
+    interposerOutputWindow_ = {};
     boundaryCallbackCount_.store(0, std::memory_order_relaxed);
     pacedGroupCount_.store(0, std::memory_order_relaxed);
     generatedSlotPassCount_.store(0, std::memory_order_relaxed);

@@ -205,17 +205,19 @@ TEST(FpsLimiterRuntimeOutputSiteTest, DxgiLimiterSitesUseTheVerdictReadAtPresent
     EXPECT_NE(core.find("ResolveDxgiPresentSite("), std::string::npos);
     EXPECT_NE(core.find("ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()"),
               std::string::npos);
+    EXPECT_NE(core.find("IsPresentOnPresentInterposerPrivateOutputChain()"), std::string::npos);
 
     const std::string present1 = read("hook/present/dxgi_shared_present1.cpp");
     const size_t entry = present1.find("NotePresentEntry(PerfLogger::GetQpcUs());");
     const size_t peek = present1.find("const bool callbackProvenRuntimeOutput = "
                                       "ce::present_association::PeekPresentFrameVerdict().known;");
-    const size_t apply = present1.find("ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary)");
+    const size_t apply = present1.find("ResolveDxgiPresentSite(");
     ASSERT_NE(entry, std::string::npos);
     ASSERT_NE(peek, std::string::npos);
     ASSERT_NE(apply, std::string::npos);
     EXPECT_LT(entry, peek);
     EXPECT_LT(peek, apply);
+    EXPECT_NE(present1.find("IsPresentOnPresentInterposerPrivateOutputChain()", apply), std::string::npos);
 }
 
 }  // namespace

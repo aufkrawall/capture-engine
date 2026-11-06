@@ -62,6 +62,7 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
         smartWaitWindow_ = {};
     }
 
+    result.deadlineQpc = localTargetTime_;
     const int64_t waitTicks = localTargetTime_ - now.QuadPart;
     if (waitTicks > 0) {
         result.waited = true;
@@ -113,6 +114,7 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
     } else {
         localTargetTime_ += NextIntervalTicks();
     }
+    result.nextDeadlineQpc = localTargetTime_;
 
     localFrameCount_++;
     localStatsFrameCount_++;

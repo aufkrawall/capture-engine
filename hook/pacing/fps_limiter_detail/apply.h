@@ -12,6 +12,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // multiplier-sized output-group admission and the output-domain cadence
     // grid; see ce::fps_limiter_policy::PresentSite.
     const bool finalOutputBoundary = site == ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary;
+    const bool interposerOutput = site == ce::fps_limiter_policy::PresentSite::kInterposerOutputPresent;
     if (PassBecauseRuntimeInputOwnsPacing(site, allowPostPresentReflexCadence)) {
         return;
     }
@@ -141,7 +142,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             if (groupAdmission_.Reset()) {
                 groupAdmissionResetCount_.fetch_add(1, std::memory_order_relaxed);
             }
+            interposerGroups_.Reset();
         }
+        interposerSchedule_.Clear();
         if (localTargetTime_ != 0) {
             localTargetTime_ = 0;
             localIntervalFps_ = 0;
@@ -211,6 +214,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                                   (static_cast<uint32_t>(fgMultiplier & 0x7) << 4) |
                                   (static_cast<uint32_t>(std::clamp(cadenceTargetFps, 0, 0xFFFF)) << 7) |
                                   (static_cast<uint32_t>(std::clamp(cadenceScale, 0, 0x7)) << 23);
+    uint32_t interposerOutputIndex = 0;
     {
         std::lock_guard<std::mutex> admissionLock(admissionMutex_);
         if (admissionKey != lastAdmissionKey_) {
@@ -218,6 +222,15 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             if (groupAdmission_.Reset()) {
                 groupAdmissionResetCount_.fetch_add(1, std::memory_order_relaxed);
             }
+            interposerGroups_.Reset();
+        }
+        if (interposerOutput) {
+            boundaryCallbackCount_.fetch_add(1, std::memory_order_relaxed);
+            interposerOutputIndex = interposerGroups_.Next(
+                GetCurrentThreadId(),
+                ce::fps_limiter_policy::ResolveOutputGroupAdmissionMultiplier(fgActive, fgMultiplier));
+            (interposerOutputIndex > 0 ? generatedSlotPassCount_ : pacedGroupCount_)
+                .fetch_add(1, std::memory_order_relaxed);
         }
         // Real final-boundary call sites classify every callback into a
         // multiplier-sized output group BEFORE any locking: exactly one
@@ -240,6 +253,10 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             }
             pacedGroupCount_.fetch_add(1, std::memory_order_relaxed);
         }
+    }
+    if (interposerOutputIndex > 0) {
+        SpaceInterposerOutput(interposerOutputIndex);
+        return;
     }
 
     // Strict grid pacing: every paced present must be gated by the cadence
@@ -272,6 +289,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     } else if (!cadenceLock.try_lock()) {
         concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+    if (interposerOutput) {
+        interposerSchedule_.Clear();  // this group's slots exist only if the timer path below arms them
     }
 
     // Dedup guard: DXVK fires Present+PresentEx per render frame. The second call
@@ -728,9 +748,13 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // the limiter after startup; an unanswered event used to cost one full
     // timeout per frame before local fallback ran.
     const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
+    if (interposerOutput) {
+        NoteInterposerGroupCadence(cadence, fgMultiplier);
+    }
     releaseForecastScope.SettleAndPublish(
         cadence.releaseQpc, localTargetTime_, CadenceIntervalTicks(cadenceTargetFps, cadenceScale),
-        site == ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent && !fgActive && cadenceScale == 1);
+        (site == ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent || interposerOutput) && !fgActive &&
+            cadenceScale == 1);
 
     // A missed deadline on a frame the release owned is the only evidence the
     // budget was too small; feed it back before sizing the next one.

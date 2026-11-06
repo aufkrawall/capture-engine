@@ -12,6 +12,7 @@
 #include <mutex>
 #include "hook/fg/fg_detection.h"
 #include "fps_limiter_policy.h"
+#include "interposer_output_pacing.h"
 #include "hook/runtime/hook_common.h"
 #include "hook/runtime/hook_context.h"
 #include "hook/runtime/ipc_client.h"
@@ -112,6 +113,8 @@ private:
         int64_t statsPreWaitSubmitUsMax = 0;
         SmartWaitWindow statsSmartWait;
         int64_t releaseQpc = 0;  // clock right after the wait (or the late return): the Present's release
+        int64_t deadlineQpc = 0;      // the slot this call waited for
+        int64_t nextDeadlineQpc = 0;  // the slot after it
         bool emitStats = false;
         bool waited = false;
         bool resetCadence = false;
@@ -230,6 +233,7 @@ public:
         if (groupAdmission_.Reset()) {
             groupAdmissionResetCount_.fetch_add(1, std::memory_order_relaxed);
         }
+        interposerGroups_.Reset();
     }
     // Returns true when the limiter is actively pacing frames (capture_sync or general).
     // Used by Present hooks to disable vsync (SyncInterval=0) so that the limiter
@@ -665,6 +669,23 @@ private:
                                         bool frameGenerationActive, int multiplier, int effectiveTargetFps);
     bool WaitForGeneratedOutputs(uint32_t needed, int64_t boundTick);
     void NoteGatedRelease(bool byOutputs, int64_t waitUs);
+    // A present interposer's outputs (fps_limiter_detail/interposer_output.h). The tracker is admissionMutex_-guarded,
+    // the rest cadenceMutex_-guarded.
+    ce::interposer_output_pacing::OutputGroupTracker interposerGroups_;
+    ce::interposer_output_pacing::GroupSchedule interposerSchedule_;
+    bool interposerSpacingLogged_ = false;
+    static constexpr uint32_t kInterposerOutputWindowOutputs = 600;
+    struct InterposerOutputWindow {
+        uint32_t outputs = 0;
+        uint32_t spaced = 0;
+        uint32_t late = 0;
+        uint32_t unscheduled = 0;
+        int64_t waitUsSum = 0;
+        int64_t lateUsSum = 0;
+        int64_t lateUsMax = 0;
+    } interposerOutputWindow_;
+    void NoteInterposerGroupCadence(const LocalCadenceResult& cadence, int multiplier);
+    void SpaceInterposerOutput(uint32_t outputIndex);
     uint32_t applyActiveDedupCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;
     int64_t applyInterFrameSum_ = 0;
@@ -759,6 +780,7 @@ inline thread_local bool t_FpsLimiterPassedApplyPending = false;
 #include "hook/pacing/fps_limiter_detail/front_load.h"
 #include "hook/pacing/fps_limiter_detail/frame_pacing.h"
 #include "hook/pacing/fps_limiter_detail/generated_output_release.h"
+#include "hook/pacing/fps_limiter_detail/interposer_output.h"
 #include "hook/pacing/fps_limiter_detail/runtime_input.h"
 #include "hook/pacing/fps_limiter_detail/reflex_warmup.h"
 #include "hook/pacing/fps_limiter_detail/apply.h"

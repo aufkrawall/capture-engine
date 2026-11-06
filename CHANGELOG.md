@@ -29,6 +29,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 - **NVIDIA Smooth Motion frame rates:** the output rate now shows what reaches the screen, so driver vsync no longer reads as double the panel's rate, and the base rate is the game's measured rate. On DirectX 11 the frame rate and frame-time graph are no longer halved while display timing is unavailable.
 
+- **FPS limiter with NVIDIA Smooth Motion:** under a cap the frame-time graph jumped instead of running flat, and the frame rate could overshoot the cap, because the limiter held only one of the two frames the driver shows per game frame. Seen in Trine 5 (DX11). Each shown frame now gets its own even slot; where CaptureEngine can reach the game's own Present (normally DX12), it paces the game instead and the driver spaces the frames. A game below the cap keeps the driver's own pacing untouched.
+
 - **CaptureEngine in NVIDIA Smooth Motion's own pipeline (DX11):** the driver's interpolation device no longer runs through CaptureEngine's wrappers or forced anisotropic filtering, which also stopped a hook retry on every frame that made up 87% of the debug log.
 
 - **B-frames with AMD AMF encoders:** setting `[Video] b_frames` (> 0) now properly enables B-frames on H.264 and AV1 AMF hardware encoders (`h264_amf`, `av1_amf`) without requiring explicit `custom_options="bf=N"`. CaptureEngine now passes both `bf` and `max_b_frames` options to the encoder; previously only `max_b_frames` was generated, which FFmpeg's AMF wrapper assigned to `max_consecutive_b_frames` while leaving `B_PIC_PATTERN` and DTS delay unset.

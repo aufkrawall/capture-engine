@@ -296,21 +296,32 @@ inline int ResolveNativeDriverPacingTargetFps(int configuredTargetFps, int baseT
 // output groups on the exact rational grid and leaves output spacing to the
 // runtime's own pacer, which is how FSR FG expects to be limited; while it owns
 // pacing, the runtime's outputs pass (runtime_input_site_policy.h).
+//
+// kInterposerOutputPresent is a present on a present interposer's private output
+// chain (NVIDIA Smooth Motion). It sees every output and owns whole groups like a
+// final-output boundary, and it also spaces the group's later outputs, because
+// here nothing else will (interposer_output_pacing.h).
 enum class PresentSite : uint8_t {
     kDuplicateProne = 0,
     kUniqueApplicationPresent = 1,
     kFinalOutputBoundary = 2,
     kRuntimeOutputPresent = 3,
     kRuntimeInputPresent = 4,
+    kInterposerOutputPresent = 5,
 };
 
 // The DXGI Present detours' site: a Present the runtime's callback proved to be
-// one of its outputs, one of Streamline's final outputs on a swapchain where
-// only they are paced (ce::streamline_output_site::IsFinalOutputBoundary),
-// otherwise the application's own Present.
-inline PresentSite ResolveDxgiPresentSite(bool callbackProvenRuntimeOutput, bool streamlineFinalOutputBoundary) {
+// one of its outputs, a present on an interposer's private chain, one of
+// Streamline's final outputs on a swapchain where only they are paced
+// (ce::streamline_output_site::IsFinalOutputBoundary), otherwise the
+// application's own Present.
+inline PresentSite ResolveDxgiPresentSite(bool callbackProvenRuntimeOutput, bool streamlineFinalOutputBoundary,
+                                          bool presentInterposerOutput = false) {
     if (callbackProvenRuntimeOutput) {
         return PresentSite::kRuntimeOutputPresent;
+    }
+    if (presentInterposerOutput) {
+        return PresentSite::kInterposerOutputPresent;
     }
     return streamlineFinalOutputBoundary ? PresentSite::kFinalOutputBoundary
                                          : PresentSite::kUniqueApplicationPresent;
@@ -334,7 +345,7 @@ inline PresentSite ResolveBypassedFinalOutputSite(bool callbackProvenRuntimeOutp
 inline uint32_t ResolveEvaluationsPerGameFrame(PresentSite site, bool frameGenerationActive,
                                                int frameGenerationMultiplier) {
     if (!frameGenerationActive || site == PresentSite::kFinalOutputBoundary ||
-        site == PresentSite::kRuntimeInputPresent) {
+        site == PresentSite::kRuntimeInputPresent || site == PresentSite::kInterposerOutputPresent) {
         return 1;
     }
     return static_cast<uint32_t>(std::max(frameGenerationMultiplier, 1));
@@ -372,8 +383,9 @@ inline LocalCadencePlan ResolveLocalCadencePlan(int outputTargetFps, int baseTar
                                                 int frameGenerationMultiplier, bool scaleForFrameGeneration,
                                                 PresentSite site) {
     LocalCadencePlan plan;
-    const bool groupBoundary =
-        site == PresentSite::kFinalOutputBoundary || site == PresentSite::kRuntimeInputPresent;
+    const bool groupBoundary = site == PresentSite::kFinalOutputBoundary ||
+                               site == PresentSite::kRuntimeInputPresent ||
+                               site == PresentSite::kInterposerOutputPresent;
     const bool runtimeOutput = site == PresentSite::kRuntimeOutputPresent;
     plan.renderCadenceScale = ResolveCadenceScaleMultiplier(
         frameGenerationActive, frameGenerationMultiplier,
@@ -415,6 +427,7 @@ inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenera
     switch (site) {
         case PresentSite::kFinalOutputBoundary:
         case PresentSite::kRuntimeInputPresent:
+        case PresentSite::kInterposerOutputPresent:
             return true;
         case PresentSite::kUniqueApplicationPresent:
             return !frameGenerationActive;

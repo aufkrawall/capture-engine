@@ -746,14 +746,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     // FPS Limiter before present (explicit CE-owned Reflex cadence finishes after Present returns), on the same
-    // site as DetourPresent: a proven runtime output, a Streamline final output or the application's Present.
+    // site as DetourPresent: a proven runtime output, an interposer's output, a Streamline final output or the
+    // application's Present.
     EnterStage(CostStage::kLimiter);
     const int64_t limiterStartUs = perfRow.NowUs();
     const bool slOutputBoundary = IsStreamlineFinalOutputForLimiter(
         pSwapChain, api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         callerFromFFXFrameGenerationModule, callbackProvenRuntimeOutput);
     ApplyFpsLimiterStage(pSwapChain, true,
-                         ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary));
+                         ce::fps_limiter_policy::ResolveDxgiPresentSite(
+                             callbackProvenRuntimeOutput, slOutputBoundary,
+                             IsPresentOnPresentInterposerPrivateOutputChain()));
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
     preLimiterCapture.Close();
 
