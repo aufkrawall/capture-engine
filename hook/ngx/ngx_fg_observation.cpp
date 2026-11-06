@@ -42,7 +42,7 @@ void PublishObservation(int multiplier, ObservationKind kind, const char* source
                          static_cast<unsigned long long>(verdict.suppressed));
     }
 
-    g_FGCompat.SetDLSSFGMultiplier(multiplier);
+    g_FGCompat.NoteDLSSFGRuntimeMultiplier(multiplier);
     g_FGCompat.SetDLSSFGActive(true);
     if (g_IPC && g_IPC->GetSharedMem()) {
         auto& state = g_IPC->GetSharedMem()->dlssState;

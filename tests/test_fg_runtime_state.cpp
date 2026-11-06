@@ -240,6 +240,43 @@ TEST(FGRuntimeStateTest, RuntimeModeHelpersMatchClassification) {
     EXPECT_STREQ("NVIDIA_SM", ce::fg_runtime::GetRuntimeModeName(RuntimeMode::kNvidiaSmoothMotion));
 }
 
+// W3 (session 20261106_195839): the game's poll asked for 2x on its thread while the runtime's evaluation ran 4x on the
+// presenter thread, and each overwrote the other.
+TEST(FGRuntimeStateTest, TheRuntimesFactorOutranksARepeatedRequestUntilTheRequestChanges) {
+    FGCompatibility fg;
+    fg.SetDLSSFGMultiplier(2);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 2) << "the request stands before any evaluation";
+
+    fg.NoteDLSSFGRuntimeMultiplier(4);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 4);
+    for (int poll = 0; poll < 3; ++poll) {
+        fg.SetDLSSFGMultiplier(2);
+        EXPECT_EQ(fg.GetDLSSFGMultiplier(), 4) << "poll " << poll;
+    }
+    fg.NoteDLSSFGRuntimeMultiplier(3);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 3) << "a real factor change follows the runtime";
+
+    fg.SetDLSSFGMultiplier(4);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 4) << "a changed request applies until the next evaluation";
+    fg.NoteDLSSFGRuntimeMultiplier(2);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 2);
+
+    fg.SetDLSSFGMultiplier(0);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 0);
+    fg.SetDLSSFGMultiplier(2);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 2) << "off forgets the runtime's factor";
+}
+
+TEST(FGRuntimeStateTest, DeactivatingDLSSFGForgetsTheRuntimesFactor) {
+    FGCompatibility fg;
+    fg.SetDLSSFGMultiplier(2);
+    fg.NoteDLSSFGRuntimeMultiplier(4);
+    fg.SetDLSSFGActive(false);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 0);
+    fg.SetDLSSFGMultiplier(2);
+    EXPECT_EQ(fg.GetDLSSFGMultiplier(), 2);
+}
+
 // Dynamic multi-frame generation changes the DLSS-G cadence per frame, so the
 // multiplier transition log stopped being a rare event: session
 // `20260919_223111` recorded 2743 of those lines in five minutes, 26% of the

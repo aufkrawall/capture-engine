@@ -207,7 +207,14 @@ public:
     // NOTE: These still work in dormant mode - they just report API state
     // =========================================================================
     void SetDLSSFGActive(bool active);
+    // The factor the game asks for through Streamline's options. It stands until the runtime's own evaluation is seen.
     void SetDLSSFGMultiplier(int multiplier);
+    // The factor the runtime's evaluation consumed: what it generates, whatever the game keeps asking for (dynamic MFG
+    // and driver overrides answer differently). It stands until a changed request or the next evaluation.
+    void NoteDLSSFGRuntimeMultiplier(int multiplier);
+    int GetDLSSFGMultiplier() const {
+        return dlssFGMultiplier.load(std::memory_order_acquire);
+    }
     void SetFSRFGActive(bool active);
     void SetFSRFGMultiplier(int multiplier);
     void SetHeuristicFSRFGActive(bool active);
@@ -368,10 +375,14 @@ private:
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<bool> directFFXApiConfirmed{false};
     std::atomic<bool> fsrFGAuthoritativeApiOff{false};
-    std::atomic<int> dlssFGMultiplier{0};
-    // Dynamic multi-frame generation varies the cadence per frame, so the
+    void PublishDLSSFGMultiplier(int normalizedMultiplier);
+    void ClearDLSSFGMultiplier();
+    std::atomic<int> dlssFGMultiplier{0};           // what the status reads: the runtime's factor, else the request
+    std::atomic<int> dlssFGRequestedMultiplier{0};  // SetDLSSFGMultiplier
+    std::atomic<int> dlssFGRuntimeMultiplier{0};    // NoteDLSSFGRuntimeMultiplier
+    // Dynamic multi-frame generation can vary the factor per frame, so the
     // transition log is metered rather than per-change; these carry the
-    // heartbeat's counter and the range it reports. See SetDLSSFGMultiplier.
+    // heartbeat's counter and the range it reports. See PublishDLSSFGMultiplier.
     std::atomic<uint32_t> dlssFGMultiplierChanges{0};
     std::atomic<int> dlssFGMultiplierObservedLow{0};
     std::atomic<int> dlssFGMultiplierObservedHigh{0};

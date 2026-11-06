@@ -17,12 +17,13 @@ namespace ce::capture_policy {
 // the interval after each complete group.
 //
 // The clock measures the output interval and never derives it from the frame
-// generation factor. Dynamic MFG changes the factor up to dozens of times a
-// second while the output rate holds: rescaling by old/new factor on each change
-// (session 20261106_195839, W3 at 138 fps) moved the interval between 7.2 and
-// 14.4 ms and recorded about 20 repeats/s at >=30 flips/s, against about 2 at
-// <=10. A fixed factor changed in a menu does move the output rate; the next
-// source group or the measured presentation rate follows it.
+// generation factor. A dynamic runtime changes its factor while the output rate
+// holds, and the factor as read can be wrong outright: rescaling on each change
+// (session 20261106_195839, W3 at 138 fps, false 2x/4x flips up to 67 times a
+// second) moved the interval between 7.2 and 14.4 ms and recorded about 20
+// repeats/s at >=30 flips/s, against about 2 at <=10. A fixed factor changed in a
+// menu does move the output rate; the next source group or the measured
+// presentation rate follows it.
 struct FinalOutputTimelineState {
     std::atomic<int64_t> lastTimestampQpc{0};
     std::atomic<int64_t> estimatedIntervalQpc{0};

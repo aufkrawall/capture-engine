@@ -213,4 +213,52 @@ TEST(FlowNGX, CreationAndEvaluationPreserveObservedFactorsAndLegacyLatch) {
     ExpectNoDebugLayerErrors();
 }
 
+// W3 with dlss_fg_mode=dynamic (session 20261106_195839): the game asked for one generated frame at every poll on its
+// own thread while the runtime evaluated three on the presenter thread, and the status flipped between 2x and 4x 3680
+// times in three minutes with every game frame still 4 outputs.
+TEST(FlowNGX, TheRuntimesEvaluationOutranksTheGamesPolledRequest) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    EXPECT_EQ(game.PublishedFG().multiplier, 2) << "the request stands before any evaluation";
+
+    NGXRuntime runtime(game);
+    ASSERT_TRUE(runtime.Ready());
+    void* fg = runtime.Create(11);
+    ASSERT_NE(fg, nullptr);
+    runtime.SetGeneratedFrames(3);
+    for (int frame = 0; frame < 60; ++frame) {
+        ASSERT_TRUE(runtime.Evaluate(fg));
+        ASSERT_TRUE(game.RenderFrame()) << game.Error();  // ends with the game's slDLSSGGetState poll
+        ASSERT_EQ(game.PublishedFG().multiplier, 4) << "frame " << frame << "; logs: " << game.LogDirectory();
+        ASSERT_EQ(game.PublishedNGX().fgMultiplier, 4) << "frame " << frame;
+    }
+
+    // A request the game changes may be what the runtime does next, until the runtime says otherwise.
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true, 2)) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    EXPECT_EQ(game.PublishedFG().multiplier, 3) << "logs: " << game.LogDirectory();
+    ASSERT_TRUE(runtime.Evaluate(fg));
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    EXPECT_EQ(game.PublishedFG().multiplier, 4) << "logs: " << game.LogDirectory();
+
+    // Off forgets the runtime's factor: the next activation starts from what the game asks for.
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+    EXPECT_LT(game.PublishedFG().multiplier, 2) << "logs: " << game.LogDirectory();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    EXPECT_EQ(game.PublishedFG().multiplier, 2) << "logs: " << game.LogDirectory();
+
+    ASSERT_TRUE(runtime.Release(fg));
+    ASSERT_TRUE(runtime.Close());
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 }  // namespace

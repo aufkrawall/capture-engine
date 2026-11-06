@@ -231,7 +231,7 @@ void ApplyCombinedDLSSFGState(bool active,  int multiplier) {
 
         if (g_IPC && g_IPC->GetSharedMem()) {
             g_IPC->GetSharedMem()->dlssState.PublishFGState(
-                GetCurrentProcessId(), true, effectiveMultiplier);
+                GetCurrentProcessId(), true, g_FGCompat.GetDLSSFGMultiplier());
         }
     } else {
         g_FGCompat.SetDLSSFGActive(false);

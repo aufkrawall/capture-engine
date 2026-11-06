@@ -1,7 +1,7 @@
-// Recording a DLSS frame generation game whose factor changes per game frame, as dynamic MFG does: W3 at 138 fps
-// output (session 20261106_195839) alternated 2x and 4x up to 67 times a second while its output rate held, and the
-// recording's repeated frames followed those flips (r=0.91 over 94 s; about 2 repeats/s at <=10 flips/s, about 20 at
-// >=30). CE's final-output clock must stamp what the runtime does: the same output spacing whatever the factor.
+// Recording a DLSS frame generation game whose factor as CE reads it changes per game frame while the output rate
+// holds, as dynamic MFG can do. W3 at 138 fps output (session 20261106_195839) read false 2x/4x flips up to 67 times a
+// second, and the recording's repeated frames followed them (r=0.91 over 94 s; about 2 repeats/s at <=10 flips/s, about
+// 20 at >=30). CE's final-output clock must stamp what the runtime does: the same output spacing whatever the factor.
 
 #include "tests/flow/flow_capture_reader.h"
 #include "tests/flow/flow_test_support.h"
