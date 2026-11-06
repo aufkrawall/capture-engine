@@ -1,6 +1,6 @@
 # AMD AMF, Intel Quick Sync, and Media Foundation Encoding
 
-Last cross-checked: 2026-11-01 (AMF AV1 HDR mastering units; AMF speed preset + auto depth, MF scenario default 2026-10-26)
+Last cross-checked: 2026-11-06 (AMF B-frame bf/max_b_frames option mapping; AMF AV1 HDR mastering units 2026-11-01)
 
 Primary sources:
 - `common/config/config.{h,cpp}`
@@ -115,7 +115,12 @@ media core on Windows are in `gpu-api-plan.md` (2026-10-24).
 - Spatial AQ maps to VBAQ for H.264/HEVC and CAQ for AV1. Preanalysis spatial
   and temporal AQ, CAQ strength, and high-motion quality boost are independent.
 - H.264 supports explicit B-reference selection. H.264 and AV1 B-frame counts
-  are capped at three; the current HEVC AMF wrapper exposes no B-frame control.
+  are capped at three and emit both `bf` and `max_b_frames` options (FFmpeg's
+  `amfenc` wrapper configures `B_PIC_PATTERN`, `MAX_CONSECUTIVE_BPICTURES`, and
+  DTS shift delay via `bf`, while `max_b_frames` sets `max_consecutive_b_frames`);
+  the current HEVC AMF wrapper exposes no B-frame control. Quick Sync (H.264,
+  HEVC, AV1) consumes `max_b_frames` directly on `AVCodecContext::max_b_frames`
+  (mapping to `GopRefDist`) and does not require private dictionary options.
   Optional HRD enforcement and filler data are available for strict targets.
 - The generated `key=value` matrix is applied to real bundled H.264, HEVC, and
   AV1 AMF contexts in unit tests, catching stale or codec-specific FFmpeg names.

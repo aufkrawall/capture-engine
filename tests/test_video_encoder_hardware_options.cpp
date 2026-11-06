@@ -99,6 +99,7 @@ TEST(VideoEncoderOptionsTest, AmfUsesNativeVbrQualityAndPreanalysisControls) {
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_taq_mode").value_or(""), "1");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_caq_strength").value_or(""), "2");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").value_or(""), "25");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "bf").value_or(""), "3");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "max_b_frames").value_or(""), "3");
     EXPECT_EQ(plan.maxBFrames, 3);
     EXPECT_EQ(plan.bitRate.value_or(0), 75000000);
@@ -145,7 +146,45 @@ TEST(VideoEncoderOptionsTest, HevcAmfDisablesUnsupportedBFramesAndAcceptsHighQua
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preset").value_or(""), "high_quality");
     EXPECT_TRUE(HasMessageContaining(plan.warnings, "forcing b_frames=0"));
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "bf").has_value());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_b_frames").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, AmfAndQuickSyncBFrameOptionMapping) {
+    // AMF H.264 and AV1 map b_frames to both "bf" and "max_b_frames" because FFmpeg's
+    // amfenc_h264/av1 wrapper reads "bf" into max_b_frames (which sets B_PIC_PATTERN,
+    // MAX_CONSECUTIVE_BPICTURES and DTS shift delay) while "max_b_frames" sets
+    // max_consecutive_b_frames.
+    for (const char* amfEncoder : {"h264_amf", "av1_amf"}) {
+        VideoConfig config = MakeBaseVideoConfig(amfEncoder);
+        config.bFrames = 2;
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
+        EXPECT_TRUE(plan.errors.empty()) << amfEncoder;
+        EXPECT_EQ(plan.maxBFrames, 2) << amfEncoder;
+        EXPECT_EQ(FindOptionValue(plan.generatedOptions, "bf").value_or(""), "2") << amfEncoder;
+        EXPECT_EQ(FindOptionValue(plan.generatedOptions, "max_b_frames").value_or(""), "2") << amfEncoder;
+    }
+
+    // Quick Sync (H.264, HEVC, AV1) consumes max_b_frames directly via
+    // AVCodecContext::max_b_frames in libavcodec/qsvenc.c (setting GopRefDist).
+    // It does not use private dictionary options for B-frames.
+    for (const char* qsvEncoder : {"h264_qsv", "hevc_qsv", "av1_qsv"}) {
+        VideoConfig config = MakeBaseVideoConfig(qsvEncoder);
+        config.bFrames = 2;
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
+        EXPECT_TRUE(plan.errors.empty()) << qsvEncoder;
+        EXPECT_EQ(plan.maxBFrames, 2) << qsvEncoder;
+        EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "bf").has_value()) << qsvEncoder;
+        EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_b_frames").has_value()) << qsvEncoder;
+    }
+
+    // Custom option override is preserved if user explicitly sets bf
+    VideoConfig overrideConfig = MakeBaseVideoConfig("h264_amf");
+    overrideConfig.bFrames = 2;
+    overrideConfig.customOptions = "bf=1";
+    const EncoderOptionPlan overridePlan = BuildEncoderOptionPlan(overrideConfig, false, "420", false);
+    EXPECT_TRUE(overridePlan.errors.empty());
+    EXPECT_EQ(FindOptionValue(overridePlan.customOptions, "bf").value_or(""), "1");
 }
 
 TEST(VideoEncoderOptionsTest, QuickSyncAutoAsyncDepthCoversThePipelineLatencyBudget) {

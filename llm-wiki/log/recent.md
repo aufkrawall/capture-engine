@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-11-06 - AMF B-frame configuration: emit both "bf" and "max_b_frames"
+
+- **Symptom:** Setting `[Video] b_frames` (> 0) worked with NVENC but produced 0 B-frames with AMD AMF (`h264_amf`, `av1_amf`), requiring explicit `custom_options="bf=N"` for B-frames to work on AMF.
+- **Root cause:** In FFmpeg's `libavcodec/amfenc_h264.c` and `amfenc_av1.c`, the private AVOption `"max_b_frames"` sets `AMFEncoderContext::max_consecutive_b_frames`, whereas `"bf"` sets `AMFEncoderContext::max_b_frames`. In non-adaptive mode, AMF initialization inspects only `ctx->max_b_frames != -1` to program `AMF_VIDEO_ENCODER_B_PIC_PATTERN`, `AMF_VIDEO_ENCODER_MAX_CONSECUTIVE_BPICTURES`, B-frame reference, and delta QP properties. Furthermore, `amfenc.c` uses `ctx->max_b_frames` to calculate `dts_delay` and `output_delay`. Because CE only passed `"max_b_frames"` into dictionary options and `amfenc` does not read `AVCodecContext::max_b_frames`, `ctx->max_b_frames` remained at `-1`, causing AMF to disable B-frames entirely.
+- **Quick Sync check:** Intel Quick Sync Video (`h264_qsv`, `hevc_qsv`, `av1_qsv`) is unaffected: it has no private `bf` or `max_b_frames` options shadowing the context and consumes `AVCodecContext::max_b_frames` directly in `libavcodec/qsvenc.c` to compute `GopRefDist = FFMAX(-1, avctx->max_b_frames) + 1`.
+- **Fix:** In `mediaengine/video/video_encoder_backend_options.cpp`, generate both `"bf"` and `"max_b_frames"` for H.264 and AV1 AMF encoders. Added unit test `VideoEncoderOptionsTest.AmfAndQuickSyncBFrameOptionMapping`.
+
 ### 2026-11-06 - DXGI retry review and live Mirror's Edge/DXUP/Steam validation
 
 - Review of `41938bd4` and `2531374e`: retain strict system-DXGI discovery; admit factory bootstrap before its mutex only outside loader callouts and outside active/resident CE Vulkan ownership. Two independent guard mutations failed the new behavioral tests; restoring the guards passed. Full native tests and all 197 isolated FG scenarios passed. A transient atomic-rename access error in the unrelated toolchain-state self-test did not reproduce in its focused retry or the final unfiltered native/Python test pass; product resume produced setup 0.1.7433.

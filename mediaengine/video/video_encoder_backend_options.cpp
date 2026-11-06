@@ -340,6 +340,11 @@ void AddAmfOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOp
         plan->maxBFrames = 3;
     }
     if (kind.family == CodecFamily::kH264 || kind.family == CodecFamily::kAV1) {
+        // In FFmpeg's amfenc_h264/amfenc_av1, "bf" sets AMFEncoderContext::max_b_frames
+        // (which configures AMF B_PIC_PATTERN, MAX_CONSECUTIVE_BPICTURES, and DTS delay in
+        // amfenc.c), while "max_b_frames" sets AMFEncoderContext::max_consecutive_b_frames.
+        // Without "bf", AMF ignores b_frames and produces 0 B-frames. Emit both for full compatibility.
+        AddOption(plan, "bf", std::to_string(plan->maxBFrames));
         AddOption(plan, "max_b_frames", std::to_string(plan->maxBFrames));
     }
 

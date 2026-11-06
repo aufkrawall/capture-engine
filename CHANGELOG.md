@@ -25,6 +25,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **B-frames with AMD AMF encoders:** setting `[Video] b_frames` (> 0) now properly enables B-frames on H.264 and AV1 AMF hardware encoders (`h264_amf`, `av1_amf`) without requiring explicit `custom_options="bf=N"`. CaptureEngine now passes both `bf` and `max_b_frames` options to the encoder; previously only `max_b_frames` was generated, which FFmpeg's AMF wrapper assigned to `max_consecutive_b_frames` while leaving `B_PIC_PATTERN` and DTS delay unset.
+
 - **Vulkan startup with late-loaded DXGI:** factory-hook retries now respect an already loaded CaptureEngine Vulkan layer before renderer detection finishes, preventing D3D hooks from modifying the Vulkan driver's private presentation objects.
 
 - **Game startup with nested graphics DLL loads:** late DXGI hook discovery now waits until a DLL's initialization callback has returned before creating factories or taking the installer lock, avoiding a loader-lock deadlock while retaining immediate discovery after ordinary loads.
