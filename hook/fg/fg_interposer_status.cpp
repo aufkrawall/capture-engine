@@ -31,12 +31,21 @@ pi::OutputPresentClass FGCompatibility::NoteInterposerOutputPresent(uint32_t thr
                              ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
     }
-    if (!present.measured && IsApplicationSubmissionCountingEnabled()) {
+    if (present.measured) {
+        applicationSubmissions.store(0, std::memory_order_relaxed);
+    } else if (IsApplicationSubmissionCountingEnabled()) {
         const uint64_t submissions = applicationSubmissions.exchange(0, std::memory_order_acq_rel);
-        present.measured = true;
-        present.applicationFrame = ce::fg_runtime::IsApplicationSourcedInterposerPresent(submissions);
-        if (present.applicationFrame) {
-            NoteInterposerApplicationPresent(nowUs);
+        if (submissions > 0) {
+            present.measured = true;
+            present.applicationFrame = ce::fg_runtime::IsApplicationSourcedInterposerPresent(submissions);
+            bool hasDirectAppPresents = false;
+            {
+                std::lock_guard<std::mutex> lock(interposerEvidenceLock);
+                hasDirectAppPresents = interposerEvidence.HasApplicationStream();
+            }
+            if (present.applicationFrame && !hasDirectAppPresents) {
+                NoteInterposerApplicationPresent(nowUs);
+            }
         }
     }
     return present;
@@ -57,6 +66,11 @@ void FGCompatibility::NoteInterposerApplicationPresent(int64_t nowUs) {
 void FGCompatibility::ResetInterposerEvidence() {
     std::lock_guard<std::mutex> lock(interposerEvidenceLock);
     interposerEvidence.Reset();
+    interposerLatch.Reset();
+    interposerCadenceDecided.store(false, std::memory_order_release);
+    nvidiaSMMeasuredOutputFps.store(0.0f, std::memory_order_release);
+    nvidiaSMMeasuredApplicationFps.store(0.0f, std::memory_order_release);
+    nvidiaSMMeasuredMultiplier.store(0, std::memory_order_release);
 }
 
 void FGCompatibility::RecordPresentForNvidiaSmoothMotion(pi::OutputPresentClass source) {
@@ -93,12 +107,15 @@ void FGCompatibility::NotePresentInterposerCadence(const pi::WindowReport& repor
         std::lock_guard<std::mutex> lock(interposerEvidenceLock);
         active = interposerLatch.Observe(verdict);
     }
-    nvidiaSMMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
-    nvidiaSMMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
-    // A window the latch does not believe yet keeps the last factor.
-    if (verdict.generating) {
-        nvidiaSMMeasuredMultiplier.store(verdict.multiplier, std::memory_order_release);
-    } else if (!active) {
+    if (active) {
+        if (verdict.generating) {
+            nvidiaSMMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
+            nvidiaSMMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
+            nvidiaSMMeasuredMultiplier.store(verdict.multiplier, std::memory_order_release);
+        }
+    } else {
+        nvidiaSMMeasuredOutputFps.store(0.0f, std::memory_order_release);
+        nvidiaSMMeasuredApplicationFps.store(0.0f, std::memory_order_release);
         nvidiaSMMeasuredMultiplier.store(0, std::memory_order_release);
     }
 

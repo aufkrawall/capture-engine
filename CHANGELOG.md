@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Smooth Motion evidence selection and rate resets:** the interposer status now uses submission evidence only when an attached application submission source is active, avoids double-counting application presents when direct presents arrive, resets measured rates and multiplier on deactivation, and expires obsolete worker-run generation evidence when moving to single-thread presentation.
+
 - **In-game screenshots with FSR frame generation across graphics device views:** no-callback FSR screenshots with overlay inclusion now recognize different interface views of the same graphics device during overlay rendering and renderer caching, preventing failed captures and repeated GPU retry work.
 
 - **Native AAC state isolation across legality retries:** the encoder now snapshots its persistent rate-control and psychoacoustic history before the per-frame encode loop and rewinds that history when retrying an oversized frame at reduced lambda, preventing temporary retry passes from corrupting long-term slew and hysteresis state.

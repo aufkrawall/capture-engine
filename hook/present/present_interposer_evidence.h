@@ -86,6 +86,14 @@ public:
         }
         const bool dedicated = runLength_ >= kDedicatedPresenterRun;
         if (dedicated) {
+            if (factor_ > 1 && windowStartUs_ != kNoTime && nowUs - windowStartUs_ >= kWindowUs) {
+                result.report.verdict.decided = true;
+                result.report.verdict.generating = false;
+                result.report.verdict.multiplier = 1;
+                result.report.stream = EvidenceStream::kWorkerRuns;
+                result.windowClosed = true;
+                factor_ = 1;
+            }
             ClearWindow();
             windowStartUs_ = nowUs;
         }
@@ -247,6 +255,10 @@ public:
         runs_.Reset();
         lastRuns_ = WindowReport{};
         lastApplicationUs_ = kNoTime;
+    }
+
+    bool HasApplicationStream() const {
+        return lastApplicationUs_ != kNoTime;
     }
 
 private:

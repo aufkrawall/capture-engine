@@ -288,6 +288,9 @@ public:
             interposerLatch.Reset();
             resetCadenceAuthority = interposerCadenceDecided.exchange(false, std::memory_order_acq_rel);
         }
+        nvidiaSMMeasuredOutputFps.store(0.0f, std::memory_order_release);
+        nvidiaSMMeasuredApplicationFps.store(0.0f, std::memory_order_release);
+        nvidiaSMMeasuredMultiplier.store(0, std::memory_order_release);
         const bool wasDetected = nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel);
         if (wasDetected || resetCadenceAuthority) {
             HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup, cadenceAuthorityReset=%d)",
