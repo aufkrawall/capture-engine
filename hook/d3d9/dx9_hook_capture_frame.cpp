@@ -39,9 +39,9 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
 
             // StretchRect backbuffer → current write buffer (async GPU, ~0us)
             if (gdiCopySurfaces[gdiWriteIdx]) {
-                HRESULT hr =
+                const HRESULT copyResult =
                     device->StretchRect(backBuffer, nullptr, gdiCopySurfaces[gdiWriteIdx], nullptr, D3DTEXF_NONE);
-                if (SUCCEEDED(hr)) {
+                if (SUCCEEDED(copyResult)) {
                     // Enqueue PREVIOUS frame's RT to capture thread
                     if (gdiHasPrevFrame) {
                         int readIdx = 1 - gdiWriteIdx;
@@ -314,11 +314,11 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                 return;
             }
 
-            HRESULT hr = device->GetRenderTargetData(backBuffer, shmemSurfaces[idx]);
-            if (SUCCEEDED(hr)) {
+            const HRESULT copyResult = device->GetRenderTargetData(backBuffer, shmemSurfaces[idx]);
+            if (SUCCEEDED(copyResult)) {
                 D3DLOCKED_RECT rect;
-                hr = shmemSurfaces[idx]->LockRect(&rect, NULL, D3DLOCK_READONLY);
-                if (SUCCEEDED(hr)) {
+                const HRESULT lockResult = shmemSurfaces[idx]->LockRect(&rect, NULL, D3DLOCK_READONLY);
+                if (SUCCEEDED(lockResult)) {
                     int slot = idx % 2;
                     ShmemBuffer* shmBuf = g_IPC ? g_IPC->GetShmem() : nullptr;
                     if (shmBuf && shmBuf->slot_size > 0) {
@@ -375,13 +375,14 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                     return;
                 }
 
-                HRESULT hr = device->StretchRect(backBuffer, NULL, directSharedSurfaces9[idx], NULL, D3DTEXF_NONE);
-                if (FAILED(hr)) {
+                const HRESULT copyResult = device->StretchRect(backBuffer, NULL, directSharedSurfaces9[idx], NULL,
+                                                               D3DTEXF_NONE);
+                if (FAILED(copyResult)) {
                     captureCost.AddRingFrame(drainUs, 0, false);
                     static ce::log_meter::ChangeGate s_submitFailGate;
-                    if (const auto verdict = s_submitFailGate.Observe(ce::log_meter::FieldKey(hr))) {
+                    if (const auto verdict = s_submitFailGate.Observe(ce::log_meter::FieldKey(copyResult))) {
                         HookLogImportant("DX9: Direct shared-ring StretchRect failed hr=0x%08x idx=%d repeats=%llu",
-                                         (unsigned)hr, idx, static_cast<unsigned long long>(verdict.suppressed));
+                                         (unsigned)copyResult, idx, static_cast<unsigned long long>(verdict.suppressed));
                     }
                     return;
                 }
@@ -416,8 +417,8 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                 return;
             }
 
-            HRESULT hr = device->StretchRect(backBuffer, NULL, targetSurface, NULL, D3DTEXF_NONE);
-            if (FAILED(hr)) {
+            const HRESULT copyResult = device->StretchRect(backBuffer, NULL, targetSurface, NULL, D3DTEXF_NONE);
+            if (FAILED(copyResult)) {
                 return;
             }
 

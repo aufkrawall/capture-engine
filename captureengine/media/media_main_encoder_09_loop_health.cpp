@@ -27,25 +27,23 @@ void MediaEncoderSession::LoopHealth() {
                                                                     static_cast<int64_t>(wgcSelectionErrorSamples))
                                              : 0;
             if (auto publication = MediaState().pSharedMem.Publish(); publication) {
-                publication->runtimeState.frameAgeAvgUs.store(avgFrameAgeUs, std::memory_order_relaxed);
-                publication->runtimeState.frameAgeMaxUs.store(cadenceCounters.frameAgeMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.selectionErrorAvgUs.store(avgSelectionErrorUs, std::memory_order_relaxed);
-                publication->runtimeState.selectionErrorMaxUs.store(cadenceCounters.outputScheduleErrorMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.selectionErrorSignedAvgUs.store(avgSignedSelectionErrorUs, std::memory_order_relaxed);
-                publication->runtimeState.selectionEarlyMaxUs.store(cadenceCounters.outputScheduleEarlyMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.selectionLateMaxUs.store(cadenceCounters.outputScheduleLateMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.wgcSelectionErrorAvgUs.store(avgWgcSelectionErrorUs, std::memory_order_relaxed);
-                publication->runtimeState.wgcSelectionErrorMaxUs.store(wgcSelectionErrorMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.wgcSelectionErrorSignedAvgUs.store(avgSignedWgcSelectionErrorUs, std::memory_order_relaxed);
-                publication->runtimeState.wgcSelectionEarlyMaxUs.store(wgcSelectionEarlyMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.wgcSelectionLateMaxUs.store(wgcSelectionLateMaxUs, std::memory_order_relaxed);
-                publication->runtimeState.consecutiveDeferredFrames.store(cadenceCounters.consecutiveDeferredFrames, std::memory_order_relaxed);
-                publication->runtimeState.maxConsecutiveDeferredFrames.store(cadenceCounters.maxConsecutiveDeferredFrames,
-                                                         std::memory_order_relaxed);
-                publication->runtimeState.consecutiveDuplicateFrames.store(cadenceCounters.consecutiveDuplicateFrames,
-                                                       std::memory_order_relaxed);
-                publication->runtimeState.maxConsecutiveDuplicateFrames.store(cadenceCounters.maxConsecutiveDuplicateFrames,
-                                                          std::memory_order_relaxed);
+                auto& runtime = publication->runtimeState;
+                runtime.frameAgeAvgUs.store(avgFrameAgeUs, std::memory_order_relaxed);
+                runtime.frameAgeMaxUs.store(cadenceCounters.frameAgeMaxUs, std::memory_order_relaxed);
+                runtime.selectionErrorAvgUs.store(avgSelectionErrorUs, std::memory_order_relaxed);
+                runtime.selectionErrorMaxUs.store(cadenceCounters.outputScheduleErrorMaxUs, std::memory_order_relaxed);
+                runtime.selectionErrorSignedAvgUs.store(avgSignedSelectionErrorUs, std::memory_order_relaxed);
+                runtime.selectionEarlyMaxUs.store(cadenceCounters.outputScheduleEarlyMaxUs, std::memory_order_relaxed);
+                runtime.selectionLateMaxUs.store(cadenceCounters.outputScheduleLateMaxUs, std::memory_order_relaxed);
+                runtime.wgcSelectionErrorAvgUs.store(avgWgcSelectionErrorUs, std::memory_order_relaxed);
+                runtime.wgcSelectionErrorMaxUs.store(wgcSelectionErrorMaxUs, std::memory_order_relaxed);
+                runtime.wgcSelectionErrorSignedAvgUs.store(avgSignedWgcSelectionErrorUs, std::memory_order_relaxed);
+                runtime.wgcSelectionEarlyMaxUs.store(wgcSelectionEarlyMaxUs, std::memory_order_relaxed);
+                runtime.wgcSelectionLateMaxUs.store(wgcSelectionLateMaxUs, std::memory_order_relaxed);
+                runtime.consecutiveDeferredFrames.store(cadenceCounters.consecutiveDeferredFrames, std::memory_order_relaxed);
+                runtime.maxConsecutiveDeferredFrames.store(cadenceCounters.maxConsecutiveDeferredFrames, std::memory_order_relaxed);
+                runtime.consecutiveDuplicateFrames.store(cadenceCounters.consecutiveDuplicateFrames, std::memory_order_relaxed);
+                runtime.maxConsecutiveDuplicateFrames.store(cadenceCounters.maxConsecutiveDuplicateFrames, std::memory_order_relaxed);
             }
 
             const uint32_t dupNoSource = static_cast<uint32_t>(captureSessionSummary.duplicateNoSourceTicks);
@@ -258,7 +256,6 @@ void MediaEncoderSession::LoopHealth() {
             lastWgcDuplicateTimestampSkipCountForCadence = currentWgcDuplicateTimestampSkipCount;
             dupTimestampCount = 0;
             encCycleMaxMs = 0;
-
             accumulateCaptureSummarySample(useScreenGrab, srcFpsX100Val, srcJitterUsVal, oldestBufferedFrameAgeUs,
                                            shortfallDurationMs, sustainableOutputFps);
 
