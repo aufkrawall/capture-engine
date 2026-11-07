@@ -563,6 +563,7 @@ private:
 
     // BGRA staging texture for VideoProcessor input compatibility
     ID3D11Texture2D* bgraStagingTexture = nullptr;
+    ID3D11Texture2D* shmemUploadTexture = nullptr;
 
     ID3D11VideoProcessorInputView* inputView = nullptr;
     bool videoProcessorInit = false;          // conversion geometry ready

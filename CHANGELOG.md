@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Demand-driven encoder texture export and VRAM accounting:** media now allocates the KMT export texture pool only when requested by a zero-copy producer (such as DXVK) rather than eagerly on all non-screengrab recordings, and D3D9 shared-memory capture uses its own encoder upload surface. Exported textures and opened alias views are explicitly accounted and deduplicated in GPU memory diagnostics, and repeated export requests cannot overwrite an adopted producer timeline fence.
+
 - **Vulkan zero-copy capture transport robustness:** same-geometry swapchain recreations now clean up superseded cache entries to prevent leaks and mismatched relay bindings. The layer activates direct encoder texture mode only after creating and publishing its timeline fence, validates adapter LUID consistency on KMT offers, and withdraws broken offers on import failure so fallback capture can continue.
 
 - **Shared-memory capture drain after recording stop:** detaching from the shared recording state now synchronizes across media workers under a publication barrier before stop acknowledgement, preventing late worker updates from landing on the live layout. Detached layouts preserve frame geometry and process identification, ensuring in-flight shared-memory frames drain and upload with valid dimensions.

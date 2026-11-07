@@ -69,34 +69,50 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
     ShmemBuffer* const pShmem = pSharedMem.PixelBuffer();
     if (isShmem) {
         if (pShmem && pSharedMem && pSharedMem->GetShmemMappingCreated()) {
-            // Shmem Path: upload the pixels into exported slot 0, opened on this device.
-            bgraTex = exportedTextureViews.AcquireSlot(instance.encoderTextures, d3d11Device, 0);
+            const uint32_t uploadWidth =
+                pSharedMem->GetWidth() > 0 ? pSharedMem->GetWidth() : static_cast<uint32_t>(this->width);
+            const uint32_t uploadHeight =
+                pSharedMem->GetHeight() > 0 ? pSharedMem->GetHeight() : static_cast<uint32_t>(this->height);
 
-            if (bgraTex) {
-                // Validation of slot
-                int slot = (shmemSlot >= 0 && shmemSlot < 2) ? shmemSlot : 0;
-                uint8_t* pSrc = pShmem->GetData(slot);
-
-                if (pSrc) {
-                    const uint32_t uploadWidth =
-                        pSharedMem->GetWidth() > 0 ? pSharedMem->GetWidth() : static_cast<uint32_t>(this->width);
-                    const uint32_t uploadHeight =
-                        pSharedMem->GetHeight() > 0 ? pSharedMem->GetHeight() : static_cast<uint32_t>(this->height);
-                    if (uploadWidth > 0 && uploadHeight > 0) {
+            if (uploadWidth > 0 && uploadHeight > 0) {
+                // Own texture on the encoder device for CPU shmem uploads
+                if (shmemUploadTexture) {
+                    D3D11_TEXTURE2D_DESC desc{};
+                    shmemUploadTexture->GetDesc(&desc);
+                    if (desc.Width != uploadWidth || desc.Height != uploadHeight) {
+                        shmemUploadTexture->Release();
+                        shmemUploadTexture = nullptr;
+                    }
+                }
+                if (!shmemUploadTexture && d3d11Device) {
+                    D3D11_TEXTURE2D_DESC desc{};
+                    desc.Width = uploadWidth;
+                    desc.Height = uploadHeight;
+                    desc.MipLevels = 1;
+                    desc.ArraySize = 1;
+                    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                    desc.SampleDesc.Count = 1;
+                    desc.Usage = D3D11_USAGE_DEFAULT;
+                    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                    d3d11Device->CreateTexture2D(&desc, nullptr, &shmemUploadTexture);
+                }
+                if (shmemUploadTexture) {
+                    int slot = (shmemSlot >= 0 && shmemSlot < 2) ? shmemSlot : 0;
+                    uint8_t* pSrc = pShmem->GetData(slot);
+                    if (pSrc) {
                         D3D11_BOX box;
                         box.left = 0;
-                        box.right = uploadWidth;  // Use current frame resolution
+                        box.right = uploadWidth;
                         box.top = 0;
                         box.bottom = uploadHeight;
                         box.front = 0;
                         box.back = 1;
-
-                        // We need a pitch. Use pSharedMem->width * 4 if not stored in
-                        // ShmemBuffer Actually ShmemBuffer has pitch.
-                        d3d11Context->UpdateSubresource(bgraTex, 0, &box, pSrc, pShmem->pitch, 0);
+                        d3d11Context->UpdateSubresource(shmemUploadTexture, 0, &box, pSrc, pShmem->pitch, 0);
                     }
+                    bgraTex = shmemUploadTexture;
+                    bgraTex->AddRef();
+                    d3d11Fence = nullptr;  // No fence for shmem
                 }
-                d3d11Fence = nullptr;  // No fence for shmem
             }
         }
     } else {

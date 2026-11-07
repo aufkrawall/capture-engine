@@ -76,6 +76,9 @@ public:
     // generation is gone or the slot cannot be opened there.
     ID3D11Texture2D* OpenOn(ID3D11Device* device, uint64_t generation, int slot) const;
 
+    // The GPU memory allocated on the export device for this set (0 when not exported).
+    uint64_t GpuBytes() const;
+
 private:
     struct Set;
 
@@ -113,6 +116,7 @@ public:
     ID3D11Texture2D* AcquireSlot(const EncoderTextureExport& source, ID3D11Device* device, int slot);
     // Releases every view. Call before the device they were opened on goes away.
     void Reset();
+    bool HasViews() const;
 
 private:
     void Refresh(const EncoderTextureExport& source, ID3D11Device* device);

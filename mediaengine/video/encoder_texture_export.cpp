@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "mediaengine/engine/mediaengine.h"
+#include "mediaengine/video/gpu_memory_breakdown.h"
 
 namespace ce::media {
 
@@ -190,7 +191,9 @@ void EncoderTextureExport::Publish(const Set& set, uint64_t generation, bool fre
             return;  // a re-request of the set the route already advertises
         for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; ++i)
             publication->encoderTextures.SetKmtTextureHandle(i, reinterpret_cast<uint64_t>(set.kmt[i]));
-        publication->encoderTextures.SetFenceHandle(reinterpret_cast<uint64_t>(set.fenceHandle.get()));
+        if (!publication->useEncoderTextures.load(std::memory_order_acquire)) {
+            publication->encoderTextures.SetFenceHandle(reinterpret_cast<uint64_t>(set.fenceHandle.get()));
+        }
         publication->encoderTextures.SetWidth(set.request.width);
         publication->encoderTextures.SetHeight(set.request.height);
         publication->encoderTextures.SetFormat(set.request.format);
@@ -278,6 +281,15 @@ ID3D11Texture2D* EncoderTextureExport::OpenOn(ID3D11Device* device, uint64_t gen
     return nullptr;
 }
 
+uint64_t EncoderTextureExport::GpuBytes() const {
+    std::lock_guard state(state_);
+    if (!set_)
+        return 0;
+    return ENCODER_TEXTURE_SLOT_COUNT *
+           ce::gpu_memory::EstimateTextureBytes(set_->request.width, set_->request.height,
+                                                static_cast<DXGI_FORMAT>(set_->request.format));
+}
+
 void EncoderTextureExport::LogFailure(const EncoderTextureRequest& request, const char* stage, HRESULT hr) {
     // The callers retry every capture-loop pass while no set is exported.
     const uint64_t key = log_meter::FieldKey(reinterpret_cast<uintptr_t>(stage), hr, request.width, request.height,
@@ -349,6 +361,14 @@ void ExportedTextureViews::Reset() {
     }
     generation_ = 0;
     device_ = nullptr;
+}
+
+bool ExportedTextureViews::HasViews() const {
+    for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; ++i) {
+        if (views_[i])
+            return true;
+    }
+    return false;
 }
 
 }  // namespace ce::media

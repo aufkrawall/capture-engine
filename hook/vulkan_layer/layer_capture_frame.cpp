@@ -163,6 +163,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     if (allowDxvkEncoderTextures && mem) {
+        mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, true);
         // DXVK D3D11 zero-copy path: import encoder's KMT handles into Vulkan.
 
         // Old leases and GPU copies have drained. Publish the new request before
@@ -619,10 +620,13 @@ void CleanupCapture(VkDevice device) {
         // The VkImages we exported are gone; the D3D11 textures in the media process
         // are now unused and should be freed to reclaim VRAM.
         auto* sharedMem = g_IPCClient.GetSharedMem();
-        if (sharedMem && sharedMem->useEncoderTextures.load(std::memory_order_acquire)) {
-            sharedMem->useEncoderTextures.store(false, std::memory_order_release);
-            sharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
-            LayerLog("Vulkan Layer: Cleared useEncoderTextures on vkDestroyDevice");
+        if (sharedMem) {
+            sharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
+            if (sharedMem->useEncoderTextures.load(std::memory_order_acquire)) {
+                sharedMem->useEncoderTextures.store(false, std::memory_order_release);
+                sharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+                LayerLog("Vulkan Layer: Cleared useEncoderTextures on vkDestroyDevice");
+            }
         }
     }
 }

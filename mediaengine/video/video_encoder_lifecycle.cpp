@@ -60,6 +60,10 @@ void VideoEncoder::CleanupResources() {
         bgraStagingTexture->Release();
         bgraStagingTexture = nullptr;
     }
+    if (shmemUploadTexture) {
+        shmemUploadTexture->Release();
+        shmemUploadTexture = nullptr;
+    }
 
     CleanupVideoProcessor();
     if (cursorRenderer) {

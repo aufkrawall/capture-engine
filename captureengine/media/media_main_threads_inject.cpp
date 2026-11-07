@@ -115,8 +115,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastTrimmedCount = MediaState().injectBufferedTrimmedFrames.load(std::memory_order_relaxed);
     uint32_t lastCadenceDroppedCount = MediaState().injectCadenceDroppedFrames.load(std::memory_order_relaxed);
     uint32_t lastDeferredCount = MediaState().injectDeferredFrames.load(std::memory_order_relaxed);
-    bool earlyTexturesCreated = false;
-    bool sharedTexturesCreated = false;
     ce::inject_frame_source::SplitRendererVerificationCache splitRendererVerification;
     uint64_t publicationToIngestAccumUs = 0;
     uint32_t publicationToIngestSamples = 0;
@@ -131,23 +129,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         // Slots whose encoder GPU read finished go back to the producer first:
         // a producer with no free slot publishes nothing that would wake us.
         ReleaseCompletedInjectSourceReads();
-        // Create encoder textures as soon as resolution is available (before frames arrive)
-        // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
-        // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
-        if (!earlyTexturesCreated && MediaState().pSharedMem->GetWidth() > 0 && MediaState().pSharedMem->GetHeight() > 0) {
-            if (!MediaState().pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
-                if (ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(
-                        MediaState().engine, MediaState().pSharedMem->GetWidth(),
-                        MediaState().pSharedMem->GetHeight(), MediaState().pSharedMem->GetFormat(),
-                        MediaState().pSharedMem)) {
-                    LogInfo("[Inject Thread] Created encoder KMT textures early: %dx%d", MediaState().pSharedMem->GetWidth(),
-                            MediaState().pSharedMem->GetHeight());
-                    earlyTexturesCreated = true;
-                }
-            } else {
-                earlyTexturesCreated = true;
-            }
-        }
 
         // 1. Check for new frames
         uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
@@ -441,20 +422,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                                               static_cast<uint32_t>(captureBounds.right - captureBounds.left),
                                               static_cast<uint32_t>(captureBounds.bottom - captureBounds.top), false);
                     MediaState().injectCursorTimeline.Publish(qf.cursorState);
-
-                    // Per-recording state (reset on thread creation)
-                    if (!sharedTexturesCreated && MediaState().pSharedMem->GetWidth() > 0 && MediaState().pSharedMem->GetHeight() > 0) {
-                        if (!MediaState().pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                            if (ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(
-                                    MediaState().engine, MediaState().pSharedMem->GetWidth(),
-                                    MediaState().pSharedMem->GetHeight(), MediaState().pSharedMem->GetFormat(),
-                                    MediaState().pSharedMem)) {
-                                sharedTexturesCreated = true;
-                            }
-                        } else {
-                            sharedTexturesCreated = true;
-                        }
-                    }
 
                     // Validate handles look reasonable (not 0, not -1, not obviously stale)
                     bool validHandles = true;

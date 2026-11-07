@@ -86,6 +86,9 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 
     auto* mem = g_IPCClient.GetSharedMem();
     const bool allowDxvkEncoderTextures = (state.interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
+    if (allowDxvkEncoderTextures && mem) {
+        mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, true);
+    }
     bool encoderAdoptionRequested = false;
     if (allowDxvkEncoderTextures && mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
         mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&

@@ -24,11 +24,11 @@ void MediaProcessSession::Loop() {
             }
         }
 
-        // Poll for resolution availability and create encoder textures early.
-        // The Vulkan layer sets resolution when it creates the swapchain, then waits
-        // for encoder KMT textures. We must create them ASAP to avoid timeout.
+        // Poll for resolution availability and create encoder textures early when requested by producer.
+        // The Vulkan layer sets resolution and requests encoder KMT textures when DXVK is detected.
         // Skip when using screengrab (WGC) - the encoder should use the shared device.
         if (MediaState().recording && MediaState().pSharedMem && !IsPreferredScreenGrab() &&
+            MediaState().pSharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested) &&
             !MediaState().pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             uint32_t w = MediaState().pSharedMem->GetWidth();
             uint32_t h = MediaState().pSharedMem->GetHeight();

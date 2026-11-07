@@ -557,6 +557,9 @@ enum CaptureRuntimeFlags : uint32_t {
     // the first captured frame - not when file output goes live, which is a full
     // look-ahead reservoir later. Cleared when the recording is live or the start ends.
     kCaptureRuntimeFlagStatusOverlayDarkForCapture = 1u << 6,
+    // Producer-requested encoder KMT export (e.g. DXVK zero-copy capture path).
+    // Media only creates the large exported texture pool when this flag is active.
+    kCaptureRuntimeFlagEncoderKmtRequested = 1u << 7,
 };
 
 enum class RecordingStartIntent : uint8_t {

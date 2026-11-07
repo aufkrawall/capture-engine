@@ -51,19 +51,24 @@ void VideoEncoder::LogGpuMemory(const char* stage, bool force) {
     using ce::gpu_memory::TextureBytes;
     b.repeat = TextureBytes(repeatFrameTexture) + TextureBytes(stagedRepeatFrameTexture) +
                TextureBytes(repeatSourceFrameTexture) + TextureBytes(pendingRepeatSourceFrameTexture);
-    b.conversion = TextureBytes(bgraStagingTexture) + TextureBytes(swapRBTexture) + TextureBytes(geometryFitTexture) +
-                   TextureBytes(rgb10IntermediateTexture) + TextureBytes(vpInputFp16Staging) +
-                   TextureBytes(sampleableSourceCopy.Texture()) + frameScaler.GpuBytes();
+    b.conversion = TextureBytes(bgraStagingTexture) + TextureBytes(shmemUploadTexture) + TextureBytes(swapRBTexture) +
+                   TextureBytes(geometryFitTexture) + TextureBytes(rgb10IntermediateTexture) +
+                   TextureBytes(vpInputFp16Staging) + TextureBytes(sampleableSourceCopy.Texture()) +
+                   frameScaler.GpuBytes();
     b.overlays = TextureBytes(cursorRestoreTexture) + TextureBytes(cursorCompositeTexture) +
                  TextureBytes(faceCameraRestoreTexture) + TextureBytes(faceCameraCompositeTexture) +
                  TextureBytes(retainedYuv.camera.texture) + TextureBytes(retainedYuv.cursor.texture) +
                  (faceCameraRenderer ? faceCameraRenderer->GpuBytes() : 0);
+    const uint64_t exportBytes = instance.encoderTextures.GpuBytes();
+    b.captureOther += exportBytes;
     b.codecOpenDelta = gpuMemory.codecOpenDelta;
     b.encoderRateFactor = av1Repeats.CurrentRateFactor();
     // The bridge's pool lives on the encoder device and is opened on CE's;
-    // the split capture pool is opened on the capture device.
-    b.countedTwice =
-        (encoderBridgeInUse ? b.encoderFrames : 0) + (b.captureSharedAcrossDevices ? b.captureReservoir : 0);
+    // the split capture pool is opened on the capture device; opened exported
+    // views alias the export device's allocation.
+    b.countedTwice = (encoderBridgeInUse ? b.encoderFrames : 0) +
+                     (b.captureSharedAcrossDevices ? b.captureReservoir : 0) +
+                     (exportedTextureViews.HasViews() ? exportBytes : 0);
 
     const uint64_t key = ce::gpu_memory::BreakdownLogKey(b);
     const uint64_t now = GetTickCount64();

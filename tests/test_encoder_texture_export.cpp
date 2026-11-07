@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "common/capture/recording_memory.h"
+#include "common/ipc/inject_transport_snapshot.h"
 #include "common/ipc/shared_defs.h"
 #include "common/platform/raii_helpers.h"
 #include "mediaengine/video/encoder_texture_export.h"
@@ -90,6 +91,20 @@ TEST_F(EncoderTextureExportTest, ARepeatedRequestKeepsTheSetAndAdvertisesItAgain
     // True means the route carries the set, even after its publication was withdrawn.
     EXPECT_TRUE(layout_->encoderTextures.kmtReady.load());
     EXPECT_TRUE(layout_->encoderTextures.ready.load());
+    EXPECT_GT(exported.GpuBytes(), 0u);
+}
+
+TEST_F(EncoderTextureExportTest, ARepeatedRequestCannotOverwriteAnAdoptedProducerFence) {
+    EncoderTextureExport exported(route_);
+    ASSERT_TRUE(exported.Ensure(Request(), layout_.get()));
+    ce::AdoptEncoderTexturesWithFence(*layout_, 0x12345678ull);
+    EXPECT_EQ(layout_->encoderTextures.GetFenceHandle(), 0x12345678ull);
+    EXPECT_TRUE(layout_->useEncoderTextures.load());
+
+    layout_->encoderTextures.kmtReady.store(false);
+    layout_->encoderTextures.ready.store(false);
+    ASSERT_TRUE(exported.Ensure(Request(), layout_.get()));
+    EXPECT_EQ(layout_->encoderTextures.GetFenceHandle(), 0x12345678ull);
 }
 
 TEST_F(EncoderTextureExportTest, AFormatChangeReplacesTheSetAndTheEncoderViewsFollow) {

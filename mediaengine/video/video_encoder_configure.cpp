@@ -247,6 +247,10 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         bgraStagingTexture->Release();
         bgraStagingTexture = nullptr;
     }
+    if (shmemUploadTexture) {
+        shmemUploadTexture->Release();
+        shmemUploadTexture = nullptr;
+    }
 
     StopFaceCamera();
     CleanupVideoProcessor();
