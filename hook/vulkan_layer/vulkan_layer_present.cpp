@@ -190,7 +190,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // and actively bootstrapping a parallel DX9 hook is unsafe for translation
     // runtimes with global renderer state.
     EnterStage(CostStage::kContext);
-    if (!asyncPresentDetected) {
+    const bool isSmoothMotion = g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
+    if (!asyncPresentDetected || isSmoothMotion) {
         CostScope limiterStage(CostStage::kLimiter);
         const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
         const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();

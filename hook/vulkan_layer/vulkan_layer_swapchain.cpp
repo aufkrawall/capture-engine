@@ -524,14 +524,21 @@ SwapchainData* BeginAcquireBoundary(VkSwapchainKHR swapchain) {
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
         // Async-present games acquire from a different thread than they
         // present on, so the present-time wait cannot throttle production;
-        // gate every acquire on the cadence grid instead.
-        const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
-        ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
-        g_SharedFpsLimiter.Apply(false,
-                                 groupedAdmission
-                                     ? ce::interposer_output_pacing::ResolveVulkanFinalOutputSite(
-                                           g_FGCompat.GetRuntimeMode())
-                                     : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
+        // gate every acquire on the cadence grid instead. Under Smooth Motion,
+        // outputs are spaced at vkQueuePresentKHR while the acquire boundary paces
+        // input production.
+        const bool isSmoothMotion = g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
+        if (isSmoothMotion) {
+            g_SharedFpsLimiter.Apply(false, ce::fps_limiter_policy::PresentSite::kRuntimeInputPresent);
+        } else {
+            const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
+            ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
+            g_SharedFpsLimiter.Apply(false,
+                                     groupedAdmission
+                                         ? ce::interposer_output_pacing::ResolveVulkanFinalOutputSite(
+                                               g_FGCompat.GetRuntimeMode())
+                                         : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
+        }
     }
     return sd;
 }

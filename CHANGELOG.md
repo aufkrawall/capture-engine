@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Interposer output pacing under concurrent workers, Reflex, and Vulkan:** output groups and schedule deadlines are now tracked per worker thread rather than on a single global slot, preventing interleaved worker presentations from resetting in-flight deadlines. Pacing under Smooth Motion in Vulkan now spaces outputs at queue present while throttling input at acquire, and explicit Reflex post-present pacing is kept to the application boundary.
+
 - **Unified DLSS FG factor and state publication:** DLSS frame generation state and multiplier updates to shared memory are now managed coherently by `FGCompatibility` rather than unsynchronized call sites across game and presenter threads, and `GetState` option queries no longer roll back an active viewport's higher explicit generation factor.
 
 - **Smooth Motion evidence selection and rate resets:** the interposer status now uses submission evidence only when an attached application submission source is active, avoids double-counting application presents when direct presents arrive, resets measured rates and multiplier on deactivation, and expires obsolete worker-run generation evidence when moving to single-thread presentation.

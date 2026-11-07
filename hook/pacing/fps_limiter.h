@@ -672,7 +672,7 @@ private:
     // A present interposer's outputs (fps_limiter_detail/interposer_output.h). The tracker is admissionMutex_-guarded,
     // the rest cadenceMutex_-guarded.
     ce::interposer_output_pacing::OutputGroupTracker interposerGroups_;
-    ce::interposer_output_pacing::GroupSchedule interposerSchedule_;
+    ce::interposer_output_pacing::GroupScheduleTracker interposerSchedule_;
     bool interposerSpacingLogged_ = false;
     static constexpr uint32_t kInterposerOutputWindowOutputs = 600;
     struct InterposerOutputWindow {

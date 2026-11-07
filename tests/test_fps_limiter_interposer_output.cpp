@@ -52,6 +52,25 @@ TEST(InterposerOutputGroupsTest, AThreadChangeOpensAGroupWhateverTheCountSays) {
     EXPECT_EQ(groups.Next(22, 2), 1u);
 }
 
+TEST(InterposerOutputGroupsTest, InterleavedWorkersRetainTheirPerWorkerPosition) {
+    OutputGroupTracker groups;
+    EXPECT_EQ(groups.Next(11, 2), 0u);
+    EXPECT_EQ(groups.Next(22, 2), 0u);
+    EXPECT_EQ(groups.Next(11, 2), 1u);
+    EXPECT_EQ(groups.Next(22, 2), 1u);
+}
+
+TEST(InterposerOutputGroupsTest, InterleavedWorkersArmSeparateGroupSchedules) {
+    GroupScheduleTracker schedules;
+    schedules.Arm(11, 100, 200, 2);
+    schedules.Arm(22, 150, 250, 2);
+    EXPECT_EQ(schedules.OutputDeadline(11, 1), 150);
+    EXPECT_EQ(schedules.OutputDeadline(22, 1), 200);
+    schedules.Clear(11);
+    EXPECT_EQ(schedules.OutputDeadline(11, 1), 0);
+    EXPECT_EQ(schedules.OutputDeadline(22, 1), 200);
+}
+
 TEST(InterposerOutputGroupsTest, ADedicatedPresenterIsCounted) {
     OutputGroupTracker groups;
     std::vector<uint32_t> indices;

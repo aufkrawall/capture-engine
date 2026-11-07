@@ -10,7 +10,7 @@ inline void FpsLimiter::NoteInterposerGroupCadence(const LocalCadenceResult& cad
     if (!cadence.waited) {
         return;  // below the cap: the schedule stays clear and the driver spaces this frame
     }
-    interposerSchedule_.Arm(cadence.deadlineQpc, cadence.nextDeadlineQpc, multiplier);
+    interposerSchedule_.Arm(GetCurrentThreadId(), cadence.deadlineQpc, cadence.nextDeadlineQpc, multiplier);
     if (!interposerSpacingLogged_ && multiplier > 1) {
         interposerSpacingLogged_ = true;
         TraceLog("Apply: INTERPOSER outputs on the output grid multiplier=%d groupIntervalUs=%lld", multiplier,
@@ -27,7 +27,7 @@ inline void FpsLimiter::NoteInterposerGroupCadence(const LocalCadenceResult& cad
 inline void FpsLimiter::SpaceInterposerOutput(uint32_t outputIndex) {
     std::lock_guard<std::mutex> cadenceLock(cadenceMutex_);
     lastActualWaitUs_ = 0;
-    const int64_t deadline = interposerSchedule_.OutputDeadline(outputIndex);
+    const int64_t deadline = interposerSchedule_.OutputDeadline(GetCurrentThreadId(), outputIndex);
     const int64_t now = ReadClock();
     ++interposerOutputWindow_.outputs;
     if (deadline == 0) {

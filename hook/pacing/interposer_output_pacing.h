@@ -32,21 +32,38 @@ class OutputGroupTracker {
 public:
     uint32_t Next(uint32_t threadId, int multiplier) {
         const uint32_t groupSize = multiplier > 1 ? static_cast<uint32_t>(multiplier) : 1u;
-        if (threadId != lastThreadId_ || position_ >= groupSize) {
-            position_ = 0;
+        for (size_t i = 0; i < workerCount_; ++i) {
+            if (workers_[i].threadId == threadId) {
+                if (workers_[i].position >= groupSize) {
+                    workers_[i].position = 0;
+                }
+                return workers_[i].position++;
+            }
         }
-        lastThreadId_ = threadId;
-        return position_++;
+        if (workerCount_ < kMaxWorkers) {
+            workers_[workerCount_] = {threadId, 1};
+            ++workerCount_;
+            return 0;
+        }
+        workers_[0] = {threadId, 1};
+        return 0;
     }
 
     void Reset() {
-        position_ = 0;
-        lastThreadId_ = 0;
+        for (auto& entry : workers_) {
+            entry = {};
+        }
+        workerCount_ = 0;
     }
 
 private:
-    uint32_t position_ = 0;
-    uint32_t lastThreadId_ = 0;
+    static constexpr size_t kMaxWorkers = 8;
+    struct Worker {
+        uint32_t threadId = 0;
+        uint32_t position = 0;
+    };
+    Worker workers_[kMaxWorkers] = {};
+    size_t workerCount_ = 0;
 };
 
 // The slots of the current group's later outputs. Armed only by a first output that waited for its slot, which is what
@@ -76,6 +93,64 @@ private:
     int64_t deadlineTick_ = 0;
     int64_t intervalTicks_ = 0;
     int multiplier_ = 0;
+};
+
+class GroupScheduleTracker {
+public:
+    void Arm(uint32_t threadId, int64_t deadlineTick, int64_t nextDeadlineTick, int multiplier) {
+        for (size_t i = 0; i < count_; ++i) {
+            if (schedules_[i].threadId == threadId) {
+                schedules_[i].schedule.Arm(deadlineTick, nextDeadlineTick, multiplier);
+                return;
+            }
+        }
+        if (count_ < kMaxWorkers) {
+            schedules_[count_].threadId = threadId;
+            schedules_[count_].schedule.Arm(deadlineTick, nextDeadlineTick, multiplier);
+            ++count_;
+            return;
+        }
+        schedules_[0].threadId = threadId;
+        schedules_[0].schedule.Arm(deadlineTick, nextDeadlineTick, multiplier);
+    }
+
+    void Clear() {
+        Reset();
+    }
+
+    void Clear(uint32_t threadId) {
+        for (size_t i = 0; i < count_; ++i) {
+            if (schedules_[i].threadId == threadId) {
+                schedules_[i].schedule.Clear();
+                return;
+            }
+        }
+    }
+
+    int64_t OutputDeadline(uint32_t threadId, uint32_t outputIndex) const {
+        for (size_t i = 0; i < count_; ++i) {
+            if (schedules_[i].threadId == threadId) {
+                return schedules_[i].schedule.OutputDeadline(outputIndex);
+            }
+        }
+        return 0;
+    }
+
+    void Reset() {
+        for (auto& entry : schedules_) {
+            entry = {};
+        }
+        count_ = 0;
+    }
+
+private:
+    static constexpr size_t kMaxWorkers = 8;
+    struct Entry {
+        uint32_t threadId = 0;
+        GroupSchedule schedule;
+    };
+    Entry schedules_[kMaxWorkers] = {};
+    size_t count_ = 0;
 };
 
 // CE's swapchain wrapper is on the game thread, in front of the interposer: its site owns the cadence.

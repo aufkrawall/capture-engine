@@ -291,7 +291,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         return;
     }
     if (interposerOutput) {
-        interposerSchedule_.Clear();  // this group's slots exist only if the timer path below arms them
+        interposerSchedule_.Clear(GetCurrentThreadId());  // this group's slots exist only if the timer path below arms them
     }
 
     // Dedup guard: DXVK fires Present+PresentEx per render frame. The second call
@@ -570,7 +570,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             if (ceOwnedSleepCandidate) {
                 EnsureTimerResolution();
                 isActivelyLimiting_.store(true, std::memory_order_relaxed);
-                if (ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(
+                if (!interposerOutput && ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(
                         reflexDecision, allowPostPresentReflexCadence)) {
                     reflexPostPresentCadencePending_ = true;
                     reflexPostPresentTargetFps_ = presentTargetFps;
