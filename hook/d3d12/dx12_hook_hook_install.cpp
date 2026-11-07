@@ -5,7 +5,6 @@
 #include "dx12_factory_slot_policy.h"
 #include "dx12_device_creation_report.h"
 #include "hook/runtime/api_translator_modules.h"
-#include "hook/runtime/main_internal.h"
 
 namespace {
 
@@ -35,9 +34,12 @@ struct FactoryBootstrapEnvironment {
     }
 
     bool HasDXVKEvidence() const {
-        return IsDXVKD3D11WrapperLoaded() ||
+        if (WasD3D12DeviceCreated())
+            return false;
+        return ce::api_translator::IsDxvkModuleLoaded("d3d11.dll") ||
                ce::api_translator::IsDxvkModuleLoaded("dxgi.dll") ||
-               ce::api_translator::IsDxvkModuleLoaded("d3d11.dll");
+               ce::api_translator::IsDxvkModuleLoaded("d3d9.dll") ||
+               ce::api_translator::IsDxvkModuleLoaded("d3d8.dll");
     }
 
     void NoteVulkanBypass() const {

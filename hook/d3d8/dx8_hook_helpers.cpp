@@ -352,22 +352,24 @@ void DrawDX8Overlay(IDirect3DDevice8* device,  HWND hwnd) {
     g_OverlayAdapter.SetMetrics(&dx8_hook_g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(dx8_hook_g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
-    static unsigned long long s_lastModules = 0;
-    static std::string s_apiLabel = "DX8";
+    thread_local unsigned long long t_lastModules = 0;
+    thread_local bool t_lastD3D12 = false;
+    thread_local std::string t_apiLabel = "DX8";
     const unsigned long long modules = LoadedModuleSetGeneration();
-    if (modules != s_lastModules) {
+    const bool hasD3D12 = WasD3D12DeviceCreated();
+    if (modules == 0 || modules != t_lastModules || hasD3D12 != t_lastD3D12) {
         if (ce::api_translator::IsDxupModuleLoaded("d3d8.dll")) {
             const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-            const bool isDx12 = intermediateDx11 && WasD3D12DeviceCreated();
-            s_apiLabel = ce::graphics_api_identity::WithDxup("DX8", intermediateDx11, isDx12);
+            t_apiLabel = ce::graphics_api_identity::WithDxup("DX8", intermediateDx11, intermediateDx11 && hasD3D12);
         } else if (ce::api_translator::IsDxvkModuleLoaded("d3d8.dll")) {
-            s_apiLabel = "DX8 -> Vk (DXVK)";
+            t_apiLabel = "DX8 -> Vk (DXVK)";
         } else {
-            s_apiLabel = "DX8";
+            t_apiLabel = "DX8";
         }
-        s_lastModules = modules;
+        t_lastModules = modules;
+        t_lastD3D12 = hasD3D12;
     }
-    g_OverlayAdapter.SetGraphicsAPI(s_apiLabel.c_str(), "active IDirect3DDevice8");
+    g_OverlayAdapter.SetGraphicsAPI(t_apiLabel.c_str(), "active IDirect3DDevice8");
 
     {
         DX8StateHookBypassScope bypassScope;

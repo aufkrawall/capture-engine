@@ -30,13 +30,10 @@ inline std::string Dx12OverlayApiLabel() {
         t_label = std::move(dxup);
     } else {
         namespace identity = ce::graphics_api_identity;
-        static const char* const s_label = [] {
-            const HMODULE d3d12 = ce::module_replacement::ApplicationModuleByName("d3d12.dll");
-            return identity::D3D12Label(
-                d3d12 && !IsModuleInSystem32(d3d12) && ModuleVersionStringContains(d3d12, "vkd3d"),
-                GetModuleHandleA("d3d12core.dll") && (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll")));
-        }();
-        t_label = s_label;
+        const HMODULE d3d12 = ce::module_replacement::ApplicationModuleByName("d3d12.dll");
+        t_label = identity::D3D12Label(
+            d3d12 && !IsModuleInSystem32(d3d12) && ModuleVersionStringContains(d3d12, "vkd3d"),
+            GetModuleHandleA("d3d12core.dll") && (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll")));
     }
     t_modules = modules;
     t_minor = minor;

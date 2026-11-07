@@ -144,7 +144,8 @@ int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName, cons
 // the way first and once more if the open is refused anyway. Returns the Win32 status
 // of the last StartTraceW attempt.
 uint32_t OpenSessionWithReclaim(uint64_t* sessionHandle, const wchar_t* sessionName, uint32_t flushTimerMs) {
-    if (!sessionHandle || !sessionName) {
+    if (!sessionHandle || !sessionName || !sessionName[0] ||
+        std::wcslen(sessionName) >= display_timing_etw::kTraceSessionNameCapacity) {
         return ERROR_INVALID_PARAMETER;
     }
     // An ETW session outlives the process that opened it, so every CaptureEngine that was

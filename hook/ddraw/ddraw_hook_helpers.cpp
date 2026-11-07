@@ -478,23 +478,26 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
         ddraw_hook_g_ActiveDirectDrawVersion.load(std::memory_order_acquire));
     const unsigned d3dVersion = ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
     const char* legacyLabel = ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion);
-    static unsigned long long s_lastModules = 0;
-    static unsigned long long s_lastVersionKey = ~0ull;
-    static std::string s_finalLabel;
+    thread_local unsigned long long t_lastModules = 0;
+    thread_local unsigned long long t_lastVersionKey = ~0ull;
+    thread_local std::string t_finalLabel;
     const unsigned long long modules = LoadedModuleSetGeneration();
-    const unsigned long long versionKey = (static_cast<unsigned long long>(directDrawVersion) << 32) | d3dVersion;
-    if (modules != s_lastModules || versionKey != s_lastVersionKey) {
+    const bool hasD3D12 = WasD3D12DeviceCreated();
+    const unsigned long long versionKey =
+        (static_cast<unsigned long long>(hasD3D12) << 40) |
+        (static_cast<unsigned long long>(directDrawVersion) << 32) | d3dVersion;
+    if (modules == 0 || modules != t_lastModules || versionKey != t_lastVersionKey) {
         if (ce::api_translator::IsDxupModuleLoaded("ddraw.dll")) {
             const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-            const bool isDx12 = intermediateDx11 && WasD3D12DeviceCreated();
-            s_finalLabel = ce::graphics_api_identity::WithDxup(legacyLabel, intermediateDx11, isDx12);
+            t_finalLabel = ce::graphics_api_identity::WithDxup(legacyLabel, intermediateDx11,
+                                                              intermediateDx11 && hasD3D12);
         } else {
-            s_finalLabel = legacyLabel;
+            t_finalLabel = legacyLabel;
         }
-        s_lastModules = modules;
-        s_lastVersionKey = versionKey;
+        t_lastModules = modules;
+        t_lastVersionKey = versionKey;
     }
-    g_OverlayAdapter.SetGraphicsAPI(s_finalLabel.c_str(), "active DirectDraw presentation surface");
+    g_OverlayAdapter.SetGraphicsAPI(t_finalLabel.c_str(), "active DirectDraw presentation surface");
     return EnsureOverlayRouteBackend(DDrawOverlayRoute::HelperComposite, nullptr);
 }
 

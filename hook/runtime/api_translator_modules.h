@@ -11,17 +11,18 @@
 #include <cstring>
 
 #include "hook/runtime/dll_utils.h"
+#include "hook/runtime/module_replacement.h"
 
 namespace ce::api_translator {
 
 inline bool IsProjectModuleCached(const char* dllName, const char* versionNeedle, std::atomic<uintptr_t>& cache) {
     constexpr uintptr_t kUnevaluated = ~static_cast<uintptr_t>(0);
-    const HMODULE module = GetModuleHandleA(dllName);
+    const HMODULE module = ce::module_replacement::ApplicationModuleByName(dllName);
     const uintptr_t moduleBits = reinterpret_cast<uintptr_t>(module);
     const uintptr_t cached = cache.load(std::memory_order_acquire);
     if (cached != kUnevaluated && (cached & ~static_cast<uintptr_t>(1)) == moduleBits)
         return (cached & 1u) != 0;
-    const bool answer = module && IsDllFromProject(dllName, versionNeedle);
+    const bool answer = module && !IsModuleInSystem32(module) && ModuleVersionStringContains(module, versionNeedle);
     cache.store(moduleBits | (answer ? 1u : 0u), std::memory_order_release);
     return answer;
 }

@@ -262,6 +262,27 @@ TEST(PresentProgressFeedTest, OpenFailsOnOwnSessionStopsSessionOnce) {
     EXPECT_FALSE(feed.Running());
 }
 
+TEST(PresentProgressFeedTest, ConsumerOpenAccessDeniedSurvivesOwnSessionTeardown) {
+    FakeEtw fake;
+    fake.serviceConfigured = false;
+    auto env = fake.Environment();
+    auto stop = std::move(env.stopOwnSession);
+    env.stopOwnSession = [stop = std::move(stop)](TRACEHANDLE session, const wchar_t* name) {
+        stop(session, name);
+        SetLastError(ERROR_SUCCESS);
+    };
+    env.open = [](EVENT_TRACE_LOGFILEW*) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return INVALID_PROCESSTRACE_HANDLE;
+    };
+    progress::TraceFeed feed(std::move(env));
+    progress::Tracker tracker(1'000'000);
+    EXPECT_FALSE(feed.Start(tracker));
+    EXPECT_FALSE(feed.Start(tracker));
+    EXPECT_EQ(fake.ownOpened, 1);
+    EXPECT_EQ(fake.ownStopped, 1);
+}
+
 TEST(PresentProgressFeedTest, ConsumerEndsOnItsOwnNextStartStopsOldSessionBeforeOpeningNew) {
     FakeEtw fake;
     fake.serviceConfigured = false;

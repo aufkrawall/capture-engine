@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Graphics runtime detection and trace startup:** translation labels follow late module and device changes. Streamline ignores module-query answers that name an unrelated image, and DLSS logs identify mapped copies. The window heartbeat keeps the original ETW open error through cleanup.
+
 - **Frame-generation status and pacing:** DLSS publishes its active state and factor together, and a default Streamline poll preserves the viewport's explicit factor. Interposer workers keep separate output deadlines. With Vulkan async present, Smooth Motion paces the actual outputs while ordinary rendering keeps acquire pacing.
 
 - **Screenshots with FSR frame generation:** overlay-inclusive captures accept a compatible owner-queue device view. When the reserved overlay slot is busy, the request waits for another Present before submitting the composite.

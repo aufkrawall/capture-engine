@@ -320,6 +320,10 @@ bool TryArmTakeover(const char* phase) {
     }
 
     const std::string residentPath = ce::runtime_override_path::ModulePath(resident);
+    if (!residentPath.empty() && !ce::graphics_runtime::LoadedPathProvidesModule(residentPath.c_str(),
+                                                                                "sl.interposer.dll")) {
+        return false;
+    }
     const std::string overridePath = CanonicalOverridePath(streamlineDir, "sl.interposer.dll");
     const bool foreignResident =
         ce::graphics_runtime::IsForeignStreamlineInterposer(residentPath.c_str(), overridePath.c_str());

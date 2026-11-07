@@ -646,8 +646,9 @@ Reflex handoff rules.
   as UTF-8 from one immutable snapshot (`CurrentRuntimeOverridePaths`; details in `startup-runtime-overrides.md`,
   "UTF-8 override paths"); a non-ASCII folder previously failed the actual load. DLSS snippets have no core gate
   like sl.common, so `NoteDlssSnippetLoadedForOverridePolicy` (`hook/runtime/runtime_override_effect.cpp`, classifier
-  `ResolveDlssSnippetName`/`ClassifyDlssOverrideEffect`) logs once per snippet and verdict `DLSS override in effect`
-  or `DLSS override NOT in effect for nvngx_dlss*.dll: ...` naming the copy that won. NGX keeps its own DLSS
+  `ResolveDlssSnippetName`/`ClassifyDlssOverrideEffect`) logs once per snippet and mapping category. A configured
+  copy and a model-repository copy can both be mapped. The log describes the image observed and leaves execution
+  provenance to the vendor's runtime log. NGX keeps its own DLSS
   snippets as PE files named `models\dlss|dlssg|dlssd\versions\<v>\files\160_<appid>.bin` (this machine,
   2026-10-14; `nvngx_config.txt` lists per-app versions and `app_<id>_forced` NVIDIA app overrides; a
   `dlss_override` folder holds an extensionless marker, not a snippet). Those loads carry no snippet base name, so

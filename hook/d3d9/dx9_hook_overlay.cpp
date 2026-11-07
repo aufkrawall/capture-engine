@@ -77,28 +77,32 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_OverlayAdapter.SetDroppedFrames(dx9_hook_g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
     // The label follows the device and the runtime behind it. A device from another d3d9.dll
     // comes with another dispatch table, so no loader query is needed on every frame.
-    static IDirect3DDevice9* s_lastApiDevice = nullptr;
-    static const void* s_lastDeviceVTable = nullptr;
-    static unsigned long long s_lastModules = 0;
+    thread_local IDirect3DDevice9* t_lastApiDevice = nullptr;
+    thread_local const void* t_lastDeviceVTable = nullptr;
+    thread_local unsigned long long t_lastModules = 0;
+    thread_local bool t_lastD3D12 = false;
+    thread_local std::string t_apiLabel;
     const void* deviceVTable = *reinterpret_cast<void* const*>(device);
     const unsigned long long modules = LoadedModuleSetGeneration();
-    if (device != s_lastApiDevice || deviceVTable != s_lastDeviceVTable || modules != s_lastModules) {
+    const bool hasD3D12 = WasD3D12DeviceCreated();
+    if (device != t_lastApiDevice || deviceVTable != t_lastDeviceVTable || modules == 0 ||
+        modules != t_lastModules || hasD3D12 != t_lastD3D12) {
         const bool isEx = ResolveD3D9DeviceIsEx(device);
         namespace identity = ce::graphics_api_identity;
-        std::string finalApi;
         if (ce::api_translator::IsDxupModuleLoaded("d3d9.dll")) {
             const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-            const bool isDx12 = intermediateDx11 && WasD3D12DeviceCreated();
-            finalApi = identity::WithDxup(identity::D3D9Label(isEx, false), intermediateDx11, isDx12);
+            t_apiLabel = identity::WithDxup(identity::D3D9Label(isEx, false), intermediateDx11,
+                                            intermediateDx11 && hasD3D12);
         } else {
-            finalApi = identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
-                                                     ce::api_translator::D3D9RuntimeKind::kDXVK);
+            t_apiLabel = identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
+                                                      ce::api_translator::D3D9RuntimeKind::kDXVK);
         }
-        g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
-        s_lastApiDevice = device;
-        s_lastDeviceVTable = deviceVTable;
-        s_lastModules = modules;
+        t_lastApiDevice = device;
+        t_lastDeviceVTable = deviceVTable;
+        t_lastModules = modules;
+        t_lastD3D12 = hasD3D12;
     }
+    g_OverlayAdapter.SetGraphicsAPI(t_apiLabel.c_str(), "active Direct3D9 device");
 
     // Render Custom Overlay
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.

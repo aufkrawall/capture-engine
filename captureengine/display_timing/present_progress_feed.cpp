@@ -51,7 +51,13 @@ TraceFeed::TraceFeed(TraceEnvironment env)
       consumer_(ce::process_start::TraceOperations{
                     [this] { return Acquire(); },
                     [this](EVENT_TRACE_LOGFILEW* trace) {
-                        return env_.open ? env_.open(trace) : INVALID_PROCESSTRACE_HANDLE;
+                        SetLastError(ERROR_SUCCESS);
+                        const TRACEHANDLE handle = env_.open ? env_.open(trace) : INVALID_PROCESSTRACE_HANDLE;
+                        if (handle == INVALID_PROCESSTRACE_HANDLE && source_ == Source::OwnSession) {
+                            const DWORD error = GetLastError();
+                            ownSessionStatus_ = error != ERROR_SUCCESS ? error : ERROR_OPEN_FAILED;
+                        }
+                        return handle;
                     },
                     [this](TRACEHANDLE handle) {
                         return env_.consume ? env_.consume(handle) : static_cast<ULONG>(ERROR_INVALID_PARAMETER);
@@ -106,13 +112,7 @@ bool TraceFeed::TrySource(Source source) {
     trace.EventRecordCallback = &EventRecordCallback;
     trace.BufferCallback = &BufferCallback;
     trace.Context = this;
-    const bool started = consumer_.Start(&trace);
-    if (!started && source_ == Source::OwnSession && ownSessionStatus_ == ERROR_SUCCESS) {
-        const DWORD err = GetLastError();
-        if (err != ERROR_SUCCESS)
-            ownSessionStatus_ = err;
-    }
-    return started;
+    return consumer_.Start(&trace);
 }
 
 void TraceFeed::Route(const EVENT_RECORD& event, Tracker& tracker) {

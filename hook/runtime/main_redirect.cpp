@@ -504,8 +504,15 @@ bool StreamlineShipsWithApplication() {
 
 ce::graphics_runtime::StreamlineUseEvidence CollectStreamlineUseEvidence() {
   ce::graphics_runtime::StreamlineUseEvidence evidence = {};
-  evidence.coreAlreadyMapped =
-      GetModuleHandleA("sl.interposer.dll") != nullptr || GetModuleHandleA("sl.common.dll") != nullptr;
+  for (const char* moduleName : {"sl.interposer.dll", "sl.common.dll"}) {
+    if (const HMODULE module = GetModuleHandleA(moduleName)) {
+      const std::string loadedPath = ce::runtime_override_path::ModulePath(module);
+      if (!NoteModuleQueryAnsweredByAnotherImage(moduleName, loadedPath)) {
+        evidence.coreAlreadyMapped = true;
+        break;
+      }
+    }
+  }
   evidence.coreShippedWithApplication = StreamlineShipsWithApplication();
   evidence.loadObserved = g_StreamlineUseObserved.load(std::memory_order_acquire);
   return evidence;
@@ -672,7 +679,7 @@ void PreloadConfiguredStreamlineBridgeNgxDlls() {
                                  "sl.dlss_g.dll"}) {
     if (HMODULE module = GetModuleHandleA(moduleName)) {
       const std::string modulePath = ce::runtime_override_path::ModulePath(module);
-      if (!modulePath.empty()) {
+      if (!modulePath.empty() && !NoteModuleQueryAnsweredByAnotherImage(moduleName, modulePath)) {
         PatchLoadLibraryIatForLateLoadedModule(module, modulePath.c_str());
       }
     }

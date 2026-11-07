@@ -127,6 +127,22 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
+TEST(DisplayTimingSessionReclaimTest, MalformedNameOffsetsDoNotOpenOrStopAnOwner) {
+    FakeReclaim fake;
+    auto env = fake.Environment();
+    auto query = env.query;
+    for (const ULONG offset : {0u, static_cast<unsigned int>(sizeof(EVENT_TRACE_PROPERTIES)) + 1u, 0xfffffff0u}) {
+        env.query = [query, offset](EVENT_TRACE_PROPERTIES** sessions, ULONG capacity, ULONG* count) {
+            const ULONG status = query(sessions, capacity, count);
+            sessions[0]->LoggerNameOffset = offset;
+            return status;
+        };
+        EXPECT_EQ(ce::display_timing_reclaim::ReclaimLeakedSessions(0, nullptr, env), 0);
+    }
+    EXPECT_EQ(fake.opened, 0);
+    EXPECT_TRUE(fake.stopped.empty());
+}
+
 TEST(DisplayTimingSessionReclaimTest, ParsesTheOwnerPidTheServiceWrites) {
     // Exactly the format swprintf(L"CE_DisplayTiming_%08X", pid) produces.
     EXPECT_EQ(ParseSessionOwnerPid(L"CE_DisplayTiming_00005840"), 0x5840u);
