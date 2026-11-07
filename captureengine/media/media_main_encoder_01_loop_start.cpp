@@ -5,17 +5,14 @@ void MediaEncoderSession::LoopStart() {
         cycleLiveTicksOutputStart = liveTicksOutput;
         // NOTE: cycleStartQpc is set after timer sleep below to measure
         // encode processing time, not the full loop including sleep.
-        if (MediaState().pSharedMem) {
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
             if (!MediaState().recording.load(std::memory_order_acquire)) {
                 const auto phase = static_cast<CapturePipelinePhase>(
-                    MediaState().pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire));
-                if (phase != CapturePipelinePhase::kCancelling) {
-                    MediaState().pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
+                    publication->runtimeState.capturePhase.load(std::memory_order_acquire));
+                if (phase == CapturePipelinePhase::kStopping) {
+                    publication->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
                                                                   std::memory_order_release);
                 }
-            } else if (recordingOutputLive) {
-                MediaState().pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kLive),
-                                                              std::memory_order_release);
             }
         }
         static DWORD lastThreadLog = 0;
@@ -30,8 +27,8 @@ void MediaEncoderSession::LoopStart() {
             lastThreadLog = GetTickCount();
         }
 
-        if (MediaState().pSharedMem) {
-            UpdateAtomicPeak(MediaState().pSharedMem->runtimeState.bufferedInjectDepthPeak,
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            UpdateAtomicPeak(publication->runtimeState.bufferedInjectDepthPeak,
                              static_cast<uint32_t>(bufferedInjectFrames.size()));
         }
 
@@ -45,10 +42,14 @@ void MediaEncoderSession::LoopStart() {
             const bool shouldThrottle = ce::capture_policy::ShouldThrottleInjectProducer(
                 ingressQueueDepth, MediaState().frameQueue.Capacity(), fenceWaitUs);
 
-            MediaState().pSharedMem->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
-            const bool wasThrottled =
-                MediaState().pSharedMem->throttleCapture.exchange(shouldThrottle,
-                                                                   std::memory_order_acq_rel);
+            const auto dropped = static_cast<uint32_t>(MediaState().frameQueue.GetDroppedCount());
+            bool wasThrottled = shouldThrottle;
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                publication->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
+                wasThrottled = publication->throttleCapture.exchange(shouldThrottle, std::memory_order_acq_rel);
+                publication->runtimeState.hostDroppedFrames.store(dropped);
+                UpdateAtomicPeak(publication->runtimeState.encoderQueuePeakDepth, queueDepth);
+            }
             if (wasThrottled != shouldThrottle) {
                 ++injectProducerThrottleTransitionCount;
                 if (injectProducerThrottleTransitionCount <= 8 ||
@@ -66,8 +67,6 @@ void MediaEncoderSession::LoopStart() {
                         static_cast<unsigned long long>(injectProducerThrottleTransitionCount));
                 }
             }
-            MediaState().pSharedMem->runtimeState.hostDroppedFrames.store(static_cast<uint32_t>(MediaState().frameQueue.GetDroppedCount()));
-            UpdateAtomicPeak(MediaState().pSharedMem->runtimeState.encoderQueuePeakDepth, queueDepth);
 
             int64_t oldestBufferedTimestamp = 0;
             if (!bufferedInjectFrames.empty()) {
@@ -84,11 +83,12 @@ void MediaEncoderSession::LoopStart() {
                         static_cast<uint64_t>((nowQpc.QuadPart - oldestBufferedTimestamp) * 1000000 / qpcFreq.QuadPart);
                 }
                 wgcOldestBufferedFrameAgeUs = SaturatingToUint32(oldestAgeUs);
-                MediaState().pSharedMem->runtimeState.oldestBufferedFrameAgeUs.store(wgcOldestBufferedFrameAgeUs,
-                                                                          std::memory_order_relaxed);
             } else {
                 wgcOldestBufferedFrameAgeUs = 0;
-                MediaState().pSharedMem->runtimeState.oldestBufferedFrameAgeUs.store(0, std::memory_order_relaxed);
+            }
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                publication->runtimeState.oldestBufferedFrameAgeUs.store(wgcOldestBufferedFrameAgeUs,
+                                                                         std::memory_order_relaxed);
             }
         }
 
@@ -469,11 +469,11 @@ void MediaEncoderSession::LoopCatchup() {
                     encoderWakeLateAccumUs += wakeLateUs;
                     ++encoderWakeLateSamples;
                     encoderWakeLateMaxUs = std::max(encoderWakeLateMaxUs, wakeLateUs);
-                    if (MediaState().pSharedMem) {
-                        MediaState().pSharedMem->runtimeState.encoderTimerWakeLateAvgUs.store(
+                    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                        publication->runtimeState.encoderTimerWakeLateAvgUs.store(
                             SaturatingToUint32(encoderWakeLateAccumUs / encoderWakeLateSamples),
                             std::memory_order_relaxed);
-                        MediaState().pSharedMem->runtimeState.encoderTimerWakeLateMaxUs.store(encoderWakeLateMaxUs,
+                        publication->runtimeState.encoderTimerWakeLateMaxUs.store(encoderWakeLateMaxUs,
                                                                                    std::memory_order_relaxed);
                     }
                     const uint64_t lateTicks =
@@ -520,8 +520,8 @@ void MediaEncoderSession::LoopCatchup() {
                 } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
                     static uint32_t s_lateTickLogCount = 0;
                     s_lateTickLogCount++;
-                    if (MediaState().pSharedMem) {
-                        MediaState().pSharedMem->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
+                    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                        publication->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
                     }
                     int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
                     const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;

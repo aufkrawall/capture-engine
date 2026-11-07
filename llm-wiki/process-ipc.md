@@ -192,8 +192,10 @@ shared guards; ordinary reads remain atomic and const. Codec, GPU, waits and log
 must never run under a publication guard. Late texture creation uses the current
 route and cannot rebind the old live layout. Changed generations get one log each.
 
-`DetachFromSharedLiveState` first stops inject ingest and hands over its ring, then
-calls this API before acknowledging stop. The finishing host retains both mappings
+`DetachFromSharedLiveState` first stops inject ingest and hands over its ring. It
+excludes media worker publications while the DLL takes its own barrier and copies
+the snapshot. Both routes then point at that same private layout.
+The finishing host retains both mappings
 and the pixel buffer until all workers join; borrowed reads may still finish on the
 old mapping. New recordings may reuse the live mapping only after safe detach.
 An early stop before engine creation seeds the private host state directly.
@@ -213,10 +215,9 @@ without it. Root cause and codec repair:
 ### Encoder texture export (lock split, 2026-11-07)
 
 `MediaEngine_CreateSharedCaptureTextures`/`MediaEngine_ReleaseEncoderTextures` take no
-`apiMutex` or `muxMutex`. The inject thread (joined before the stop ack) and the media
-main loop (which handles the stop command) call them, and they used to wait for any codec
-call: create ran `EnsureDevice` (device plus codec open) under both locks. The 16 KMT
-textures and the shared fence the DXVK layer imports now belong to
+`apiMutex` or `muxMutex`. The media main loop owns allocation on producer request
+and the inject thread joins before the stop acknowledgment.
+The 16 KMT textures the DXVK layer imports belong to
 `MediaEngineInstance::encoderTextures` (`mediaengine/video/encoder_texture_export.h`),
 which owns its own D3D11 device on the published adapter LUID and two leaf locks:
 `serialize_` for Ensure/Release device work, `state_` for swapping or pinning the set. The
@@ -232,13 +233,15 @@ An identical request keeps the set and republishes a withdrawn handshake. A chan
 size, format or LUID retires the old set and its publication first. The Vulkan layer
 requests a replacement after old swapchain leases and GPU copies drain.
 `ValidateEncoderKmtOffer` also withdraws a mismatched offer before asynchronous
-adoption drains any relay leases. This covers an allocation for the old geometry
-that finishes after the swapchain changes. `CaptureBaseShmTest` covers withdrawal
+adoption drains any relay leases. The offer carries the allocation's own LUID.
+The Vulkan producer owns the fence and commits a compatible pool after its timeline
+is ready. Failed imports leave the layer-owned route running until the next request
+from a swapchain or host transition. `CaptureBaseShmTest` covers withdrawal
 and acceptance of the replacement. A detached route keeps late exports private.
 Failures leave no partial publication and are
 metered (`[EncoderTextures] Export failed at <stage>`).
 Covered by `EncoderTextureExportTest` (WARP publication, re-request, resize, format and
-adapter change, retired view lifetime, release, producer-to-encoder shared fence and
+adapter change, retired view lifetime, release, producer timeline ownership and
 pixel readback, and detached route) and `MediaEngineHandleTest.EncoderTextureExportsDoNotWaitForTheCodecLock`.
 With `apiMutex` put back into the create export, that test hangs (verified 2026-11-07).
 

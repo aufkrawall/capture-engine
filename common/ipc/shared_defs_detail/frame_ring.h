@@ -114,9 +114,12 @@ struct ShmemBuffer {
     // Metadata at the beginning to ensure consistent ABI between 32-bit and 64-bit
     std::atomic<int> writeSlot{0};
     std::atomic<bool> slotReady[SLOT_COUNT];
-    uint32_t validWidth{0};
-    uint32_t validHeight{0};
-    uint32_t pitch{0};
+    struct Geometry {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t pitch = 0;
+    };
+    Geometry geometry[SLOT_COUNT]{};
     uint32_t max_width{0};
     uint32_t max_height{0};
     uint32_t slot_size{0};  // Size of one slot in bytes
@@ -140,6 +143,21 @@ struct ShmemBuffer {
             return slotReady[slot].load(std::memory_order_acquire);
         }
         return false;
+    }
+
+    // The frame-ring lease pins the slot while its geometry and pixels are read.
+    Geometry ReadGeometry(int slot, size_t mappedBytes) const {
+        if (!check_ready(slot))
+            return {};
+        constexpr size_t headerBytes = (sizeof(ShmemBuffer) + 15) & ~size_t{15};
+        if (mappedBytes < headerBytes || slot_size > (mappedBytes - headerBytes) / SLOT_COUNT)
+            return {};
+        const Geometry value = geometry[slot];
+        if (!value.width || !value.height || value.width > max_width || value.height > max_height ||
+            value.pitch < static_cast<uint64_t>(value.width) * 4 ||
+            static_cast<uint64_t>(value.pitch) * value.height > slot_size)
+            return {};
+        return value;
     }
 
     void reset_ready(int slot) {

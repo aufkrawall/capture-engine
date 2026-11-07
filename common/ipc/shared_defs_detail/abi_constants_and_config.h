@@ -158,7 +158,7 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             live recording on its own. It grows `sizeof`.
 // Version 76: OverlayConfig gained the layout, font name and font weight, replacing the never
 //             implemented compactMode and horizontalMode. It grows `sizeof`.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 76;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 77;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with

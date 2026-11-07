@@ -53,15 +53,12 @@ enum class EncoderKmtOffer { Pending, Matches, Withdrawn };
 // An allocation for the previous swapchain can finish after the producer
 // publishes the new geometry. Withdraw that offer so media retries.
 inline EncoderKmtOffer ValidateEncoderKmtOffer(SharedMemoryLayout& sharedMem, uint32_t width, uint32_t height,
-                                               uint32_t format, bool adapterChanged = false,
-                                               int32_t luidLow = 0, int32_t luidHigh = 0) {
+                                               uint32_t format, uint64_t adapterKey) {
     auto& offer = sharedMem.encoderTextures;
     if (!offer.kmtReady.load(std::memory_order_acquire))
         return EncoderKmtOffer::Pending;
-    const bool adapterMismatch = adapterChanged ||
-                                 ((luidLow != 0 || luidHigh != 0) &&
-                                  (sharedMem.GetLuidLowPart() != luidLow || sharedMem.GetLuidHighPart() != luidHigh));
-    if (!adapterMismatch && offer.GetWidth() == width && offer.GetHeight() == height && offer.GetFormat() == format)
+    if (offer.GetKmtAdapterKey() == adapterKey && offer.GetWidth() == width &&
+        offer.GetHeight() == height && offer.GetFormat() == format)
         return EncoderKmtOffer::Matches;
 
     sharedMem.useEncoderTextures.store(false, std::memory_order_release);
@@ -69,11 +66,9 @@ inline EncoderKmtOffer ValidateEncoderKmtOffer(SharedMemoryLayout& sharedMem, ui
     return EncoderKmtOffer::Withdrawn;
 }
 
-// Switches media to the encoder textures a producer has just adopted. Until
-// then the encoder-texture fence slot holds the handle media stored for itself:
-// a handle value in media's own process that no producer signals. Publish the
-// producer's fence before the flag, so every frame media reads through that
-// slot finds it. The caller begins the transport generation first.
+// Switches media to the encoder textures a producer has just adopted. Publish
+// the producer's fence before the flag, so every frame finds its timeline.
+// The caller begins the transport generation first.
 inline void AdoptEncoderTexturesWithFence(SharedMemoryLayout& sharedMem, uint64_t fenceHandle) {
     sharedMem.encoderTextures.SetFenceHandle(fenceHandle);
     sharedMem.useEncoderTextures.store(true, std::memory_order_release);

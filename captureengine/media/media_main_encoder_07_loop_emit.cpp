@@ -51,9 +51,9 @@ void MediaEncoderSession::LoopEmit() {
                 const auto blackSubmission =
                     submitPrivacyBlackFrame(MediaState().lastFrame, privacyVfrQpc.QuadPart, privacyVfrQpc.QuadPart, -1);
                 observeVideoOutputAttempt(blackSubmission, "privacy VFR hold");
-                if (blackSubmission.Accepted() && MediaState().pSharedMem) {
-                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                    MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                if (auto publication = MediaState().pSharedMem.Publish(); blackSubmission.Accepted() && publication) {
+                    publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    publication->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                 }
             continueMainLoop = true;
             return;
@@ -98,13 +98,12 @@ void MediaEncoderSession::LoopEmit() {
                 UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                             ce::capture_policy::IsEncoderStartupWindow(
                                                 recordingOutputLive, recordingLiveTick, GetTickCount64()));
-                if (MediaState().pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
-                    MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
-                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                    MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
-                } else if (MediaState().pSharedMem) {
-                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                    MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                    if (currentEncodeMs > frameIntervalMs * 1.10) {
+                        publication->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    publication->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                 }
                 cadenceCounters.consecutiveDeferredFrames = 0;
                 if (useScreenGrab) {
@@ -150,8 +149,8 @@ const bool deferred = duplicateFromDeferredReason ||
     (duplicateLineage && MatchesInjectFrameLineage(*duplicateLineage, lastDeferredLineage));
 const auto reason = captureSessionSummary.RecordDuplicateReason(
     duplicateFromDrainReason, deferred, duplicateFromTimerRebaseReason, duplicateFromCapacityPacerReason);
-if (MediaState().pSharedMem) {
-    auto& state = MediaState().pSharedMem->runtimeState;
+if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+    auto& state = publication->runtimeState;
     state.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
     using ce::capture_summary::DuplicateReason;
     switch (reason) {
@@ -329,8 +328,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     bufferedInjectFrames.pop_front();
                     DiscardQueuedFrame(stale);
                     MediaState().injectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                    if (MediaState().pSharedMem) {
-                        MediaState().pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1,
+                    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                        publication->runtimeState.injectCadenceDrops.fetch_add(1,
                                                                                 std::memory_order_relaxed);
                     }
                     ++injectTargetSupersededThisWindow;
@@ -398,12 +397,12 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
 
                     ObserveEncodedInjectLineage(catchupFrame, " during catch-up");
 
-                    if (MediaState().pSharedMem) {
+                    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
                         if (currentEncodeMs > frameIntervalMs * 1.10) {
-                            MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                            publication->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                         }
-                        MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                        MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1,
+                        publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        publication->runtimeState.liveFramesEncoded.fetch_add(1,
                                                                                std::memory_order_relaxed);
                     }
 
@@ -443,8 +442,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
 
                 if (catchupSubmission.Deferred()) {
                     MediaState().injectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
-                    if (MediaState().pSharedMem) {
-                        MediaState().pSharedMem->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
+                    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                        publication->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
                     }
                     cadenceCounters.consecutiveDeferredFrames++;
                     cadenceCounters.maxConsecutiveDeferredFrames =
@@ -585,12 +584,12 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
             UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                         ce::capture_policy::IsEncoderStartupWindow(
                                             recordingOutputLive, recordingLiveTick, GetTickCount64()));
-            if (MediaState().pSharedMem) {
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
                 if (currentEncodeMs > frameIntervalMs * 1.10) {
-                    MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                    publication->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                 }
-                MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                publication->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
             }
 
             if (recoveredCatchupEncodeFailure) {
@@ -726,12 +725,12 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                                 ce::capture_policy::IsEncoderStartupWindow(
                                     recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
-    if (MediaState().pSharedMem) {
+    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
         if (currentEncodeMs > frameIntervalMs * 1.10) {
-            MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+            publication->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
         }
-        MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+        publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+        publication->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
     }
 
     recordDuplicate(&MediaState().lastFrame, duplicateLineage, false, false, false, true);

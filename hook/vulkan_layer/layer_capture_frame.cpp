@@ -1,6 +1,20 @@
 #include "layer_capture_internal.h"
 
 #include "common/ipc/inject_transport_snapshot.h"
+#include "common/platform/raii_helpers.h"
+
+void InstallEncoderCaptureTextures(SharedTextureEntry&& entry, DeviceDispatch* disp) {
+    for (auto it = layer_capture_g_TextureCache.begin(); it != layer_capture_g_TextureCache.end();) {
+        if (it->vkDevice == entry.vkDevice && it->luidKey == entry.luidKey &&
+            it->width == entry.width && it->height == entry.height && it->vkFormat == entry.vkFormat) {
+            DestroySharedTextureEntryResources(*it, disp);
+            it = layer_capture_g_TextureCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    layer_capture_g_TextureCache.push_back(std::move(entry));
+}
 
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,
@@ -130,7 +144,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     const auto luidLow = static_cast<int32_t>(luid.LowPart);
-    const bool adapterChanged = mem && (mem->GetLuidLowPart() != luidLow || mem->GetLuidHighPart() != luid.HighPart);
     LayerIPC_SetLUID(luidLow, luid.HighPart);
 
     // Once old leases and GPU copies are complete, no capture state can still
@@ -141,7 +154,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         std::lock_guard<std::mutex> textureLock(layer_capture_g_InteropMutex);
         for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
             if (textureIt->vkDevice == device &&
-                (textureIt->width != extent.width || textureIt->height != extent.height ||
+                (textureIt->encoderTextureImport || textureIt->width != extent.width ||
+                 textureIt->height != extent.height ||
                  textureIt->vkFormat != normalizedFormat)) {
                 DestroySharedTextureEntryResources(*textureIt, disp);
                 textureIt = layer_capture_g_TextureCache.erase(textureIt);
@@ -154,7 +168,12 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // Get shared textures (creates if needed)
     // For DXVK, we'll try encoder-created KMT textures first (imported into Vulkan)
     SharedTextureEntry* sharedTextures = nullptr;
-    bool usingEncoderTextures = false;
+    SharedTextureEntry encoderEntry;
+    HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
+    auto cleanupCandidate = ce::make_scope_guard([&] {
+        if (!encoderEntry.vkImages.empty())
+            DestroySharedTextureEntryResources(encoderEntry, disp);
+    });
     const VulkanCaptureInteropMode interopMode = DetectVulkanInteropMode();
     const bool allowDxvkEncoderTextures = (interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
     LayerLog("Vulkan Layer: Capture interop mode = %s", VulkanInteropModeToString(interopMode));
@@ -162,8 +181,12 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         LayerLog("Vulkan Layer: Native Vulkan detected - encoder KMT adoption disabled");
     }
 
+    if (mem) {
+        mem->useEncoderTextures.store(false, std::memory_order_release);
+        if (!allowDxvkEncoderTextures)
+            mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
+    }
     if (allowDxvkEncoderTextures && mem) {
-        mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, true);
         // DXVK D3D11 zero-copy path: import encoder's KMT handles into Vulkan.
 
         // Old leases and GPU copies have drained. Publish the new request before
@@ -172,8 +195,9 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         mem->SetWidth(extent.width);
         mem->SetHeight(extent.height);
         mem->SetFormat(ourDxgiFormat);
+        mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, true);
         const auto offer = ce::ValidateEncoderKmtOffer(*mem, extent.width, extent.height, ourDxgiFormat,
-                                                       adapterChanged, luidLow, luid.HighPart);
+                                                       luidKey);
         if (offer == ce::EncoderKmtOffer::Withdrawn) {
             LayerLog("Vulkan Layer: Requesting encoder KMT textures for %ux%u format=%u adapter=%08x:%08x",
                      extent.width, extent.height, ourDxgiFormat, static_cast<unsigned>(luid.HighPart),
@@ -189,47 +213,17 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // capture hot path already retries encoder KMT adoption once media has
         // published the textures, so an immediate interop fallback is lossless.
         if (offer == ce::EncoderKmtOffer::Matches) {
-            SharedTextureEntry encoderEntry;
-            HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
             if (ImportEncoderKmtTextures(device, disp, luidKey, extent.width, extent.height,
                                          NormalizeVkFormat((VkFormat)format), mem, &encoderEntry, kmtHandles)) {
-                {
-                    std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
-                    for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
-                        if (textureIt->vkDevice == device && textureIt->luidKey == luidKey &&
-                            textureIt->width == extent.width && textureIt->height == extent.height &&
-                            textureIt->vkFormat == NormalizeVkFormat((VkFormat)format)) {
-                            DestroySharedTextureEntryResources(*textureIt, disp);
-                            textureIt = layer_capture_g_TextureCache.erase(textureIt);
-                        } else {
-                            ++textureIt;
-                        }
-                    }
-                    layer_capture_g_TextureCache.push_back(std::move(encoderEntry));
-                    sharedTextures = &layer_capture_g_TextureCache.back();
-                }
-
-                // Publish encoder KMT handles to ring buffer
-                LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, extent.width, extent.height,
-                                     VkFormatToDXGI(format));
-                // Wait to activate useEncoderTextures until the timeline fence is created and published below
-                usingEncoderTextures = true;
-                LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: imported %d encoder KMT textures into Vulkan",
-                         ENCODER_TEXTURE_SLOT_COUNT);
+                sharedTextures = &encoderEntry;
             } else {
-                mem->useEncoderTextures.store(false, std::memory_order_release);
+                mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
                 mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
                 LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer and falling back to interop");
             }
         }
-
-        if (!usingEncoderTextures) {
-            mem->useEncoderTextures.store(false, std::memory_order_release);
-            LayerLog(
-                "Vulkan Layer: Encoder KMT textures not ready at swapchain creation; using immediate D3D11 "
-                "interop fallback and retrying adoption asynchronously");
-        }
     }
+    const bool usingEncoderTextures = sharedTextures == &encoderEntry;
 
     // Fallback: D3D11 interop textures (non-DXVK or when encoder textures unavailable)
     if (!sharedTextures) {
@@ -246,21 +240,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             LayerLog("Vulkan Layer: Native Vulkan mode - keeping IPC relay path (encoder KMT adoption disabled)");
         }
 
-        // Fallback to our own textures if encoder textures not available
-        if (!usingEncoderTextures) {
-            if (sharedTextures->hasIpcRelay) {
-                LayerIPC_SetTextures(sharedTextures->ipcHandles.data(), (uint32_t)sharedTextures->ipcHandles.size(),
-                                     extent.width, extent.height, VkFormatToDXGI(format));
-                LayerLog("Vulkan Layer: Publishing IPC relay %s handles to encoder",
-                         sharedTextures->ipcHandlesAreNt ? "NT" : "KMT");
-            } else {
-                LayerIPC_SetTextures(sharedTextures->textureHandles.data(),
-                                     (uint32_t)sharedTextures->textureHandles.size(), extent.width, extent.height,
-                                     VkFormatToDXGI(format));
-                LayerLog("Vulkan Layer: Publishing %s handles to encoder",
-                         sharedTextures->textureHandlesAreNt ? "NT" : "KMT");
-            }
-        }
     }
 
     VulkanCaptureState state = {};
@@ -458,6 +437,12 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         }
     }
 
+    if (usingEncoderTextures &&
+        (mem != g_IPCClient.GetSharedMem() || !mem->encoderTextures.kmtReady.load(std::memory_order_acquire) ||
+         mem->encoderTextures.GetKmtTextureHandle(0) != reinterpret_cast<uint64_t>(kmtHandles[0]))) {
+        DestroyCaptureStateResources(state, disp);
+        return;
+    }
     mem = g_IPCClient.GetSharedMem();
     if (mem) {
         // Media reads the fence from the slot useEncoderTextures selects. Keying
@@ -465,18 +450,25 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // where media never looked (it creates its textures at recording start),
         // so it kept waiting on the retired fence and deferred every frame once
         // the new values passed the old fence's last one.
-        LayerIPC_BeginTransportGeneration();
-        bool encoderTextureSlot = false;
         if (usingEncoderTextures) {
+            {
+                std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
+                InstallEncoderCaptureTextures(std::move(encoderEntry), disp);
+            }
+            cleanupCandidate.dismiss();
+            LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, extent.width, extent.height,
+                                 VkFormatToDXGI(format));
             ce::AdoptEncoderTexturesWithFence(*mem, (uint64_t)fenceToPublish);
-            encoderTextureSlot = true;
         } else {
-            encoderTextureSlot = ce::PublishInjectFenceHandle(*mem, (uint64_t)fenceToPublish);
+            const auto& handles = sharedTextures->hasIpcRelay ? sharedTextures->ipcHandles : sharedTextures->textureHandles;
+            LayerIPC_SetTextures(handles.data(), static_cast<uint32_t>(handles.size()), extent.width, extent.height,
+                                 VkFormatToDXGI(format));
+            mem->SetFenceShareHandle(reinterpret_cast<uint64_t>(fenceToPublish));
         }
         LayerLog(
             "Vulkan Layer: Published capture fence handle %p (slot=%s usingEncoderTextures=%d "
             "encoderTexturesReady=%d)",
-            fenceToPublish, encoderTextureSlot ? "encoderTextures" : "shared", usingEncoderTextures ? 1 : 0,
+            fenceToPublish, usingEncoderTextures ? "encoderTextures" : "shared", usingEncoderTextures ? 1 : 0,
             mem->encoderTextures.ready.load(std::memory_order_acquire) ? 1 : 0);
     }
 
@@ -556,6 +548,8 @@ ce::vulkan_capture_transport::HostRepublish RepublishCaptureTransportForHost(VkD
     // just like a game-owned generation.
     SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
     sharedMemory->useEncoderTextures.store(false, std::memory_order_release);
+    sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested,
+                                               state->interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
     const bool relayFence =
         ce::vulkan_capture_transport::PublishesRelayFence(entry->hasIpcRelay, state->ipcFenceHandle != nullptr);
     HANDLE fenceHandle = relayFence ? state->ipcFenceHandle : state->sharedFenceHandle;

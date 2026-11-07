@@ -111,6 +111,8 @@ bool SelectImportedWin32MemoryType(DeviceDispatch* disp, VkDevice device, VkExte
                                    uint32_t* layer_capture_memoryTypeIndex);
 bool CreateD3D11InteropDevice(IDXGIAdapter* adapter, ID3D11Device** ppDevice, ID3D11DeviceContext** ppContext);
 uint64_t MakeLuidKey(const LUID& luid);
+// Caller owns the interop mutex and has drained the generation being replaced.
+void InstallEncoderCaptureTextures(SharedTextureEntry&& entry, DeviceDispatch* disp);
 bool IsSpecificDxvkWrapperLoaded(const char* dllName);
 VulkanCaptureInteropMode DetectVulkanInteropMode();
 const char* VulkanInteropModeToString(VulkanCaptureInteropMode mode);

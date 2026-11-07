@@ -257,37 +257,37 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcStarvedTickCount.load(std::memory_order_relaxed) : 0u;
             const uint32_t singleFrameTicks =
                 MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcSingleFrameTickCount.load(std::memory_order_relaxed) : 0u;
-            if (MediaState().pSharedMem) {
-                uint32_t currentDup = MediaState().pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
-                uint32_t currentLate = MediaState().pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                uint32_t currentDup = publication->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                uint32_t currentLate = publication->runtimeState.lateFrames.load(std::memory_order_relaxed);
                 dupDelta = currentDup - lastDuplicateCount;
                 lateDelta = currentLate - lastLateCount;
                 lastDuplicateCount = currentDup;
                 lastLateCount = currentLate;
-                overloadFlags = MediaState().pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-                muxQueueBytes = MediaState().pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
-                encoderQueueDepth = MediaState().pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
-                cadenceSelAvgUs = MediaState().pSharedMem->runtimeState.selectionErrorAvgUs.load(std::memory_order_relaxed);
-                cadenceSelBiasUs = MediaState().pSharedMem->runtimeState.selectionErrorSignedAvgUs.load(std::memory_order_relaxed);
-                wgcSelAvgUs = MediaState().pSharedMem->runtimeState.wgcSelectionErrorAvgUs.load(std::memory_order_relaxed);
-                wgcSelBiasUs = MediaState().pSharedMem->runtimeState.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcSourceFrameIntervalAvgUs.store(SaturatingToUint32(srcIntervalAvgUs),
+                overloadFlags = publication->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+                muxQueueBytes = publication->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
+                encoderQueueDepth = publication->encoderQueueDepth.load(std::memory_order_relaxed);
+                cadenceSelAvgUs = publication->runtimeState.selectionErrorAvgUs.load(std::memory_order_relaxed);
+                cadenceSelBiasUs = publication->runtimeState.selectionErrorSignedAvgUs.load(std::memory_order_relaxed);
+                wgcSelAvgUs = publication->runtimeState.wgcSelectionErrorAvgUs.load(std::memory_order_relaxed);
+                wgcSelBiasUs = publication->runtimeState.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed);
+                publication->runtimeState.wgcSourceFrameIntervalAvgUs.store(SaturatingToUint32(srcIntervalAvgUs),
                                                                              std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcSourceFrameJitterAvgUs.store(SaturatingToUint32(srcJitterAvgUs),
+                publication->runtimeState.wgcSourceFrameJitterAvgUs.store(SaturatingToUint32(srcJitterAvgUs),
                                                                            std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcSourceFrameJitterMaxUs.store(SaturatingToUint32(srcJitterMaxUs),
+                publication->runtimeState.wgcSourceFrameJitterMaxUs.store(SaturatingToUint32(srcJitterMaxUs),
                                                                            std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcSourceToCopyLatencyAvgUs.store(SaturatingToUint32(srcToCopyAvgUs),
+                publication->runtimeState.wgcSourceToCopyLatencyAvgUs.store(SaturatingToUint32(srcToCopyAvgUs),
                                                                              std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcSourceToCopyLatencyMaxUs.store(SaturatingToUint32(srcToCopyMaxUs),
+                publication->runtimeState.wgcSourceToCopyLatencyMaxUs.store(SaturatingToUint32(srcToCopyMaxUs),
                                                                              std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcTargetFps.store(throttleTargetFps, std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcDeliveredFramesPerSec.store(deliveredRatePerSec,
+                publication->runtimeState.wgcTargetFps.store(throttleTargetFps, std::memory_order_relaxed);
+                publication->runtimeState.wgcDeliveredFramesPerSec.store(deliveredRatePerSec,
                                                                           std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcDeliveredMin250Fps.store(deliveredMin250Fps, std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcDeliveredMin500Fps.store(deliveredMin500Fps, std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcInputMin250Fps.store(inputMin250Fps, std::memory_order_relaxed);
-                MediaState().pSharedMem->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
+                publication->runtimeState.wgcDeliveredMin250Fps.store(deliveredMin250Fps, std::memory_order_relaxed);
+                publication->runtimeState.wgcDeliveredMin500Fps.store(deliveredMin500Fps, std::memory_order_relaxed);
+                publication->runtimeState.wgcInputMin250Fps.store(inputMin250Fps, std::memory_order_relaxed);
+                publication->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
             }
 
             SnapshotPublishedWgcRuntimeLogState();

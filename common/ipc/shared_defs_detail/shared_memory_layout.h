@@ -536,7 +536,8 @@ public:
             textureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // NT handles from D3D11 CreateSharedHandle
         std::atomic<uint64_t>
             kmtTextureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // KMT handles from IDXGIResource::GetSharedHandle
-        std::atomic<uint64_t> fenceHandle_{0};
+        std::atomic<uint64_t> fenceHandle_{0};  // producer timeline, written only by the capture layer
+        std::atomic<uint64_t> kmtAdapterKey_{0};
         std::atomic<uint32_t> width_{0};
         std::atomic<uint32_t> height_{0};
         std::atomic<uint32_t> format_{0};
@@ -571,6 +572,13 @@ public:
         }
         void SetFenceHandle(uint64_t val) {
             fenceHandle_.store(val, std::memory_order_release);
+        }
+
+        uint64_t GetKmtAdapterKey() const {
+            return kmtAdapterKey_.load(std::memory_order_acquire);
+        }
+        void SetKmtAdapterKey(uint64_t key) {
+            kmtAdapterKey_.store(key, std::memory_order_release);
         }
 
         uint32_t GetWidth() const {

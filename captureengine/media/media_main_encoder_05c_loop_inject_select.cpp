@@ -175,8 +175,8 @@ if (!config.video.useVFR) {
     if (trimmedInjectFrames > 0) {
         pendingInjectTrimmedLogCount += trimmedInjectFrames;
         MediaState().injectBufferedTrimmedFrames.fetch_add(trimmedInjectFrames, std::memory_order_relaxed);
-        if (MediaState().pSharedMem) {
-            MediaState().pSharedMem->runtimeState.injectTrimmedFrames.fetch_add(trimmedInjectFrames,
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            publication->runtimeState.injectTrimmedFrames.fetch_add(trimmedInjectFrames,
                                                                      std::memory_order_relaxed);
         }
         if (lastDeferredLineage.IsValid() && !bufferedInjectFrames.empty() &&
@@ -208,8 +208,8 @@ if (!config.video.useVFR) {
     auto recordInjectTargetDrop = [&](QueuedFrame& stale) {
         DiscardQueuedFrame(stale);
         MediaState().injectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-        if (MediaState().pSharedMem) {
-            MediaState().pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1, std::memory_order_relaxed);
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            publication->runtimeState.injectCadenceDrops.fetch_add(1, std::memory_order_relaxed);
         }
         ++injectTargetSupersededThisWindow;
         ++injectTargetSupersededTotal;

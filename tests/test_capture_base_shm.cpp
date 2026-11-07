@@ -199,17 +199,14 @@ TEST(CaptureBaseShmTest, FenceRepublishedAfterResizeReachesTheSlotMediaReads) {
 }
 
 // DXVK: the swapchain predates the recording, so the layer starts on its IPC
-// relay (fence in the shared slot). Media then creates its encoder textures and
-// stores its own, never-signaled fence handle in the encoder-texture slot. When
-// the layer adopts those textures, media reads that slot; it must find the
-// layer's timeline fence, not media's handle, or every frame is deferred.
+// relay (fence in the shared slot). After adopting the offered textures, the
+// layer publishes its direct timeline in the slot media will read.
 TEST(CaptureBaseShmTest, LateEncoderTextureAdoptionPublishesTheProducerFence) {
     SharedMemoryLayout shm{};
     InitShm(shm);
     shm.BeginTransportGeneration();
     ASSERT_FALSE(ce::PublishInjectFenceHandle(shm, 0x2200));
 
-    shm.encoderTextures.SetFenceHandle(0xB0C);
     shm.encoderTextures.kmtReady.store(true, std::memory_order_release);
     shm.encoderTextures.ready.store(true, std::memory_order_release);
 
@@ -233,25 +230,45 @@ TEST(CaptureBaseShmTest, LateStaleEncoderTextureOfferIsWithdrawnBeforeAdoption) 
     shm.encoderTextures.SetFormat(format);
     shm.encoderTextures.kmtReady.store(true);
 
-    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format), ce::EncoderKmtOffer::Withdrawn);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, 0), ce::EncoderKmtOffer::Withdrawn);
     EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
     EXPECT_FALSE(shm.useEncoderTextures.load());
-    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format), ce::EncoderKmtOffer::Pending);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, 0), ce::EncoderKmtOffer::Pending);
 
     shm.encoderTextures.SetWidth(1920);
     shm.encoderTextures.SetHeight(1080);
     shm.encoderTextures.kmtReady.store(true);
-    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format), ce::EncoderKmtOffer::Matches);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, 0), ce::EncoderKmtOffer::Matches);
     EXPECT_TRUE(shm.encoderTextures.kmtReady.load());
-    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, true), ce::EncoderKmtOffer::Withdrawn);
-    EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
-
+    constexpr uint64_t adapterKey = 0x200000001000ull;
     shm.SetLuidLowPart(0x1000);
     shm.SetLuidHighPart(0x2000);
-    shm.encoderTextures.kmtReady.store(true);
-    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, false, 0x1000, 0x2000), ce::EncoderKmtOffer::Matches);
-    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, false, 0x9999, 0x2000), ce::EncoderKmtOffer::Withdrawn);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, adapterKey), ce::EncoderKmtOffer::Withdrawn);
     EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
+    shm.encoderTextures.SetKmtAdapterKey(adapterKey);
+    shm.encoderTextures.kmtReady.store(true);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, adapterKey), ce::EncoderKmtOffer::Matches);
+}
+
+TEST(CaptureBaseShmTest, SharedPixelGeometryBelongsToTheLeasedSlot) {
+    ShmemBuffer pixels;
+    pixels.max_width = 64;
+    pixels.max_height = 32;
+    pixels.slot_size = 64 * 32 * 4;
+    const size_t mappedBytes = ShmemBuffer::CalculateSize(64, 32);
+    pixels.geometry[0] = {64, 32, 256};
+    pixels.geometry[1] = {32, 16, 128};
+    pixels.mark_ready(0);
+    pixels.mark_ready(1);
+
+    EXPECT_EQ(pixels.ReadGeometry(0, mappedBytes).pitch, 256u);
+    EXPECT_EQ(pixels.ReadGeometry(1, mappedBytes).pitch, 128u);
+    EXPECT_EQ(pixels.ReadGeometry(0, mappedBytes - 1).width, 0u);
+    EXPECT_EQ(pixels.ReadGeometry(2, mappedBytes).width, 0u);
+    pixels.geometry[1].pitch = 512;
+    pixels.geometry[1].height = 32;
+    EXPECT_EQ(pixels.ReadGeometry(1, mappedBytes).height, 0u);
+    EXPECT_EQ(pixels.ReadGeometry(0, mappedBytes).height, 32u);
 }
 
 TEST(CaptureBaseShmTest, FencePublishFollowsEncoderTextureAdoption) {

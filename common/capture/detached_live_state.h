@@ -50,6 +50,7 @@ inline void CopyForDetachedSession(const SharedMemoryLayout& live, SharedMemoryL
         to.SetKmtTextureHandle(slot, from.GetKmtTextureHandle(slot));
     }
     to.SetFenceHandle(from.GetFenceHandle());
+    to.SetKmtAdapterKey(from.GetKmtAdapterKey());
     to.SetWidth(from.GetWidth());
     to.SetHeight(from.GetHeight());
     to.SetFormat(from.GetFormat());

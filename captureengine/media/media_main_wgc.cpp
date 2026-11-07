@@ -191,8 +191,8 @@ void UpdateEncoderBottleneckFlag(double smoothedEncodeMs, double frameIntervalMs
     }
     if (newState != currentlyBottlenecked) {
         MediaState().isEncoderBottlenecked.store(newState, std::memory_order_relaxed);
-        if (MediaState().pSharedMem) {
-            MediaState().pSharedMem->runtimeState.encoderBottlenecked.store(newState ? 1u : 0u, std::memory_order_relaxed);
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            publication->runtimeState.encoderBottlenecked.store(newState ? 1u : 0u, std::memory_order_relaxed);
         }
     }
 }
@@ -293,18 +293,18 @@ bool TakeStandbyWgcHandoffFrame(QueuedFrame& frame) {
 }
 
 void SubmitWgcQueuedFrame(QueuedFrame&& frame) {
-    if (MediaState().pSharedMem) {
+    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
         const int64_t comparisonTimestamp = frame.rawTimestamp > 0 ? frame.rawTimestamp : frame.timestamp;
         const int64_t previousTimestamp = MediaState().lastWgcTimestamp.exchange(comparisonTimestamp, std::memory_order_relaxed);
         if (previousTimestamp > 0) {
             if (comparisonTimestamp < previousTimestamp) {
-                MediaState().pSharedMem->runtimeState.sourceTimestampRegressions.fetch_add(1, std::memory_order_relaxed);
+                publication->runtimeState.sourceTimestampRegressions.fetch_add(1, std::memory_order_relaxed);
             } else if (comparisonTimestamp == previousTimestamp) {
-                MediaState().pSharedMem->runtimeState.sourceTimestampStalls.fetch_add(1, std::memory_order_relaxed);
+                publication->runtimeState.sourceTimestampStalls.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        MediaState().pSharedMem->runtimeState.sourceFramesReceived.fetch_add(1, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
+        publication->runtimeState.sourceFramesReceived.fetch_add(1, std::memory_order_relaxed);
+        publication->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
     }
 
     // The queue unconditionally takes ownership of frame.texture, including on the
@@ -536,15 +536,15 @@ void StopWgcCapturePipeline() {
     ResetDuplicationCursorSuppression("WGC pipeline stop");
     MediaState().wgcCaptureShutdown = true;
     MediaState().wgcProducerTargetFps.store(0, std::memory_order_relaxed);
-    if (MediaState().pSharedMem) {
-        MediaState().pSharedMem->runtimeState.wgcTargetFps.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcCaptureHealthFlags.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcCaptureHealthFps.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionErrorAvgUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionErrorMaxUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionErrorSignedAvgUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionEarlyMaxUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionLateMaxUs.store(0, std::memory_order_relaxed);
+    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+        publication->runtimeState.wgcTargetFps.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcCaptureHealthFlags.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcCaptureHealthFps.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionErrorAvgUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionErrorMaxUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionErrorSignedAvgUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionEarlyMaxUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionLateMaxUs.store(0, std::memory_order_relaxed);
     }
     JoinThreadWithTimeout(MediaState().wgcCaptureThread, 5000, "WGC capture");
 
@@ -680,15 +680,15 @@ bool StartWgcRecordingCapture(const AppConfig& config) {
         LogInfo("[Media] WGC CFR mode: pull-latest sampling enabled, callback queue bypassed");
         LogInfo("[Media] WGC CFR mode: encoder-bottleneck throttle disabled (buffer cap provides backpressure)");
     }
-    if (MediaState().pSharedMem) {
-        MediaState().pSharedMem->runtimeState.wgcTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcCaptureHealthFlags.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcCaptureHealthFps.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionErrorAvgUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionErrorMaxUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionErrorSignedAvgUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionEarlyMaxUs.store(0, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.wgcSelectionLateMaxUs.store(0, std::memory_order_relaxed);
+    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+        publication->runtimeState.wgcTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
+        publication->runtimeState.wgcCaptureHealthFlags.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcCaptureHealthFps.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionErrorAvgUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionErrorMaxUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionErrorSignedAvgUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionEarlyMaxUs.store(0, std::memory_order_relaxed);
+        publication->runtimeState.wgcSelectionLateMaxUs.store(0, std::memory_order_relaxed);
     }
     if (!capture->StartCapture()) {
         capture->SetDirectFrameCallback(nullptr);

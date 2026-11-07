@@ -31,6 +31,9 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Stopping or restarting an active recording:** media workers and the encoder now hand off one shared-state snapshot, so a finishing session cannot leave late updates in the next session. D3D9 shared-memory uploads use the dimensions and pitch of the actual queued pixel slot.
+- **Vulkan zero-copy capture after resize or restart:** offers identify the adapter that allocated the textures. The Vulkan producer owns the timeline fence and commits the imported pool after synchronization is ready. An incompatible import continues on the existing interop route.
+
 - **Overlay layout and fonts:** the starting-recording blink keeps its row and panel size. Strip uses wrapped vertical rows when a cell exceeds the viewport, and strict font selection rejects substitutions even when a permissive lookup previously cached them.
 - **D3D9 overlay rendering:** the overlay draws with normal stream frequency and restores the application's instancing and vertex input state afterwards.
 - **Unicode recording filenames and AV1 repeats:** long profile names keep complete characters at the filename limit, and AV1 repeats no longer inherit overlay metadata from an earlier encoder submission.

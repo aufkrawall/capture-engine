@@ -2,8 +2,8 @@
 // Copyright (c) 2026 aufkrawall
 #pragma once
 
-// The encoder input textures a producer renders into directly, and the shared fence it
-// signals: the DXVK zero-copy path, where the Vulkan layer imports their KMT handles.
+// The encoder input textures a producer renders into directly. The Vulkan layer
+// imports their KMT handles and owns its own timeline fence.
 //
 // One pipeline owns one export, outside the codec. The inject thread (which the stop path
 // joins before it acknowledges) and the media main loop (which handles the stop command)
@@ -82,7 +82,7 @@ public:
 private:
     struct Set;
 
-    ID3D11Device5* DeviceFor(const EncoderTextureRequest& request, const char** failedStage, HRESULT* hr);
+    ID3D11Device* DeviceFor(const EncoderTextureRequest& request, const char** failedStage, HRESULT* hr);
     void Withdraw();
     void Publish(const Set& set, uint64_t generation, bool fresh);
     void LogFailure(const EncoderTextureRequest& request, const char* stage, HRESULT hr);
@@ -90,7 +90,7 @@ private:
     RecordingMemory& route_;
     std::mutex serialize_;  // Ensure/Release; guards the device
     mutable std::mutex state_;  // guards set_
-    ComGuard<ID3D11Device5> device_;
+    ComGuard<ID3D11Device> device_;
     int32_t deviceLuidLow_ = 0;
     int32_t deviceLuidHigh_ = 0;
     std::shared_ptr<const Set> set_;

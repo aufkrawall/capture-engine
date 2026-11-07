@@ -68,7 +68,9 @@ TEST_F(EncoderTextureExportTest, EnsurePublishesACompleteSetOnTheBinding) {
     EXPECT_EQ(published.GetWidth(), 64u);
     EXPECT_EQ(published.GetHeight(), 32u);
     EXPECT_EQ(published.GetFormat(), static_cast<uint32_t>(DXGI_FORMAT_B8G8R8A8_UNORM));
-    EXPECT_NE(published.GetFenceHandle(), 0u);
+    EXPECT_EQ(published.GetFenceHandle(), 0u);
+    EXPECT_EQ(published.GetKmtAdapterKey(), (static_cast<uint64_t>(static_cast<uint32_t>(luid_.HighPart)) << 32) |
+                                               luid_.LowPart);
     const EncoderTextureExport::Handles snapshot = exported.Snapshot();
     EXPECT_NE(snapshot.generation, 0u);
     for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; ++i) {
@@ -208,8 +210,7 @@ TEST_F(EncoderTextureExportTest, TheEncoderReadsWhatAProducerRenderedIntoTheExpo
         ASSERT_TRUE(SUCCEEDED(producer->QueryInterface(IID_PPV_ARGS(device5.put()))));
         ASSERT_TRUE(SUCCEEDED(producerContext->QueryInterface(IID_PPV_ARGS(context4.put()))));
         ce::ComGuard<ID3D11Fence> fence;
-        const HANDLE fenceHandle = reinterpret_cast<HANDLE>(layout_->encoderTextures.GetFenceHandle());
-        ASSERT_TRUE(SUCCEEDED(device5->OpenSharedFence(fenceHandle, IID_PPV_ARGS(fence.put()))));
+        ASSERT_TRUE(SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.put()))));
         ce::HandleGuard completed(CreateEventW(nullptr, FALSE, FALSE, nullptr));
         ASSERT_TRUE(completed);
         ASSERT_TRUE(SUCCEEDED(fence->SetEventOnCompletion(1, completed.get())));

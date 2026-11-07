@@ -175,11 +175,11 @@ void MediaEncoderSession::LoopEncode() {
                     const InjectFrameLineage deferredLineage = MakeInjectFrameLineage(*frameToProcess);
                     frameCreditAccumulator = std::max(frameCreditAccumulator, 1.0);
                     MediaState().injectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
-                    if (MediaState().pSharedMem) {
-                        MediaState().pSharedMem->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
+                    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                        publication->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
                         if (lastDeferredLineage.IsValid() &&
                             MatchesInjectFrameLineage(*frameToProcess, lastDeferredLineage)) {
-                            MediaState().pSharedMem->runtimeState.repeatedDeferredFrames.fetch_add(1, std::memory_order_relaxed);
+                            publication->runtimeState.repeatedDeferredFrames.fetch_add(1, std::memory_order_relaxed);
                         }
                     }
                     cadenceCounters.consecutiveDeferredFrames++;
@@ -236,8 +236,8 @@ void MediaEncoderSession::LoopEncode() {
                     }
                 }
 
-                if (MediaState().pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
-                    MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                if (auto publication = MediaState().pSharedMem.Publish(); publication && currentEncodeMs > frameIntervalMs * 1.10) {
+                    publication->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                 }
 
                 if (popped && frameToProcess && frameToProcess->isInjectMode && submission.Accepted()) {
@@ -275,12 +275,12 @@ void MediaEncoderSession::LoopEncode() {
                     lastSuccessfullyEncodedInjectLineage = MakeInjectFrameLineage(*frameToProcess);
                 }
 
-                if (MediaState().pSharedMem) {
-                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                    publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                     if (isLivePhase) {
-                        MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        publication->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     } else if (isDrainPhase) {
-                        MediaState().pSharedMem->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        publication->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
                 if (submission.Accepted() && frameToProcess) {
@@ -288,12 +288,12 @@ void MediaEncoderSession::LoopEncode() {
                 }
             } else {
                 cadenceCounters.consecutiveDeferredFrames = 0;
-                if (submission.Accepted() && MediaState().pSharedMem) {
-                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                if (auto publication = MediaState().pSharedMem.Publish(); submission.Accepted() && publication) {
+                    publication->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                     if (isLivePhase) {
-                        MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        publication->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     } else if (isDrainPhase) {
-                        MediaState().pSharedMem->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        publication->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }
@@ -566,8 +566,8 @@ void MediaEncoderSession::ObserveEncodedInjectLineage(const QueuedFrame& observe
                 "gen=%u ts=%lld)",
                 context, observedFrame.frameIndex, lineage.previousFrameIndex, observedFrame.ringIndex, observedFrame.textureIndex,
                 observedFrame.transportGeneration, static_cast<long long>(observedFrame.timestamp));
-        if (MediaState().pSharedMem) {
-            MediaState().pSharedMem->runtimeState.frameIndexRegressions.fetch_add(1, std::memory_order_relaxed);
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            publication->runtimeState.frameIndexRegressions.fetch_add(1, std::memory_order_relaxed);
         }
     }
     if (lineage.textureReuse) {
@@ -576,8 +576,8 @@ void MediaEncoderSession::ObserveEncodedInjectLineage(const QueuedFrame& observe
                 context, observedFrame.textureIndex, observedFrame.frameIndex, lineage.previousTextureFrame, observedFrame.ringIndex,
                 static_cast<unsigned long long>(observedFrame.fenceValue), observedFrame.transportGeneration,
                 static_cast<long long>(observedFrame.timestamp));
-        if (MediaState().pSharedMem) {
-            MediaState().pSharedMem->runtimeState.textureReuseAnomalies.fetch_add(1, std::memory_order_relaxed);
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            publication->runtimeState.textureReuseAnomalies.fetch_add(1, std::memory_order_relaxed);
         }
     }
 }

@@ -395,6 +395,22 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.luidLow = MediaState().pSharedMem->GetLuidLowPart();
                     qf.luidHigh = MediaState().pSharedMem->GetLuidHighPart();
                     qf.isHDR = MediaState().pSharedMem->GetIsHDR();
+                    if (qf.isShmem) {
+                        const auto geometry = MediaState().pShmem
+                            ? MediaState().pShmem->ReadGeometry(qf.shmemSlot, MediaState().pSharedMem->GetShmemMappingSize())
+                            : ShmemBuffer::Geometry{};
+                        qf.width = geometry.width;
+                        qf.height = geometry.height;
+                        if (!geometry.width) {
+                            dropFrame = true;
+                            auto& invalid = MediaState().pSharedMem->runtimeState.invalidFrameMetadata;
+                            const uint32_t count = invalid.fetch_add(1, std::memory_order_relaxed) + 1;
+                            if (count <= 4 || count % 500 == 0) {
+                                LogWarn("[Inject Thread] Invalid shared-pixel geometry (slot=%d count=%u)",
+                                        qf.shmemSlot, count);
+                            }
+                        }
+                    }
 
                     // Inject textures are swap-chain-local, while Windows cursor
                     // coordinates are desktop-global. Resolve the game client

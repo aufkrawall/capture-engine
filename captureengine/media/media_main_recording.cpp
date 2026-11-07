@@ -247,27 +247,30 @@ uint32_t SaturatingToUint32(uint64_t value) {
 }
 
 void SetCapturePipelinePhase(CapturePipelinePhase phase) {
-    if (!MediaState().pSharedMem) {
-        return;
+    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+        publication->runtimeState.capturePhase.store(static_cast<uint32_t>(phase), std::memory_order_release);
     }
-    MediaState().pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(phase), std::memory_order_release);
 }
 
 bool TryArmCapturePipelineWarmup() {
-    return !MediaState().pSharedMem ||
-           ce::recording_lifecycle::TryArmWarmup(MediaState().pSharedMem->runtimeState.capturePhase, MediaState().recording);
+    auto publication = MediaState().pSharedMem.Publish();
+    return !publication ||
+           ce::recording_lifecycle::TryArmWarmup(publication->runtimeState.capturePhase, MediaState().recording);
 }
 
 bool TryCommitCapturePipelineLive() {
-    return !MediaState().pSharedMem || ce::recording_lifecycle::TryCommitLive(MediaState().pSharedMem->runtimeState.capturePhase, MediaState().recording);
+    auto publication = MediaState().pSharedMem.Publish();
+    return !publication ||
+           ce::recording_lifecycle::TryCommitLive(publication->runtimeState.capturePhase, MediaState().recording);
 }
 
 CapturePipelinePhase BeginCapturePipelineStop() {
-    if (!MediaState().pSharedMem) {
+    auto publication = MediaState().pSharedMem.Publish();
+    if (!publication) {
         return CapturePipelinePhase::kCancelling;
     }
-    const uint32_t liveFrames = MediaState().pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire);
-    return ce::recording_lifecycle::BeginStop(MediaState().pSharedMem->runtimeState.capturePhase, liveFrames);
+    const uint32_t liveFrames = publication->runtimeState.liveFramesEncoded.load(std::memory_order_acquire);
+    return ce::recording_lifecycle::BeginStop(publication->runtimeState.capturePhase, liveFrames);
 }
 
 void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
@@ -384,10 +387,10 @@ void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& heal
     MediaState().recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
     MediaState().recordingCapacityAttributedDebtMs.store(health.capacityAttributedDebtMs, std::memory_order_relaxed);
     MediaState().recordingHealthFlags.store(health.flags, std::memory_order_release);
-    if (MediaState().pSharedMem) {
-        MediaState().pSharedMem->runtimeState.recordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
-        MediaState().pSharedMem->runtimeState.recordingHealthFlags.store(health.flags, std::memory_order_release);
+    if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+        publication->runtimeState.recordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
+        publication->runtimeState.recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
+        publication->runtimeState.recordingHealthFlags.store(health.flags, std::memory_order_release);
     }
 }
 
@@ -528,15 +531,24 @@ void DetachFromSharedLiveState(const char* reason) {
     SharedMemoryLayout* const view = detached.get();
     // Snapshot and route commit share the publication barriers across both layers.
     // The stopped session retains both mappings until all of its workers join.
-    MediaState().pSharedMem.Detach(*live, *view);
+    MediaState().pSharedMem.Detach(*live, *view, [](const SharedMemoryLayout& source, SharedMemoryLayout& target) {
+        const auto engine = MediaState().engine;
+        if (ce::mediaengine_api::MediaEngine_DetachSharedMem && engine &&
+            ce::mediaengine_api::MediaEngine_DetachSharedMem(engine, &source, &target)) {
+            return;
+        }
+        ce::detached_live_state::CopyForDetachedSession(source, target);
+        if (ce::mediaengine_api::MediaEngine_SetSharedMem && engine)
+            ce::mediaengine_api::MediaEngine_SetSharedMem(engine, &target, MediaState().pShmem);
+    });
     MediaState().detachedSharedMem = std::move(detached);
 
-    const bool engineDetached = ce::mediaengine_api::MediaEngine_DetachSharedMem && MediaState().engine &&
-                                ce::mediaengine_api::MediaEngine_DetachSharedMem(MediaState().engine, live, view);
-    if (!engineDetached) {
-        if (ce::mediaengine_api::MediaEngine_SetSharedMem && MediaState().engine)
-            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, view, MediaState().pShmem);
-    }
+    // A worker may have reached live while the owner was handing over ingest.
+    // Both publication routes are now private, so this is the final visible state.
+    live->runtimeState.isRecording.store(false, std::memory_order_release);
+    live->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+    live->runtimeState.audioOnly.store(false, std::memory_order_release);
+    SignalStatusOverlaySync();
     // The hook drops its imports of this session's encoder textures now, not after the drain: a newer recording
     // publishes its own. The drain keeps encoding from them through the copied handshake.
     live->useEncoderTextures.store(false, std::memory_order_release);
@@ -621,25 +633,26 @@ void ReleaseStatusOverlayDarkForCapture(const char* reason) {
 }
 
 void SetRecordingVisibleState(bool enabled) {
-    if (!MediaState().pSharedMem) {
+    auto publication = MediaState().pSharedMem.Publish();
+    if (!publication) {
         return;
     }
 
     if (enabled) {
-        const bool wasVisible = MediaState().pSharedMem->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
+        const bool wasVisible = publication->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
         if (!wasVisible) {
             // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            MediaState().pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
+            publication->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
         }
         // Propagate audio-only flag so overlay can show AUDIO vs REC
-        MediaState().pSharedMem->runtimeState.audioOnly.store(MediaState().audioOnly, std::memory_order_release);
-        MediaState().pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
-        ReleaseStatusOverlayDarkForCapture("recording live");
+        publication->runtimeState.audioOnly.store(MediaState().audioOnly, std::memory_order_release);
+        publication->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+        ce::status_overlay::ReleaseDarkForCapture(publication->runtimeState, "recording live");
     } else {
-        MediaState().pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
-        MediaState().pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-        MediaState().pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
-        ReleaseStatusOverlayDarkForCapture("recording not live");
+        publication->runtimeState.isRecording.store(false, std::memory_order_release);
+        publication->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+        publication->runtimeState.audioOnly.store(false, std::memory_order_release);
+        ce::status_overlay::ReleaseDarkForCapture(publication->runtimeState, "recording not live");
     }
     // Publish the resolved status before waking the overlay so it renders the final state.
     SignalStatusOverlaySync();

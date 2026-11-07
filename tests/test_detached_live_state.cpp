@@ -142,7 +142,19 @@ TEST(DetachedLiveStateTest, TheRefRetargetsBetweenLayoutsAndReadsAsAPointer) {
     EXPECT_EQ(raw, second.get());
 
     auto third = std::make_unique<SharedMemoryLayout>();
-    ref.Detach(*second, *third);
+    ce::RecordingMemory engine;
+    engine.Retarget(second.get(), nullptr);
+    ref.Detach(*second, *third, [&](const SharedMemoryLayout& source, SharedMemoryLayout& target) {
+        {
+            auto enginePublication = engine.Publish();
+            enginePublication->runtimeState.muxQueuePackets.store(7);
+        }
+        engine.Detach(source, target);
+    });
     EXPECT_EQ(ref.get(), third.get());
+    EXPECT_EQ(engine.get(), third.get());
     EXPECT_EQ(third->runtimeState.framesEncoded.load(), 9u);
+    EXPECT_EQ(third->runtimeState.muxQueuePackets.load(), 7u);
+    ref.Publish()->runtimeState.framesEncoded.store(10);
+    EXPECT_EQ(second->runtimeState.framesEncoded.load(), 9u);
 }

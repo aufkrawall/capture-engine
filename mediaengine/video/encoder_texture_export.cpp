@@ -14,8 +14,6 @@ namespace ce::media {
 struct EncoderTextureExport::Set {
     ComGuard<ID3D11Texture2D> textures[ENCODER_TEXTURE_SLOT_COUNT];
     HANDLE kmt[ENCODER_TEXTURE_SLOT_COUNT] = {};  // legacy global handles: they die with the textures
-    ComGuard<ID3D11Fence> fence;
-    HandleGuard fenceHandle;
     EncoderTextureRequest request;
 };
 
@@ -32,7 +30,7 @@ EncoderTextureExport::~EncoderTextureExport() {
     device_.reset();
 }
 
-ID3D11Device5* EncoderTextureExport::DeviceFor(const EncoderTextureRequest& request, const char** failedStage,
+ID3D11Device* EncoderTextureExport::DeviceFor(const EncoderTextureRequest& request, const char** failedStage,
                                                HRESULT* hr) {
     if (device_ && deviceLuidLow_ == request.luidLow && deviceLuidHigh_ == request.luidHigh)
         return device_.get();
@@ -64,13 +62,7 @@ ID3D11Device5* EncoderTextureExport::DeviceFor(const EncoderTextureRequest& requ
         *failedStage = "device creation";
         return nullptr;
     }
-    // Shared fences need ID3D11Device5.
-    *hr = base->QueryInterface(IID_PPV_ARGS(device_.put()));
-    if (FAILED(*hr) || !device_) {
-        device_.reset();
-        *failedStage = "ID3D11Device5";
-        return nullptr;
-    }
+    device_ = std::move(base);
     deviceLuidLow_ = request.luidLow;
     deviceLuidHigh_ = request.luidHigh;
     DLL_Log("[EncoderTextures] Device created on adapter %08x:%08x (feature level 0x%x)",
@@ -120,7 +112,7 @@ bool EncoderTextureExport::Ensure(const EncoderTextureRequest& request, SharedMe
     }
     const char* failedStage = nullptr;
     HRESULT hr = S_OK;
-    ID3D11Device5* device = DeviceFor(request, &failedStage, &hr);
+    ID3D11Device* device = DeviceFor(request, &failedStage, &hr);
     if (!device) {
         LogFailure(request, failedStage, hr);
         return false;
@@ -153,18 +145,6 @@ bool EncoderTextureExport::Ensure(const EncoderTextureRequest& request, SharedMe
             return false;
         }
     }
-    hr = device->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(fresh->fence.put()));
-    if (FAILED(hr)) {
-        LogFailure(request, "fence creation", hr);
-        return false;
-    }
-    HANDLE fenceHandle = nullptr;
-    hr = fresh->fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fenceHandle);
-    if (FAILED(hr) || !fenceHandle) {
-        LogFailure(request, "fence handle", FAILED(hr) ? hr : E_HANDLE);
-        return false;
-    }
-    fresh->fenceHandle.reset(fenceHandle);
 
     // Installed before it is published: a producer frame that carries the new handles
     // must find them.
@@ -191,26 +171,26 @@ void EncoderTextureExport::Publish(const Set& set, uint64_t generation, bool fre
             return;  // a re-request of the set the route already advertises
         for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; ++i)
             publication->encoderTextures.SetKmtTextureHandle(i, reinterpret_cast<uint64_t>(set.kmt[i]));
-        if (!publication->useEncoderTextures.load(std::memory_order_acquire)) {
-            publication->encoderTextures.SetFenceHandle(reinterpret_cast<uint64_t>(set.fenceHandle.get()));
-        }
+        publication->encoderTextures.SetKmtAdapterKey(
+            (static_cast<uint64_t>(static_cast<uint32_t>(set.request.luidHigh)) << 32) |
+            static_cast<uint32_t>(set.request.luidLow));
         publication->encoderTextures.SetWidth(set.request.width);
         publication->encoderTextures.SetHeight(set.request.height);
         publication->encoderTextures.SetFormat(set.request.format);
-        publication->encoderTextures.kmtReady.store(true, std::memory_order_release);
         publication->encoderTextures.ready.store(true, std::memory_order_release);
+        publication->encoderTextures.kmtReady.store(true, std::memory_order_release);
         published = true;
     }
     if (!fresh && !published)
         return;
     // A withdrawn publication of a kept set is advertised again, so true from Ensure
     // always means the current route carries the set.
-    DLL_Log("[EncoderTextures] %s generation=%llu %ux%u format=%u slots=%d adapter=%08x:%08x fence=%p "
+    DLL_Log("[EncoderTextures] %s generation=%llu %ux%u format=%u slots=%d adapter=%08x:%08x "
             "published=%d",
             fresh ? "Exported" : "Republished", static_cast<unsigned long long>(generation), set.request.width,
             set.request.height, set.request.format, ENCODER_TEXTURE_SLOT_COUNT,
             static_cast<unsigned>(set.request.luidHigh), static_cast<unsigned>(set.request.luidLow),
-            set.fenceHandle.get(), published ? 1 : 0);
+             published ? 1 : 0);
 }
 
 void EncoderTextureExport::Withdraw() {

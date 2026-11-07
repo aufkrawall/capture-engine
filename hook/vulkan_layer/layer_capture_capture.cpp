@@ -86,18 +86,13 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 
     auto* mem = g_IPCClient.GetSharedMem();
     const bool allowDxvkEncoderTextures = (state.interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
-    if (allowDxvkEncoderTextures && mem) {
-        mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, true);
-    }
     bool encoderAdoptionRequested = false;
     if (allowDxvkEncoderTextures && mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
         mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
         state.captureFrameCounter >= state.nextEncoderImportRetryFrame) {
         const uint32_t format = VkFormatToDXGI(static_cast<VkFormat>(state.captureFormat));
-        const int32_t currentLuidLow = static_cast<int32_t>(state.luidKey & 0xFFFFFFFFu);
-        const int32_t currentLuidHigh = static_cast<int32_t>(state.luidKey >> 32);
         const auto offer = ce::ValidateEncoderKmtOffer(*mem, state.captureWidth, state.captureHeight, format,
-                                                       false, currentLuidLow, currentLuidHigh);
+                                                       state.luidKey);
         encoderAdoptionRequested = offer == ce::EncoderKmtOffer::Matches;
         if (offer == ce::EncoderKmtOffer::Withdrawn) {
             LayerLog("Vulkan Layer: Withdrew stale encoder KMT offer; requesting %ux%u format=%u",
@@ -128,17 +123,12 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                     state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
                     return false;
                 }
-                for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
-                    if (textureIt->vkDevice == device && textureIt->luidKey == state.luidKey &&
-                        textureIt->width == state.captureWidth && textureIt->height == state.captureHeight &&
-                        textureIt->vkFormat == state.captureFormat) {
-                        DestroySharedTextureEntryResources(*textureIt, disp);
-                        textureIt = layer_capture_g_TextureCache.erase(textureIt);
-                    } else {
-                        ++textureIt;
-                    }
+                if (!mem->encoderTextures.kmtReady.load(std::memory_order_acquire) ||
+                    mem->encoderTextures.GetKmtTextureHandle(0) != reinterpret_cast<uint64_t>(kmtHandles[0])) {
+                    DestroySharedTextureEntryResources(encoderEntry, disp);
+                    return false;
                 }
-                layer_capture_g_TextureCache.push_back(std::move(encoderEntry));
+                InstallEncoderCaptureTextures(std::move(encoderEntry), disp);
             }
 
             LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, state.captureWidth, state.captureHeight,
@@ -160,7 +150,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
             }
         } else {
             state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
-            mem->useEncoderTextures.store(false, std::memory_order_release);
+            mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
             mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
             LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer");
         }
@@ -177,6 +167,15 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     }
     if (!sharedTextures || !sharedTextures->valid)
         return false;
+    if (sharedTextures->encoderTextureImport &&
+        (!mem || !mem->useEncoderTextures.load(std::memory_order_acquire))) {
+        // A stopped recording withdrew its direct route. Its cache entry must
+        // never serve the next recording as though it were a layer-owned pool.
+        state.initialized = false;
+        if (captureStateMissing)
+            *captureStateMissing = true;
+        return false;
+    }
     if (state.copyFences.empty() || commandResources->buffers.empty() || state.signalSemaphores.empty() ||
         sharedTextures->vkImages.empty()) {
         LayerLog("Vulkan Layer: Capture skipped because synchronization/image resources are incomplete");

@@ -338,9 +338,7 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                                 memcpy(dst + (y * dstPitch), src + (y * rect.Pitch), dstPitch);
                             }
 
-                            shmBuf->validWidth = copyW;
-                            shmBuf->validHeight = copyH;
-                            shmBuf->pitch = dstPitch;
+                            shmBuf->geometry[slot] = {copyW, copyH, dstPitch};
                             shmBuf->writeSlot.store(slot);
                             shmBuf->mark_ready(slot);
                             SignalFrameReady(g_IPC, 100 + slot, qpc.QuadPart, 0);

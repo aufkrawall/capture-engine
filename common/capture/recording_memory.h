@@ -50,13 +50,20 @@ public:
     }
 
     uint64_t Detach(const SharedMemoryLayout& fallbackLive, SharedMemoryLayout& detached) {
+        return Detach(fallbackLive, detached, detached_live_state::CopyForDetachedSession);
+    }
+
+    // The media owner can take the engine's publication barrier while its own
+    // writers are excluded. Both routes then use the same snapshot.
+    template <typename CopyState>
+    uint64_t Detach(const SharedMemoryLayout& fallbackLive, SharedMemoryLayout& detached, CopyState&& copyState) {
         std::unique_lock lock(publications_);
         const SharedMemoryLayout* current = layout_.load(std::memory_order_relaxed);
         if (current == &detached)
             return 0;
         // Copy after the last old publication, while new publications are
         // excluded. A pre-barrier copy could lose the producer's final update.
-        detached_live_state::CopyForDetachedSession(current ? *current : fallbackLive, detached);
+        copyState(current ? *current : fallbackLive, detached);
         layout_.store(&detached, std::memory_order_release);
         return ++generation_;
     }

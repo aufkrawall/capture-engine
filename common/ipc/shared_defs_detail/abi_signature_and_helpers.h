@@ -37,6 +37,8 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, SHARED_MEMORY_VERSION);
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout));
     hash = MixSharedMemoryAbiValue(hash, alignof(SharedMemoryLayout));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(ShmemBuffer));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(ShmemBuffer, geometry));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, overlayConfig));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, graphicsConfig));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logFilePath));

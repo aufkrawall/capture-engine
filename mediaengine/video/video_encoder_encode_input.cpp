@@ -69,10 +69,9 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
     ShmemBuffer* const pShmem = pSharedMem.PixelBuffer();
     if (isShmem) {
         if (pShmem && pSharedMem && pSharedMem->GetShmemMappingCreated()) {
-            const uint32_t uploadWidth =
-                pSharedMem->GetWidth() > 0 ? pSharedMem->GetWidth() : static_cast<uint32_t>(this->width);
-            const uint32_t uploadHeight =
-                pSharedMem->GetHeight() > 0 ? pSharedMem->GetHeight() : static_cast<uint32_t>(this->height);
+            const auto geometry = pShmem->ReadGeometry(shmemSlot, pSharedMem->GetShmemMappingSize());
+            const uint32_t uploadWidth = geometry.width;
+            const uint32_t uploadHeight = geometry.height;
 
             if (uploadWidth > 0 && uploadHeight > 0) {
                 // Own texture on the encoder device for CPU shmem uploads
@@ -97,8 +96,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                     d3d11Device->CreateTexture2D(&desc, nullptr, &shmemUploadTexture);
                 }
                 if (shmemUploadTexture) {
-                    int slot = (shmemSlot >= 0 && shmemSlot < 2) ? shmemSlot : 0;
-                    uint8_t* pSrc = pShmem->GetData(slot);
+                    uint8_t* pSrc = pShmem->GetData(shmemSlot);
                     if (pSrc) {
                         D3D11_BOX box;
                         box.left = 0;
@@ -107,7 +105,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                         box.bottom = uploadHeight;
                         box.front = 0;
                         box.back = 1;
-                        d3d11Context->UpdateSubresource(shmemUploadTexture, 0, &box, pSrc, pShmem->pitch, 0);
+                        d3d11Context->UpdateSubresource(shmemUploadTexture, 0, &box, pSrc, geometry.pitch, 0);
                     }
                     bgraTex = shmemUploadTexture;
                     bgraTex->AddRef();

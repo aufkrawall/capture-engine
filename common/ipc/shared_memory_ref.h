@@ -6,7 +6,6 @@
 // Every access loads the target once, atomically. A retarget only ever swaps one valid layout for another while
 // threads run; it is set to null only after they have joined (unmapping).
 
-#include <atomic>
 #include "common/capture/recording_memory.h"
 
 struct SharedMemoryLayout;
@@ -29,8 +28,9 @@ public:
     SharedMemoryLayout* operator->() const noexcept { return get(); }
     operator SharedMemoryLayout*() const noexcept { return get(); }
 
-    uint64_t Detach(const SharedMemoryLayout& fallbackLive, SharedMemoryLayout& detached) {
-        return memory_.Detach(fallbackLive, detached);
+    template <typename CopyState>
+    uint64_t Detach(const SharedMemoryLayout& fallbackLive, SharedMemoryLayout& detached, CopyState&& copyState) {
+        return memory_.Detach(fallbackLive, detached, copyState);
     }
     RecordingMemory::Publication Publish() { return memory_.Publish(); }
 

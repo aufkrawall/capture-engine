@@ -5,7 +5,7 @@
 
 void MediaEncoderSession::LoopHealth() {
         if (MediaState().pSharedMem && GetTickCount() - lastHealthLog >= 1000) {
-            auto& state = MediaState().pSharedMem->runtimeState;
+            const auto& state = MediaState().pSharedMem->runtimeState;
             const uint32_t avgFrameAgeUs =
                 cadenceCounters.frameAgeSamples > 0
                     ? SaturatingToUint32(cadenceCounters.frameAgeAccumUs / cadenceCounters.frameAgeSamples)
@@ -26,25 +26,27 @@ void MediaEncoderSession::LoopHealth() {
                 wgcSelectionErrorSamples > 0 ? static_cast<int32_t>(wgcSelectionErrorSignedAccumUs /
                                                                     static_cast<int64_t>(wgcSelectionErrorSamples))
                                              : 0;
-            state.frameAgeAvgUs.store(avgFrameAgeUs, std::memory_order_relaxed);
-            state.frameAgeMaxUs.store(cadenceCounters.frameAgeMaxUs, std::memory_order_relaxed);
-            state.selectionErrorAvgUs.store(avgSelectionErrorUs, std::memory_order_relaxed);
-            state.selectionErrorMaxUs.store(cadenceCounters.outputScheduleErrorMaxUs, std::memory_order_relaxed);
-            state.selectionErrorSignedAvgUs.store(avgSignedSelectionErrorUs, std::memory_order_relaxed);
-            state.selectionEarlyMaxUs.store(cadenceCounters.outputScheduleEarlyMaxUs, std::memory_order_relaxed);
-            state.selectionLateMaxUs.store(cadenceCounters.outputScheduleLateMaxUs, std::memory_order_relaxed);
-            state.wgcSelectionErrorAvgUs.store(avgWgcSelectionErrorUs, std::memory_order_relaxed);
-            state.wgcSelectionErrorMaxUs.store(wgcSelectionErrorMaxUs, std::memory_order_relaxed);
-            state.wgcSelectionErrorSignedAvgUs.store(avgSignedWgcSelectionErrorUs, std::memory_order_relaxed);
-            state.wgcSelectionEarlyMaxUs.store(wgcSelectionEarlyMaxUs, std::memory_order_relaxed);
-            state.wgcSelectionLateMaxUs.store(wgcSelectionLateMaxUs, std::memory_order_relaxed);
-            state.consecutiveDeferredFrames.store(cadenceCounters.consecutiveDeferredFrames, std::memory_order_relaxed);
-            state.maxConsecutiveDeferredFrames.store(cadenceCounters.maxConsecutiveDeferredFrames,
-                                                     std::memory_order_relaxed);
-            state.consecutiveDuplicateFrames.store(cadenceCounters.consecutiveDuplicateFrames,
-                                                   std::memory_order_relaxed);
-            state.maxConsecutiveDuplicateFrames.store(cadenceCounters.maxConsecutiveDuplicateFrames,
-                                                      std::memory_order_relaxed);
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                publication->runtimeState.frameAgeAvgUs.store(avgFrameAgeUs, std::memory_order_relaxed);
+                publication->runtimeState.frameAgeMaxUs.store(cadenceCounters.frameAgeMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.selectionErrorAvgUs.store(avgSelectionErrorUs, std::memory_order_relaxed);
+                publication->runtimeState.selectionErrorMaxUs.store(cadenceCounters.outputScheduleErrorMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.selectionErrorSignedAvgUs.store(avgSignedSelectionErrorUs, std::memory_order_relaxed);
+                publication->runtimeState.selectionEarlyMaxUs.store(cadenceCounters.outputScheduleEarlyMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.selectionLateMaxUs.store(cadenceCounters.outputScheduleLateMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.wgcSelectionErrorAvgUs.store(avgWgcSelectionErrorUs, std::memory_order_relaxed);
+                publication->runtimeState.wgcSelectionErrorMaxUs.store(wgcSelectionErrorMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.wgcSelectionErrorSignedAvgUs.store(avgSignedWgcSelectionErrorUs, std::memory_order_relaxed);
+                publication->runtimeState.wgcSelectionEarlyMaxUs.store(wgcSelectionEarlyMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.wgcSelectionLateMaxUs.store(wgcSelectionLateMaxUs, std::memory_order_relaxed);
+                publication->runtimeState.consecutiveDeferredFrames.store(cadenceCounters.consecutiveDeferredFrames, std::memory_order_relaxed);
+                publication->runtimeState.maxConsecutiveDeferredFrames.store(cadenceCounters.maxConsecutiveDeferredFrames,
+                                                         std::memory_order_relaxed);
+                publication->runtimeState.consecutiveDuplicateFrames.store(cadenceCounters.consecutiveDuplicateFrames,
+                                                       std::memory_order_relaxed);
+                publication->runtimeState.maxConsecutiveDuplicateFrames.store(cadenceCounters.maxConsecutiveDuplicateFrames,
+                                                          std::memory_order_relaxed);
+            }
 
             const uint32_t dupNoSource = static_cast<uint32_t>(captureSessionSummary.duplicateNoSourceTicks);
             const uint32_t dupDeferred = static_cast<uint32_t>(captureSessionSummary.duplicateDeferredTicks);
@@ -78,9 +80,11 @@ void MediaEncoderSession::LoopHealth() {
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             const double sustainableOutputFps = ce::capture_policy::GetEncoderSustainableOutputFps(smoothedEncodeMs);
-            state.encoderSustainFpsX100.store(
-                static_cast<uint32_t>(std::clamp(sustainableOutputFps * 100.0, 0.0, 4294967295.0)),
-                std::memory_order_relaxed);
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                publication->runtimeState.encoderSustainFpsX100.store(
+                    static_cast<uint32_t>(std::clamp(sustainableOutputFps * 100.0, 0.0, 4294967295.0)),
+                    std::memory_order_relaxed);
+            }
             const uint32_t encoderBudgetUtilizationPermille =
                 ce::capture_policy::GetEncoderBudgetUtilizationPermille(smoothedEncodeMs, frameIntervalMs);
             const bool encoderTooSlowForTarget =
@@ -166,11 +170,13 @@ void MediaEncoderSession::LoopHealth() {
                     ? static_cast<int32_t>(wgcDelayRawMinusPredictedWindowSignedAccumUs /
                                            static_cast<int64_t>(wgcDelayRawMinusPredictedWindowSamples))
                     : 0;
-            state.wgcQueueEmptyTickPermille.store(wgcNoFreshTickPermille, std::memory_order_relaxed);
-            state.wgcBufferedAtTickAvgPermille.store(bufferedAtTickAvgPermille, std::memory_order_relaxed);
-            state.wgcBufferedAtTickMin.store(bufferedAtTickMinValue, std::memory_order_relaxed);
-            state.wgcStarvedTickCount.store(wgcNoFreshTickCount, std::memory_order_relaxed);
-            state.wgcSingleFrameTickCount.store(wgcNoReserveTickCount, std::memory_order_relaxed);
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                publication->runtimeState.wgcQueueEmptyTickPermille.store(wgcNoFreshTickPermille, std::memory_order_relaxed);
+                publication->runtimeState.wgcBufferedAtTickAvgPermille.store(bufferedAtTickAvgPermille, std::memory_order_relaxed);
+                publication->runtimeState.wgcBufferedAtTickMin.store(bufferedAtTickMinValue, std::memory_order_relaxed);
+                publication->runtimeState.wgcStarvedTickCount.store(wgcNoFreshTickCount, std::memory_order_relaxed);
+                publication->runtimeState.wgcSingleFrameTickCount.store(wgcNoReserveTickCount, std::memory_order_relaxed);
+            }
             uint32_t wgcCaptureHealthFlags = 0;
             if (wgcSourceStarvedCurrent ||
                 (wgcNoFreshTickPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille &&
@@ -180,8 +186,10 @@ void MediaEncoderSession::LoopHealth() {
             if (wgcSchedulerLimitedCurrent) {
                 wgcCaptureHealthFlags |= ce::capture_policy::kWgcCaptureHealthFlagSchedulerLimited;
             }
-            state.wgcCaptureHealthFlags.store(wgcCaptureHealthFlags, std::memory_order_relaxed);
-            state.wgcCaptureHealthFps.store(wgcRecentInputMin250Fps, std::memory_order_relaxed);
+            if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+                publication->runtimeState.wgcCaptureHealthFlags.store(wgcCaptureHealthFlags, std::memory_order_relaxed);
+                publication->runtimeState.wgcCaptureHealthFps.store(wgcRecentInputMin250Fps, std::memory_order_relaxed);
+            }
 
             const bool rawRecordingEncoderPressure =
                 MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ||
