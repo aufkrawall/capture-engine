@@ -57,7 +57,9 @@ solver's 1e4 rail with 15,699 spectral bits in one short-window channel because
 distortion still outweighed bits there, so coarser legal quantization was never
 reached. The outer NMR loop checks the decoder buffer and strict-rate bound against
 the final packet size including the end marker and byte padding. It shrinks lambda
-by at least 10% per retry and restores in-place coefficients. After 32 passes it
+by at least 10% per retry and restores in-place coefficients and the NMR rate-control
+history from before the attempted frame. Static curves and pair-search scratch stay
+in place. Only an accepted pass advances rate control. After 32 passes it
 writes a decodable silent packet using only mandatory syntax. An impossible strict
 bound can be below that minimum. The metered fallback log includes the rejected
 size, final size and bound. Returning an error makes libavcodec skip `frame_num++`

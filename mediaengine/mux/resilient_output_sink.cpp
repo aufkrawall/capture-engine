@@ -16,6 +16,7 @@ extern "C" {
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <limits>
 #include <system_error>
 #include <vector>
 
@@ -162,9 +163,6 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
     LARGE_INTEGER spoolFileSizeLi{};
     if (!GetFileSizeEx(spool, &spoolFileSizeLi) ||
         spoolFileSizeLi.QuadPart < static_cast<LONGLONG>(sizeof(SpoolFileHeader))) {
-        CloseHandle(spoolGuard.h);
-        spoolGuard.h = INVALID_HANDLE_VALUE;
-        DeleteFileW(spoolPath.c_str());
         result.outcome = SpoolReplayOutcome::kCorruptSpool;
         result.detail = "truncated spool header";
         return result;
@@ -174,14 +172,18 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
     SpoolFileHeader header{};
     if (!ReadExact(spool, &header, sizeof(header)) || header.magic != kSpoolFileMagic ||
         header.version != kSpoolFileVersion) {
-        CloseHandle(spoolGuard.h);
-        spoolGuard.h = INVALID_HANDLE_VALUE;
-        DeleteFileW(spoolPath.c_str());
         result.outcome = SpoolReplayOutcome::kCorruptSpool;
         result.detail = "invalid spool header";
         return result;
     }
     result.finalized = (header.finalized != 0);
+    const bool requireCompleteRecords = result.finalized || resumedTarget != nullptr;
+    constexpr uint64_t kMaxFileOffset = static_cast<uint64_t>(std::numeric_limits<LONGLONG>::max());
+    if (header.baseFileSize > kMaxFileOffset || header.logicalFileSize > kMaxFileOffset) {
+        result.outcome = SpoolReplayOutcome::kCorruptSpool;
+        result.detail = "header file size out of signed 64-bit range";
+        return result;
+    }
 
     const DWORD creationDisposition = (header.baseFileSize == 0) ? OPEN_ALWAYS : OPEN_EXISTING;
     HANDLE target = CreateFileW(stagingPath.c_str(), GENERIC_READ | GENERIC_WRITE, targetShareMode, nullptr,
@@ -221,7 +223,7 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
     uint64_t spoolCursor = sizeof(SpoolFileHeader);
     uint64_t highestEndOffset = header.baseFileSize;
 
-    while (spoolCursor + sizeof(SpoolRecordHeader) <= spoolFileSize) {
+    while (spoolCursor < spoolFileSize) {
         if (cancel && *cancel != 0) {
             result.outcome = SpoolReplayOutcome::kCanceled;
             result.detail = "canceled";
@@ -231,35 +233,32 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
             onProgress();
 
         SpoolRecordHeader record{};
-        size_t headerBytesRead = 0;
-        if (!ReadExact(spool, &record, sizeof(record), &headerBytesRead)) {
-            if (headerBytesRead == 0)
-                break;
-            if (header.finalized) {
+        if (spoolFileSize - spoolCursor < sizeof(record)) {
+            if (requireCompleteRecords) {
                 result.outcome = SpoolReplayOutcome::kCorruptSpool;
-                result.detail = "unexpected eof reading record header in finalized spool";
+                result.detail = "truncated record header";
                 return result;
             }
             break;  // unfinalized tail record in crash spool
         }
+        if (!ReadExact(spool, &record, sizeof(record)) || record.magic != kSpoolRecordMagic) {
+            result.outcome = SpoolReplayOutcome::kCorruptSpool;
+            result.detail = "record header read or magic failed";
+            return result;
+        }
         spoolCursor += sizeof(record);
-        if (record.magic != kSpoolRecordMagic || spoolCursor + record.payloadBytes > spoolFileSize) {
-            if (header.finalized) {
+        if (record.payloadBytes > spoolFileSize - spoolCursor) {
+            if (requireCompleteRecords) {
                 result.outcome = SpoolReplayOutcome::kCorruptSpool;
-                result.detail = "corrupt record magic or payload length in finalized spool";
+                result.detail = "truncated record payload";
                 return result;
             }
             break;  // truncated tail record in unfinalized crash spool
         }
-        constexpr uint64_t kMaxFileOffset = static_cast<uint64_t>(std::numeric_limits<LONGLONG>::max());
-        if (record.targetOffset > kMaxFileOffset ||
-            record.targetOffset + record.payloadBytes > kMaxFileOffset) {
-            if (header.finalized) {
-                result.outcome = SpoolReplayOutcome::kCorruptSpool;
-                result.detail = "record offset out of signed 64-bit range";
-                return result;
-            }
-            break;  // corrupt unfinalized tail
+        if (record.targetOffset > kMaxFileOffset - record.payloadBytes) {
+            result.outcome = SpoolReplayOutcome::kCorruptSpool;
+            result.detail = "record offset out of signed 64-bit range";
+            return result;
         }
         if (!SeekHandle(target, record.targetOffset)) {
             result.outcome = SpoolReplayOutcome::kTargetUnreachable;
@@ -332,7 +331,8 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
     }
     CloseHandle(spoolGuard.h);
     spoolGuard.h = INVALID_HANDLE_VALUE;
-    DeleteFileW(spoolPath.c_str());
+    if (!resumedTarget)
+        DeleteFileW(spoolPath.c_str());
 
     result.outcome = SpoolReplayOutcome::kReplayed;
     return result;
@@ -694,10 +694,9 @@ bool ResilientOutputSink::WriteSpoolHeader(bool finalized) {
     const SpoolFileHeader header{
         kSpoolFileMagic, kSpoolFileVersion, confirmedTargetSize_, logicalSize_, finalized ? 1u : 0u, 0u,
     };
-    const bool ok = WriteAll(spoolHandle_, &header, sizeof(header));
-    if (previousPos > sizeof(header))
-        SeekHandle(spoolHandle_, previousPos, FILE_BEGIN);
-    return ok;
+    const bool written = WriteAll(spoolHandle_, &header, sizeof(header));
+    const bool positioned = previousPos <= sizeof(header) || SeekHandle(spoolHandle_, previousPos, FILE_BEGIN);
+    return written && positioned;
 }
 
 void ResilientOutputSink::TryReplayAndResumeDirect() {
@@ -708,8 +707,10 @@ void ResilientOutputSink::TryReplayAndResumeDirect() {
     if (!parent.empty() && GetFileAttributesW(parent.c_str()) == INVALID_FILE_ATTRIBUTES)
         return;
 
-    WriteSpoolHeader(false);
-    FlushFileBuffers(spoolHandle_);
+    if (!WriteSpoolHeader(false) || !FlushFileBuffers(spoolHandle_)) {
+        SeekHandle(spoolHandle_, 0, FILE_END);
+        return;
+    }
 
     HANDLE resumedTarget = INVALID_HANDLE_VALUE;
     const SpoolReplayResult replay = ReplaySpoolInternal(stagingPath_, spoolPath_, FILE_SHARE_READ | FILE_SHARE_WRITE,

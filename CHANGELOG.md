@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **AAC retries and interrupted output:** a rejected AAC quantization pass restores the encoder's rate-control history. Reconnecting to output storage keeps the spool writer open until replay succeeds. Recovery retains corrupt spools and salvages a partial final record only after a crash.
+
 - **Stopping or restarting an active recording:** media workers and the encoder now hand off one shared-state snapshot, so a finishing session cannot leave late updates in the next session. D3D9 shared-memory uploads use the dimensions and pitch of the actual queued pixel slot.
 - **Vulkan zero-copy capture after resize or restart:** offers identify the adapter that allocated the textures. The Vulkan producer owns the timeline fence and commits the imported pool after synchronization is ready. An incompatible import continues on the existing interop route.
 

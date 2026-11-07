@@ -132,6 +132,10 @@ Limits:
   `spooling_` was still true and its handle invalid, so it created nothing. Reconnect tests inject the scheduling
   clock (no sleeps), cover failed replay followed by more queued data, two outages, direct continuation and a
   trailer seek-back patch. The resumed transition log says the replay handle was retained.
+- **Replay cursor and validation (2026-11-07):** reconnect keeps the append handle open and uses a separate read
+  cursor. A complete replay and successful resume seek hand off the destination and then retire the spool.
+  Live and finalized replay require complete records. Crash recovery alone can salvage a truncated final record,
+  and malformed magic or offsets outside the signed file-position range leave the spool available for recovery.
 - **Media-initiated stop notice (`common/capture/media_ended_recording.h`, ABI 75):** when the media helper ends a live
   recording on its own (`OutputFailed`, `SourceContractChanged`, `VideoOutputLost`, or `OutputSpoolExhausted`), it
   publishes `ce::media_end::RequestStop` (`CaptureState::mediaEndedRecording`, encoding the recording's live stamp and

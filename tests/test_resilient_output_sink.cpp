@@ -218,4 +218,26 @@ TEST_F(ResilientOutputSinkTest, ReplayRejectsMalformedRecordOffsetBeyondSignedMa
     EXPECT_EQ(result.outcome, ce::mux::SpoolReplayOutcome::kCorruptSpool);
 }
 
+TEST_F(ResilientOutputSinkTest, OnlyAnUnfinalizedCrashSpoolCanEndWithAPartialRecordHeader) {
+    const auto spoolPath = ce::mux::SpoolPathForStaging(staging_, options_.spoolDirectory);
+    std::filesystem::create_directories(spoolPath.parent_path());
+    UnblockTarget();
+    const auto writeSpool = [&](uint32_t finalized) {
+        // Version 1 header followed by a partial record header from an interrupted append.
+        const uint32_t words[] = {0x4C505343u, 1u, 0u, 0u, 0u, 0u, finalized, 0u, 0x524C5053u};
+        std::ofstream file(spoolPath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(words), sizeof(words));
+    };
+
+    writeSpool(1);
+    EXPECT_EQ(ce::mux::ReplaySpoolForStaging(staging_, options_.spoolDirectory).outcome,
+              ce::mux::SpoolReplayOutcome::kCorruptSpool);
+    EXPECT_TRUE(std::filesystem::exists(spoolPath));
+
+    writeSpool(0);
+    EXPECT_EQ(ce::mux::ReplaySpoolForStaging(staging_, options_.spoolDirectory).outcome,
+              ce::mux::SpoolReplayOutcome::kReplayed);
+    EXPECT_FALSE(std::filesystem::exists(spoolPath));
+}
+
 }  // namespace
