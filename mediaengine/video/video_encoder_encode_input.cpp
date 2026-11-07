@@ -69,9 +69,8 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
     ShmemBuffer* const pShmem = pSharedMem.PixelBuffer();
     if (isShmem) {
         if (pShmem && pSharedMem && pSharedMem->GetShmemMappingCreated()) {
-            // Shmem Path: Upload pixels to our owned texture
-            int texIdx = 0;  // Reuse first shared capture texture (we own it)
-            bgraTex = sharedCaptureTextures[texIdx];
+            // Shmem Path: upload the pixels into exported slot 0, opened on this device.
+            bgraTex = exportedTextureViews.AcquireSlot(instance.encoderTextures, d3d11Device, 0);
 
             if (bgraTex) {
                 // Validation of slot
@@ -91,29 +90,17 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                     // ShmemBuffer Actually ShmemBuffer has pitch.
                     d3d11Context->UpdateSubresource(bgraTex, 0, &box, pSrc, pShmem->pitch, 0);
                 }
-                bgraTex->AddRef();     // For consistency with Release() below
                 d3d11Fence = nullptr;  // No fence for shmem
             }
         }
     } else {
         // Check if layer told us to use our own encoder textures directly
         // (DXVK zero-copy path: layer imported our KMT handles into Vulkan)
-        if (pSharedMem && pSharedMem->useEncoderTextures.load(std::memory_order_acquire) &&
-            sharedCaptureTexturesCreated) {
-            // Find which encoder texture matches by KMT handle
+        if (pSharedMem && pSharedMem->useEncoderTextures.load(std::memory_order_acquire)) {
+            // The exported slot whose KMT handle the producer sent, opened on this device.
             int matchIdx = -1;
-            for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
-                if (sharedCaptureKmtHandles[i] == sharedHandle) {
-                    matchIdx = i;
-                    break;
-                }
-            }
-            if (matchIdx >= 0) {
-                bgraTex = sharedCaptureTextures[matchIdx];
-            }
+            bgraTex = exportedTextureViews.Acquire(instance.encoderTextures, d3d11Device, sharedHandle, &matchIdx);
             if (bgraTex) {
-                bgraTex->AddRef();
-
                 HANDLE directFenceHandle = fenceHandle;
                 if ((!directFenceHandle || directFenceHandle == INVALID_HANDLE_VALUE) && pSharedMem) {
                     directFenceHandle = reinterpret_cast<HANDLE>(pSharedMem->encoderTextures.GetFenceHandle());

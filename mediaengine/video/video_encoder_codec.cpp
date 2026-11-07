@@ -454,9 +454,10 @@ bool VideoEncoder::EnsureDeviceOnce() {
     // MediaEngine_GetD3D11Device This ensures ScreenCapture and VideoEncoder
     // share the same device for CopyResource compatibility
 
-    // Skip device creation if already preserved (DXVK zero-copy across recordings)
+    // Skip device creation if one is already set (an adopted framegrab device, or a
+    // device kept from an earlier attempt whose codec setup failed).
     if (d3d11Device && d3d11Context) {
-        DLL_Log("[VideoEncoder] Reusing existing D3D11 device (preserved for encoder textures)");
+        DLL_Log("[VideoEncoder] Reusing existing D3D11 device");
     } else if (!hasInjectLuid && instance.sharedDevice) {
         // Framegrab mode - use the shared device that ScreenCapture also uses
         DLL_Log("[VideoEncoder] Framegrab using dimensions: %dx%d", width, height);
@@ -543,10 +544,9 @@ bool VideoEncoder::EnsureDeviceOnce() {
     // made (or confirmed) here, before anything derives from the encoder name.
     ResolveAutoEncoder("ensure-device");
 
-    // CreateSharedCaptureTextures can run before Start() recreates codec/container
-    // contexts after a previous Stop(). In that pre-start phase we only need the
-    // D3D11 device for texture allocation; defer FFmpeg HW context wiring until
-    // Start() has rebuilt fmtCtx/codecCtx.
+    // EnsureDevice can run before Start() recreates codec/container contexts after a
+    // previous Stop(). In that pre-start phase only the D3D11 device is needed; defer
+    // FFmpeg HW context wiring until Start() has rebuilt fmtCtx/codecCtx.
     if (!codecCtx || !fmtCtx) {
         if (!recordingRequested) {
             DLL_Log(

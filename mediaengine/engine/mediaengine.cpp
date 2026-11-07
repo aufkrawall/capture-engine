@@ -244,14 +244,12 @@ MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputPath(MediaEngineHandle engine,
     return instance.engine ? instance.engine->CopyLastOutputPath(buffer, capacity) : 0u;
 }
 
+// Device work only, without apiMutex: the export owns its device and locks. The media main
+// loop, which also handles the stop command, calls this once the producer let go.
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures(MediaEngineHandle engine) {
     MediaEngineLease lease(engine);
-    if (!lease)
-        return;
-    MediaEngineInstance& instance = *lease;
-    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
-    if (instance.engine)
-        instance.engine->ReleaseEncoderTextures();
+    if (lease)
+        lease->encoderTextures.Release("host request");
 }
 
 MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
@@ -379,18 +377,17 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithResultV1(MediaEngineHandle e
     });
 }
 
+// Device work only, without apiMutex: a codec call stalled under it must not block the inject
+// thread (joined by the stop path before it acknowledges) or the media main loop (which
+// handles the stop command). The export owns its device and locks; the encoder opens it by handle.
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(MediaEngineHandle engine, uint32_t width, uint32_t height,
                                                              uint32_t format, SharedMemoryLayout* sharedMem) {
     MediaEngineLease lease(engine);
-    if (!lease)
+    if (!lease || !sharedMem)
         return false;
-    MediaEngineInstance& instance = *lease;
-    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
-    if (!instance.engine) {
-        DLL_Log("[MediaEngine] CreateSharedCaptureTextures: Engine not ready");
-        return false;
-    }
-    return instance.engine->CreateSharedCaptureTextures(width, height, format, sharedMem);
+    const ce::media::EncoderTextureRequest request{width, height, format, sharedMem->GetLuidLowPart(),
+                                                   sharedMem->GetLuidHighPart()};
+    return lease->encoderTextures.Ensure(request, sharedMem);
 }
 
 // Lock-free on purpose: the inject and WGC capture threads sample these for their perf

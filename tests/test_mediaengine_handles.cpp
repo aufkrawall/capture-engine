@@ -10,6 +10,7 @@
 #include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/engine/mediaengine_instance.h"
 #include "common/ipc/shared_defs.h"
+#include "warp_adapter.h"
 
 extern "C" {
 #include <libavutil/log.h>
@@ -112,6 +113,38 @@ TEST(MediaEngineHandleTest, CaptureThreadTimingGettersDoNotWaitForTheCodecLock) 
     MediaEngine_Destroy(handle);
     EXPECT_EQ(MediaEngine_GetLastFrameEncodeTimeUs(handle), 0);
     EXPECT_EQ(MediaEngine_GetLastFrameFenceWaitUs(handle), 0);
+}
+
+// The inject thread (joined by the stop path before it acknowledges) and the media main
+// loop (which handles the stop command) create and release the encoder textures. A codec
+// call stalled under apiMutex must block neither: both calls return while it is held.
+TEST(MediaEngineHandleTest, EncoderTextureExportsDoNotWaitForTheCodecLock) {
+    LUID warp{};
+    ASSERT_TRUE(WarpAdapterLuid(warp));
+    const MediaEngineHandle handle = CreatePipeline();
+    auto layout = std::make_unique<SharedMemoryLayout>();
+    layout->SetLuidLowPart(static_cast<int32_t>(warp.LowPart));
+    layout->SetLuidHighPart(warp.HighPart);
+    {
+        MediaEngineLease lease(handle);
+        ASSERT_TRUE(lease);
+        std::lock_guard codecCall(lease->apiMutex);
+        bool created = false;
+        bool advertised = false;
+        bool withdrawn = false;
+        std::thread captureThread([&] {
+            created = MediaEngine_CreateSharedCaptureTextures(handle, 64, 32, DXGI_FORMAT_B8G8R8A8_UNORM, layout.get());
+            advertised = layout->encoderTextures.kmtReady.load() && layout->encoderTextures.GetKmtTextureHandle(0) != 0;
+            MediaEngine_ReleaseEncoderTextures(handle);
+            withdrawn = !layout->encoderTextures.kmtReady.load() && !layout->encoderTextures.ready.load();
+        });
+        captureThread.join();
+        EXPECT_TRUE(created);
+        EXPECT_TRUE(advertised);
+        EXPECT_TRUE(withdrawn);
+    }
+    MediaEngine_Destroy(handle);
+    EXPECT_FALSE(MediaEngine_CreateSharedCaptureTextures(handle, 64, 32, DXGI_FORMAT_B8G8R8A8_UNORM, layout.get()));
 }
 
 TEST(MediaEngineHandleTest, MeteredAacRepairDiagnosticsSurviveTheGlobalLibavSampler) {

@@ -207,10 +207,33 @@ coupled inject-capture stops to any stalled codec call. Covered by
 `MediaEngineHandleTest.CaptureThreadTimingGettersDoNotWaitForTheCodecLock`;
 `RecordingMemoryTest.DetachWaitsForAnInFlightPublicationAndCopiesItsWrite`
 observes the barrier through an injected lock, so it fails deterministically
-without it. Remaining coupling: device-work exports (`CreateSharedCaptureTextures`,
-`ReleaseEncoderTextures`) on the inject/main threads still serialize with codec
-calls; removing that needs a lock split, not a timeout. Root cause and codec repair:
+without it. Root cause and codec repair:
 [multi-audio-capture.md](multi-audio-capture.md#native-aac-nmr-retry-hang-and-repair-2026-11-07).
+
+### Encoder texture export (lock split, 2026-11-07)
+
+`MediaEngine_CreateSharedCaptureTextures`/`MediaEngine_ReleaseEncoderTextures` take no
+`apiMutex` or `muxMutex`. The inject thread (joined before the stop ack) and the media
+main loop (which handles the stop command) call them, and they used to wait for any codec
+call: create ran `EnsureDevice` (device plus codec open) under both locks. The 16 KMT
+textures and the shared fence the DXVK layer imports now belong to
+`MediaEngineInstance::encoderTextures` (`mediaengine/video/encoder_texture_export.h`),
+which owns its own D3D11 device on the published adapter LUID and two leaf locks:
+`serialize_` for Ensure/Release device work, `state_` for swapping the set. The encoder
+reaches the slots by KMT handle through `ExportedTextureViews`, opening each on its own
+device once per export generation (OpenSharedResource aliases the allocation, so the path
+stays zero-copy; inject frames take their LUID from the same shared-memory field, so both
+devices sit on one adapter). The encoder therefore never preserves its device across
+`CleanupResources` any more; the export outlives encoder and engine re-creation and is
+released by the host call, the screen-grab switch, or silently with the pipeline.
+Contract: a same-format request keeps the set and republishes a withdrawn handshake, so
+`true` always means the current route carries it; a format change retires the old set
+and its publication first; a detached route keeps late exports private; failures leave
+no partial publication and are metered (`[EncoderTextures] Export failed at <stage>`).
+Covered by `EncoderTextureExportTest` (WARP: publication, re-request, format change,
+release, views on the encoder device, producer-to-encoder pixel readback, unknown adapter,
+detached route) and `MediaEngineHandleTest.EncoderTextureExportsDoNotWaitForTheCodecLock`;
+with `apiMutex` put back into the create export, that test hangs (verified 2026-11-07).
 
 ## Open Questions / Stale-risk
 

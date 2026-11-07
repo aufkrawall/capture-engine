@@ -1,11 +1,12 @@
 #include "media_main_internal.h"
 
+#include "common/logging/log_meter.h"
+
 void MediaProcessSession::Loop() {
     while (MediaState().running) {
         // WGC window detection must run BEFORE resolution polling/texture creation.
-        // CreateSharedCaptureTextures sets the encoder's LUID device, which conflicts
-        // with WGC's shared device. By scanning first, the preferred capture mode is set correctly
-        // and we skip the LUID-based texture creation for WGC games.
+        // By scanning first, the preferred capture mode is set correctly and WGC games,
+        // which never import encoder textures, get no texture set or export device.
         if (mediaEngineReady && MediaState().pSharedMem && isAutoCaptureConfig() && !config.wgcWindowTitles.empty() &&
             !IsPreferredScreenGrab() && !MediaState().recording) {
             DWORD now = GetTickCount();
@@ -33,11 +34,15 @@ void MediaProcessSession::Loop() {
             uint32_t h = MediaState().pSharedMem->GetHeight();
             uint32_t f = MediaState().pSharedMem->GetFormat();
             if (w > 0 && h > 0) {
-                LogInfo("[Media] Resolution available (%dx%d fmt=%d), creating encoder textures", w, h, f);
-                if (ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(MediaState().engine, w, h, f,
-                                                                                 MediaState().pSharedMem)) {
-                    LogInfo("[Media] Encoder KMT textures created (main loop)");
-                }
+                // Device work only (no codec lock), retried every pass until the textures exist:
+                // one line per distinct request and outcome.
+                const bool created = ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(
+                    MediaState().engine, w, h, f, MediaState().pSharedMem);
+                static ce::log_meter::ChangeGate textureRequestGate;
+                if (const auto verdict = textureRequestGate.Observe(ce::log_meter::FieldKey(w, h, f, created)))
+                    LogInfo("[Media] Encoder KMT textures %ux%u fmt=%u %s (main loop, repeats suppressed=%llu)", w, h,
+                            f, created ? "created" : "not created",
+                            static_cast<unsigned long long>(verdict.suppressed));
             }
         }
 

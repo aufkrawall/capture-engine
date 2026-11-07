@@ -500,7 +500,8 @@ contention from the game. Items 1 and 3 are implemented (run pending).
    3D-queue latency under contention (separate `delay` from `surfaces` if that
    helps).
 6. Other VRAM:
-   - inject ring: 16 encoder-owned KMT slots (4K RGBA8 ≈ 33 MB each, ~530 MB),
+   - inject ring: 16 exported KMT slots (pipeline-owned `EncoderTextureExport`
+     since 2026-11-07; 4K RGBA8 ≈ 33 MB each, ~530 MB),
      tied to high-fps sources × content delay;
    - repeat cache: now 2 × P010 (+25 MB for the staged spare).
 

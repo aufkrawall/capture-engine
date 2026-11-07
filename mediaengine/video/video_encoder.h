@@ -8,6 +8,7 @@
 #include "encoder_gpu_stage_probe.h"
 #include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
+#include "encoder_texture_export.h"
 #include "frame_scaler.h"
 #include "gpu_memory_breakdown.h"
 #include "video_encoder_diagnostics.h"
@@ -109,16 +110,7 @@ public:
     // Set Adapter LUID (call before Start or EncodeFrame)
     void SetAdapterLUID(int32_t low, int32_t high);
 
-    // Set encoder dimensions (call before EnsureDevice if dimensions not yet known from frame)
-    void SetDimensions(uint32_t w, uint32_t h);
-
     bool EnsureDevice();  // EnsureDeviceOnce, retrying an encoder=auto choice whose real open failed
-
-    // Create shared D3D11 textures for Vulkan games to import
-    // Call this when dimensions are known (first frame), exports handles to
-    // shared memory
-    bool CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,
-                                     struct SharedMemoryLayout* sharedMem);
 
     int64_t GetExpectedFinalDurationUs() const;
     int64_t GetAssignedCfrFrameCount() const;
@@ -195,10 +187,6 @@ public:
     // software/composed cursor). Lock-free; toggled by the capture layer on
     // cursor-plane transitions to avoid a double cursor.
     void SetCursorCompositionSuppressed(bool suppressed);
-
-    // Release encoder-owned D3D11 textures and device after game exits (frees VRAM).
-    // Only call when not recording.
-    void ReleasePreservedEncoderTextures();
 
 private:
     friend struct VideoEncoderTestAccess;
@@ -433,16 +421,9 @@ private:
     ce::frame_fence::RemovedTransport removedFrameTransport;
     uint32_t cachedSourcePid = 0;
 
-    // Encoder-owned shared textures (for Vulkan interop)
-    // Vulkan games import these textures instead of creating their own
-    ID3D11Texture2D* sharedCaptureTextures[SHARED_TEXTURE_SLOT_COUNT] = {};
-    HANDLE sharedCaptureHandles[SHARED_TEXTURE_SLOT_COUNT] = {};  // NT handles
-    HANDLE sharedCaptureKmtHandles[SHARED_TEXTURE_SLOT_COUNT] =
-        {};  // KMT handles (global WDDM, for DXVK Vulkan import)
-    ID3D11Fence* sharedCaptureFence = nullptr;
-    HANDLE sharedCaptureFenceHandle = nullptr;
-    bool sharedCaptureTexturesCreated = false;
-    uint32_t sharedCaptureTextureFormat = 0;  // DXGI_FORMAT used to create KMT textures
+    // This device's views of the pipeline's exported input textures (MediaEngineInstance::encoderTextures),
+    // which a Vulkan producer renders into directly. Reset wherever d3d11Device is released.
+    ce::media::ExportedTextureViews exportedTextureViews;
 
     // The session's view of the shared memory layout (SHMEM capture fallback, encoder textures, publications);
     // The instance retargets one route shared by the engine and encoder; publications are fenced.

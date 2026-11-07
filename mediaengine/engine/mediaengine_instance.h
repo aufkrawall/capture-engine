@@ -17,6 +17,7 @@
 #include "common/capture/recording_memory.h"
 #include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/video/encoder_auto_probe.h"
+#include "mediaengine/video/encoder_texture_export.h"
 #include "mediaengine/video/gpu_memory_breakdown.h"
 #include "mediaengine/video/retained_yuv_converter.h"
 #include "mediaengine/video/source_read_markers.h"
@@ -36,13 +37,19 @@ public:
     // Stable for the handle lifetime, including before Init and during codec work.
     ce::RecordingMemory recordingMemory;
 
+    // Input textures a producer renders into directly (DXVK zero-copy), with their own device
+    // and leaf locks. The inject thread and the media main loop create and release them
+    // without apiMutex; the encoder opens them by handle. Declared after the route it publishes on.
+    ce::media::EncoderTextureExport encoderTextures{recordingMemory};
+
     // Last video encode and fence-wait durations, published by the encoder. Capture
     // threads sample them without apiMutex: a codec call stalled under that lock must
     // not block a capture thread that the stop path joins before acknowledging.
     std::atomic<int64_t> lastVideoEncodeUs{0};
     std::atomic<int64_t> lastVideoFenceWaitUs{0};
 
-    // Serializes engine lifetime/codec operations. Recording-memory retarget is independent.
+    // Serializes engine lifetime/codec operations. Recording-memory retarget and the
+    // encoder texture export are independent of it.
     std::recursive_mutex apiMutex;
 
     // Serializes the immediate context and the encoder device. Lock order: this, then retainedConverterMutex.

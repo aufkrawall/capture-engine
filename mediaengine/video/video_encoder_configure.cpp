@@ -149,16 +149,6 @@ void VideoEncoder::SetAdapterLUID(int32_t low, int32_t high) {
     this->luidHigh = high;
 }
 
-void VideoEncoder::SetDimensions(uint32_t w, uint32_t h) {
-    if (w > 0 && h > 0) {
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        this->width = w;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        this->height = h;
-        DLL_Log("[VideoEncoder] SetDimensions: %dx%d", w, h);
-    }
-}
-
 bool VideoEncoder::AdoptTextureDevice(ID3D11Texture2D* texture) {
     if (!texture) {
         return false;
@@ -198,6 +188,7 @@ bool VideoEncoder::AdoptTextureDevice(ID3D11Texture2D* texture) {
 
     FlushGpuStageTiming();
     gpuStageMonitor.Reset();
+    exportedTextureViews.Reset();
     if (d3d11Context) {
         d3d11Context->Release();
     }
@@ -212,7 +203,8 @@ bool VideoEncoder::AdoptTextureDevice(ID3D11Texture2D* texture) {
 
 void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
     const bool hadInjectLuid = (luidLow != 0 || luidHigh != 0);
-    const bool hadSharedCapture = sharedCaptureTexturesCreated;
+    // Lock-free: this runs for every screen-grab frame.
+    const bool hadSharedCapture = instance.encoderTextures.Exported();
     if (!hadInjectLuid && !hadSharedCapture) {
         return;
     }
@@ -228,10 +220,12 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         publication->encoderTextures.kmtReady.store(false, std::memory_order_release);
     }
 
+    // The producer stops importing on the cleared handshake; then the pipeline's export
+    // goes, and with this device every view of it.
     if (hadSharedCapture) {
-        ReleasePreservedEncoderTextures();
-        return;
+        instance.encoderTextures.Release("screen-grab switch");
     }
+    exportedTextureViews.Reset();
 
     for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
         if (cachedSharedTextures[i]) {

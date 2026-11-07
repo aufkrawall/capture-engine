@@ -467,7 +467,6 @@ public:
     ce::media::MuxFlowSnapshotV1 GetMuxFlowSnapshot() const;
     bool CanRepeatLastFrame();
     void ResetRepeatFrameCache();
-    void ReleaseEncoderTextures();
     void SetSourcePrefers10BitHint(bool prefer10Bit);
     bool QueryRetainedFrameRoute(const MediaEngineRetainedFrameQuery& query, MediaEngineRetainedFrameRoute* route);
     void SetCursorCompositionSuppressedHint(bool suppressed);
@@ -513,8 +512,6 @@ public:
     // recording timeline that also drives CFR video emission.
 void PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain = false);
 
-    // Create shared D3D11 textures for Vulkan games to import
-bool CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format, SharedMemoryLayout* sharedMem);
 void WritePacket(AVPacket* pkt);
 void ReloadConfig(const AppConfig* newConfig);
 // Applies a ReloadConfig that arrived while a recording was live. Caller holds muxMutex.

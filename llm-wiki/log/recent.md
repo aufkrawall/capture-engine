@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-11-07 - Encoder texture export split from the codec lock
+
+- Residual from the AAC hang review: `MediaEngine_CreateSharedCaptureTextures` and
+  `MediaEngine_ReleaseEncoderTextures` took `apiMutex` + `muxMutex` (create even ran
+  `EnsureDevice`, i.e. codec open). Callers are the inject thread, which the stop path
+  joins before the ack, and the media main loop, which handles the stop command; a
+  stalled codec call could therefore still hold off a stop.
+- Fix: `ce::media::EncoderTextureExport` in `MediaEngineInstance` owns the DXVK KMT set,
+  the shared fence and its own device on the published LUID, behind two leaf locks; the
+  encoder opens slots by handle (`ExportedTextureViews`) and no longer preserves its
+  device for the textures. Contract and tests: process-ipc.md "Encoder texture export".
+- Evidence: 8 WARP tests + the codec-lock test pass; with `apiMutex` reinserted in the
+  create export the codec-lock test hangs (killed by a 60 s harness timeout).
+- Open: no DXVK game run yet (zero-copy import across the export/encoder device pair is
+  proven on WARP only); main-loop request log now one line per request/outcome.
+
 ### 2026-11-07 - AAC repair review follow-up: least-disruptive ladder, silent fallback, lock-free timings
 
 - Review of 105bb6a5..013ec8d2 found: inject-capture stops still joined a thread that
