@@ -448,6 +448,9 @@ inline bool IsForeignStreamlineInterposer(const char* residentInterposerPath, co
     if (!residentInterposerPath[0]) {
         return true;
     }
+    if (!LoadedPathProvidesModule(residentInterposerPath, "sl.interposer.dll")) {
+        return false;
+    }
     return !EqualsModulePathIgnoreCase(residentInterposerPath, overrideInterposerPath);
 }
 

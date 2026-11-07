@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Graphics runtime module identity verification:** streamline interposer checks and DLSS version reporting now verify that the loaded image path matches the queried module name, preventing foreign hook answers from blocking plugin placement or misreporting version numbers.
+
 - **Graphics API label caching and DXVK bootstrap admission:** overlay API labels across D3D12, D3D9, D3D8, and DirectDraw now cache their translation evidence against the loaded module generation, eliminating repeated per-frame loader lock queries and false D3D12 detections from mapped DLLs. The D3D12 factory hook bootstrap validates verified DXVK runtime evidence, preventing premature DXGI factory patching in DXVK games before Vulkan layer load.
 
 - **Interposer output pacing under concurrent workers, Reflex, and Vulkan:** output groups and schedule deadlines are now tracked per worker thread rather than on a single global slot, preventing interleaved worker presentations from resetting in-flight deadlines. Pacing under Smooth Motion in Vulkan now spaces outputs at queue present while throttling input at acquire, and explicit Reflex post-present pacing is kept to the application boundary.

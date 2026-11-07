@@ -2,6 +2,7 @@
 #include "ngx_fg_observation.h"
 #include "common/logging/log_meter.h"
 #include "hook/hooking/module_export_resolver.h"
+#include "hook/runtime/graphics_runtime_module_policy.h"
 
 #include <array>
 #include <iterator>
@@ -57,21 +58,32 @@ static void UpdateDLSSVersion() {
     // UpdateDLSSVersion: Only look for the CORE DLSS implementation
     // User requested to ignore "Streamline version number", so we focus on
     // nvngx_dlss
+    const char* expectedName = "nvngx_dlss.dll";
     HMODULE hNGX = GetModuleHandleA("nvngx_dlss.dll");
 
     // If not loaded yet, check dlssg
-    if (!hNGX)
+    if (!hNGX) {
         hNGX = GetModuleHandleA("nvngx_dlssg.dll");
+        expectedName = "nvngx_dlssg.dll";
+    }
 
     // DO NOT accept sl.dlss.dll as it reports wrapper versions
 
     // Fallback?
-    if (!hNGX)
+    if (!hNGX) {
         hNGX = GetModuleHandleA("_nvngx.dll");
+        expectedName = "_nvngx.dll";
+    }
 
     // Safety check
     if (!hNGX)
         return;
+
+    char pathA[MAX_PATH] = {};
+    if (GetModuleFileNameA(hNGX, pathA, MAX_PATH) == 0 ||
+        !ce::graphics_runtime::LoadedPathProvidesModule(pathA, expectedName)) {
+        return;
+    }
 
     WCHAR fileName[MAX_PATH];
     GetModuleFileNameW(hNGX, fileName, MAX_PATH);

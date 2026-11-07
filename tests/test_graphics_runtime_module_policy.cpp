@@ -23,6 +23,7 @@ using ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect;
 using ce::graphics_runtime::ShouldPlaceStreamlinePluginSet;
 using ce::graphics_runtime::ShouldRetireLegacyBridgeNgxFeatureModule;
 using ce::graphics_runtime::IsDlssOverrideBypassedByModelRepository;
+using ce::graphics_runtime::IsForeignStreamlineInterposer;
 using ce::graphics_runtime::LoadedPathProvidesModule;
 using ce::graphics_runtime::WouldRedirectDuplicateLoadedModule;
 
@@ -197,6 +198,15 @@ TEST(GraphicsRuntimeModulePolicy, AModuleQueryAnsweredWithAnotherFileNameIsNoDup
     EXPECT_FALSE(LoadedPathProvidesModule("H:\\game\\WINMM.dll", "nvngx_dlssg.dll"));
     EXPECT_TRUE(LoadedPathProvidesModule("H:\\game\\nvngx_dlssg.dll", "NVNGX_DLSSG.dll"));
     EXPECT_TRUE(LoadedPathProvidesModule("H:/game/nvngx_dlssg.dll", "C:\\npi\\sl\\nvngx_dlssg.dll"));
+}
+
+TEST(GraphicsRuntimeModulePolicy, ForeignStreamlineInterposerIgnoresSpoofedModuleName) {
+    constexpr const char* kConfigured = "C:\\npi\\sl\\sl.interposer.dll";
+    EXPECT_FALSE(IsForeignStreamlineInterposer("C:\\game\\WINMM.dll", kConfigured));
+    EXPECT_TRUE(IsForeignStreamlineInterposer("C:\\game\\sl.interposer.dll", kConfigured));
+    EXPECT_FALSE(IsForeignStreamlineInterposer("C:\\npi\\sl\\sl.interposer.dll", kConfigured));
+    EXPECT_TRUE(IsForeignStreamlineInterposer("", kConfigured));
+    EXPECT_FALSE(IsForeignStreamlineInterposer(nullptr, kConfigured));
 }
 
 // NGX maps its model-repository copy beside a configured one it then runs (W3: nvngx_dlss.dll and nvngx_dlssd.dll),
