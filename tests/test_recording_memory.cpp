@@ -4,8 +4,10 @@
 #include "common/ipc/shared_defs.h"
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <future>
 #include <memory>
+#include <shared_mutex>
 #include <thread>
 #include <type_traits>
 
@@ -38,31 +40,60 @@ TEST(RecordingMemoryTest, LatePublicationsCannotOverwriteTheNextRecording) {
     EXPECT_EQ(memory.Retarget(detached.get(), nullptr), 0u);
 }
 
-TEST(RecordingMemoryTest, RetargetCompletesOnlyAfterTheOldPublicationEnds) {
+namespace {
+// Reports which happens first: Detach asking for the exclusive barrier, or
+// Detach returning. Ordering comes from the barrier itself, not from timing.
+std::atomic<std::promise<bool>*> g_firstDetachEvent{nullptr};
+void ReportFirstDetachEvent(bool exclusiveRequested) {
+    if (auto* first = g_firstDetachEvent.exchange(nullptr))
+        first->set_value(exclusiveRequested);
+}
+
+class ObservedBarrier {
+public:
+    void lock() {
+        ReportFirstDetachEvent(true);
+        barrier_.lock();
+    }
+    void unlock() { barrier_.unlock(); }
+    void lock_shared() { barrier_.lock_shared(); }
+    void unlock_shared() { barrier_.unlock_shared(); }
+
+private:
+    std::shared_mutex barrier_;
+};
+}  // namespace
+
+TEST(RecordingMemoryTest, DetachWaitsForAnInFlightPublicationAndCopiesItsWrite) {
     auto live = std::make_unique<SharedMemoryLayout>();
     auto detached = std::make_unique<SharedMemoryLayout>();
-    ce::RecordingMemory memory;
+    ce::BasicRecordingMemory<ObservedBarrier> memory;
     memory.Retarget(live.get(), nullptr);
-    std::promise<void> started;
+    std::promise<bool> first;
+    std::future<bool> firstEvent = first.get_future();
     std::atomic<bool> oldPublicationEnded{false};
-    bool safeAtReturn = false;
+    bool endedBeforeDetachReturned = false;
     std::thread detacher;
+    bool exclusiveRequestedFirst = false;
     {
         auto oldPublication = memory.Publish();
+        g_firstDetachEvent.store(&first);
         detacher = std::thread([&] {
-            started.set_value();
             memory.Detach(*live, *detached);
-            safeAtReturn = oldPublicationEnded.load();
+            ReportFirstDetachEvent(false);
+            endedBeforeDetachReturned = oldPublicationEnded.load();
         });
-        started.get_future().wait();
+        // Detach either asks for the barrier (and must then wait for this
+        // publication) or, without a barrier, returns under it.
+        exclusiveRequestedFirst = firstEvent.get();
         oldPublication->runtimeState.liveFramesEncoded.store(42);
         oldPublicationEnded.store(true);
     }
     detacher.join();
-    EXPECT_TRUE(safeAtReturn);
+    EXPECT_TRUE(exclusiveRequestedFirst);
+    EXPECT_TRUE(endedBeforeDetachReturned);
     EXPECT_EQ(live->runtimeState.liveFramesEncoded.load(), 42u);
     EXPECT_EQ(detached->runtimeState.liveFramesEncoded.load(), 42u);
-    auto nextPublication = memory.Publish();
     EXPECT_EQ(memory.get(), detached.get());
 }
 

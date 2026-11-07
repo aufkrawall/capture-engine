@@ -18,17 +18,19 @@ namespace ce {
 // publications, never codec/GPU work. Both layouts and the pixel buffer remain
 // alive until the pipeline's workers have joined. Reads may finish on the old
 // layout; writes must finish before Retarget returns and another recording starts.
-class RecordingMemory {
+// The barrier type is a parameter only so tests can observe its acquisition.
+template <typename Barrier>
+class BasicRecordingMemory {
 public:
     class Publication {
     public:
-        explicit Publication(RecordingMemory& owner)
+        explicit Publication(BasicRecordingMemory& owner)
             : lock_(owner.publications_), layout_(owner.layout_.load(std::memory_order_acquire)) {}
         SharedMemoryLayout* operator->() const { return layout_; }
         explicit operator bool() const { return layout_ != nullptr; }
 
     private:
-        std::shared_lock<std::shared_mutex> lock_;
+        std::shared_lock<Barrier> lock_;
         SharedMemoryLayout* layout_;
     };
 
@@ -72,10 +74,12 @@ public:
     }
 
 private:
-    std::shared_mutex publications_;
+    Barrier publications_;
     std::atomic<SharedMemoryLayout*> layout_{nullptr};
     std::atomic<ShmemBuffer*> pixels_{nullptr};
     uint64_t generation_ = 0;
 };
+
+using RecordingMemory = BasicRecordingMemory<std::shared_mutex>;
 
 }  // namespace ce
