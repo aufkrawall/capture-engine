@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 
 namespace ce::present_stall {
 
@@ -151,8 +152,16 @@ int FormatStackFrames(const uint64_t* frames, size_t count, char* buffer, size_t
 
 namespace detail {
 
-// The armed down-call. One slot: a second presenting thread re-arms it for its
-// own call, and the sample goes to whichever call is armed when it fires.
+// One diagnostic slot. A competing call leaves the existing arm in place.
+// The sampler owns a reference to the target for the entire stack copy.
+struct SampleRequest {
+    std::shared_ptr<void> target;
+    DWORD threadId = 0;
+    const char* what = nullptr;
+    int64_t armedQpc = 0;
+    uint64_t call = 0;
+};
+
 struct Sampler {
     explicit Sampler(const SamplerStartupOps& startup) : ops(startup) {}
     ~Sampler() {
@@ -165,13 +174,10 @@ struct Sampler {
     HANDLE timer = nullptr;
     StackCopy copy;
     StackSampleBudget budget;
-    std::atomic<HANDLE> target{nullptr};
-    std::atomic<DWORD> targetThreadId{0};
-    std::atomic<const char*> what{"down-call"};
-    std::atomic<int64_t> armedQpc{0};
+    std::mutex requests;
+    SampleRequest pending;
     std::atomic<uint64_t> armedCall{0};
-    std::atomic<uint64_t> doneCall{0};
-    std::atomic<uint64_t> nextCall{0};
+    uint64_t nextCall = 0;
 };
 
 }  // namespace detail
@@ -187,8 +193,7 @@ struct Wanted {
 
 bool StillInsideTheCall(void* user) {
     const Wanted& wanted = *static_cast<const Wanted*>(user);
-    return wanted.sampler->armedCall.load(std::memory_order_acquire) == wanted.call &&
-           wanted.sampler->doneCall.load(std::memory_order_acquire) != wanted.call;
+    return wanted.sampler->armedCall.load(std::memory_order_acquire) == wanted.call;
 }
 
 DWORD WINAPI SamplerThread(void* parameter) {
@@ -199,12 +204,21 @@ DWORD WINAPI SamplerThread(void* parameter) {
         if (WaitForSingleObject(sampler.timer, INFINITE) != WAIT_OBJECT_0) {
             return 0;
         }
-        Wanted wanted{&sampler, sampler.armedCall.load(std::memory_order_acquire)};
-        if (wanted.call == 0 || !StillInsideTheCall(&wanted)) {
-            continue;
+        detail::SampleRequest request;
+        {
+            std::lock_guard lock(sampler.requests);
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
+            // A wake may belong to an earlier request canceled before we acquired the lock.
+            if (!sampler.pending.target ||
+                now.QuadPart - sampler.pending.armedQpc < frequency.QuadPart * kStackSampleAfterUs / 1'000'000) {
+                continue;
+            }
+            request = std::move(sampler.pending);
         }
-        if (!sampler.copy.CopySuspended(sampler.target.load(std::memory_order_acquire), StillInsideTheCall,
-                                        &wanted)) {
+        Wanted wanted{&sampler, request.call};
+        if (!StillInsideTheCall(&wanted) ||
+            !sampler.copy.CopySuspended(request.target.get(), StillInsideTheCall, &wanted)) {
             continue;
         }
         LARGE_INTEGER sampled{};
@@ -216,12 +230,11 @@ DWORD WINAPI SamplerThread(void* parameter) {
         FormatStackFrames(frames, count, text, sizeof(text));
         const double blockedMs =
             frequency.QuadPart > 0
-                ? static_cast<double>(sampled.QuadPart - sampler.armedQpc.load(std::memory_order_relaxed)) * 1000.0 /
+                ? static_cast<double>(sampled.QuadPart - request.armedQpc) * 1000.0 /
                       static_cast<double>(frequency.QuadPart)
                 : 0.0;
         HookLogImportant("[PRESENT STALL] stack #%u %s blocked %.2fms (tid=%lu frames=%zu stackBytes=%zu):%s",
-                         sampler.budget.taken(), sampler.what.load(std::memory_order_relaxed), blockedMs,
-                         static_cast<unsigned long>(sampler.targetThreadId.load(std::memory_order_relaxed)), count,
+                         sampler.budget.taken(), request.what, blockedMs, static_cast<unsigned long>(request.threadId), count,
                          sampler.copy.bytes(), text);
     }
 }
@@ -271,52 +284,54 @@ Sampler* SamplerInstance() {
     return s_sampler;
 }
 
-thread_local uint64_t t_armedCall = 0;
-
 }  // namespace
 
-void ArmStackSample(const char* what) {
+uint64_t ArmStackSample(const char* what) {
 #if defined(_M_X64)
-    t_armedCall = 0;
     Sampler* sampler = SamplerInstance();
     if (sampler == nullptr || !sampler->budget.Allows(GetTickCount64())) {
-        return;
+        return 0;
     }
-    thread_local HANDLE t_self = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION,
-                                            FALSE, GetCurrentThreadId());
-    if (t_self == nullptr) {
-        return;
+    std::unique_lock lock(sampler->requests, std::try_to_lock);
+    if (!lock || sampler->armedCall.load(std::memory_order_relaxed) != 0) {
+        return 0;
+    }
+    const DWORD threadId = GetCurrentThreadId();
+    thread_local std::shared_ptr<void> self;
+    if (!self) {
+        HANDLE handle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION,
+                                   FALSE, threadId);
+        if (!handle) {
+            return 0;
+        }
+        self.reset(handle, [](HANDLE h) { CloseHandle(h); });
     }
     LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
-    const uint64_t call = sampler->nextCall.fetch_add(1, std::memory_order_relaxed) + 1;
-    sampler->target.store(t_self, std::memory_order_relaxed);
-    sampler->targetThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
-    sampler->what.store(what, std::memory_order_relaxed);
-    sampler->armedQpc.store(now.QuadPart, std::memory_order_relaxed);
-    sampler->armedCall.store(call, std::memory_order_release);
     LARGE_INTEGER due{};
     due.QuadPart = -kStackSampleAfterUs * 10;  // relative, 100 ns units
-    if (SetWaitableTimer(sampler->timer, &due, 0, nullptr, nullptr, FALSE)) {
-        t_armedCall = call;
+    if (!SetWaitableTimer(sampler->timer, &due, 0, nullptr, nullptr, FALSE)) {
+        return 0;
     }
+    const uint64_t call = ++sampler->nextCall;
+    sampler->pending = {self, threadId, what, now.QuadPart, call};
+    sampler->armedCall.store(call, std::memory_order_release);
+    return call;
 #else
     (void)what;
+    return 0;
 #endif
 }
 
-void DisarmStackSample() {
-    if (t_armedCall == 0) {
+void DisarmStackSample(uint64_t call) {
+    if (call == 0) {
         return;
     }
     Sampler* sampler = SamplerInstance();
-    const uint64_t call = t_armedCall;
-    t_armedCall = 0;
-    if (sampler == nullptr) {
-        return;
-    }
-    sampler->doneCall.store(call, std::memory_order_release);
-    if (sampler->armedCall.load(std::memory_order_acquire) == call) {
+    std::lock_guard lock(sampler->requests);
+    if (sampler->armedCall.load(std::memory_order_relaxed) == call) {
+        sampler->armedCall.store(0, std::memory_order_release);
+        sampler->pending = {};
         CancelWaitableTimer(sampler->timer);
     }
 }

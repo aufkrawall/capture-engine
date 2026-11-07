@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "hook/metrics/perf_logger.h"
 #include "hook/present/dx11_present_perf_row.h"
 #include "hook/present/present_row_owner_log.h"
+#include "hook/runtime/hook_common.h"
 
 // The perf CSV row of one DX11/DX10 present (hook/present/dx11_present_perf_row.h), the row CE's DX11
 // present hooks share, written to a real CSV. The hooks' use of it is pinned in
@@ -348,14 +350,20 @@ TEST(DX11PresentPerfRowTest, AHeldInnerRowGetsTheDownCallSplit) {
 
 TEST(DX11PresentPerfRowTest, AHoldingRowWithoutAnInnerRowLogsTheCatchAll) {
     PerfCsv csv("ce_dx11_present_perf_row_held_none");
+    auto layout = std::make_unique<SharedMemoryLayout>();
+    layout->encoderQueueDepth.store(7);
     {
+        auto* previous = g_pSharedMem;
+        g_pSharedMem = layout.get();
         DX11PresentPerfRow row(true, "DX12", "test", true);
         row.BeginPresentCall();
         row.EndPresentCall();
+        g_pSharedMem = previous;
     }
     const std::vector<CsvRow> rows = csv.Rows();
     ASSERT_EQ(rows.size(), 1u);
     EXPECT_EQ(rows[0].at("api"), "DX12");
+    EXPECT_EQ(Column(rows[0], "encoder_queue_depth"), 7);
     EXPECT_EQ(Column(rows[0], "total_us"),
               Column(rows[0], "pre_present_us") + Column(rows[0], "present_call_us") +
                   Column(rows[0], "post_present_us"));

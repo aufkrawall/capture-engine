@@ -85,7 +85,7 @@ int FormatStackFrames(const uint64_t* frames, size_t count, char* buffer, size_t
 // entry; Disarm right after it returns. Arm's `what` (a string literal) names
 // the call in the log: the down-call while capture runs or after a presentation
 // change, CE's overlay submit after one (presentation_change.h).
-void ArmStackSample(const char* what = "down-call");
-void DisarmStackSample();
+uint64_t ArmStackSample(const char* what = "down-call");
+void DisarmStackSample(uint64_t call);
 
 }  // namespace ce::present_stall

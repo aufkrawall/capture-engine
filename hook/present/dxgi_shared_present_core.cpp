@@ -535,12 +535,14 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // lifetime test. The guarded Steam path is allowed only on the verified
     // application source-Present thread; runtime-generated worker Presents use
     // the bypass trampoline and cannot synchronously enter a foreign handler.
+    ce::present_stall::DownCallProbe stallProbe(ctx.api == APIType::D3D12);
     if (ctx.callerFromStreamlineModule &&
         !dxgi_shared_s_slRoutingActive.load(std::memory_order_relaxed) &&
         ctx.steamOverlayLoaded) {
         // After its forward, this transport ends like the normal route below. Without the stages its deferred Signal
         // read as `core_policy` (mean 28-68 us, p95 106-180, with `deferred_signal` n=0, 20261104_195245).
         const auto finishTransportPresent = [&](HRESULT presentHr) {
+            stallProbe.Finish();
             ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
             if (ctx.api == APIType::D3D12) {
                 CostScope deferredSignalStage(CostStage::kDeferredSignal);
@@ -568,14 +570,15 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                     "(sourceTid=0x%04X tid=0x%04X)",
                     bypassNum, DX12_GetGamePresentThreadId(), GetCurrentThreadId());
             }
+            stallProbe.Restart();
             perfRow.BeginPresentCall();
             HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);
             perfRow.EndPresentCall();
             return finishTransportPresent(bypassHr);
         }
+        stallProbe.Restart();
     }
 
-    ce::present_stall::DownCallProbe stallProbe(ctx.api == APIType::D3D12);
     HRESULT hr;
     perfRow.BeginPresentCall();
     if (startupTransportBypass) {

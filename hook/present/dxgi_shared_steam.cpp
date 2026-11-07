@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "forwarded_present_record.h"
 #include "present_vtable_dispatch.h"
 
 #include "hook/present/dxgi_shared_detail/steam_null_callback.h"
@@ -552,7 +553,7 @@ bool TryGetSwapChainBackBufferIndex(IDXGISwapChain* pSwapChain, UINT* indexOut) 
 
 namespace DXGIShared {
 bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                                                        const char* reason, HRESULT* resultOut) {
+                                                 const char* reason, HRESULT* resultOut, bool ownPresentRecord) {
     if (!pSwapChain || !resultOut) {
         return false;
     }
@@ -747,7 +748,9 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     UINT bbIdxBefore = UINT_MAX;
     UINT bbIdxAfter = UINT_MAX;
     const bool bbIdxBeforeMeasured = TryGetSwapChainBackBufferIndex(pSwapChain, &bbIdxBefore);
-    const HRESULT hr = ForwardPresentThrough(externalPresent, pSwapChain, SyncInterval, Flags);
+    ForwardedPresentRecord record(ownPresentRecord, reason);
+    const HRESULT hr =
+        record.Forward([&] { return ForwardPresentThrough(externalPresent, pSwapChain, SyncInterval, Flags); });
     const bool bbIdxAfterMeasured = TryGetSwapChainBackBufferIndex(pSwapChain, &bbIdxAfter);
     const bool bbIdxMeasured = bbIdxBeforeMeasured && bbIdxAfterMeasured;
     const bool bbIdxAdvanced = bbIdxMeasured && bbIdxAfter != bbIdxBefore;

@@ -3,6 +3,7 @@
 #include <string>
 
 #include "hook/present/presentation_change.h"
+#include "hook/present/present_stall_attribution.h"
 #include "source_fragment_reader.h"
 
 using ce::present_stall::FormatSlowOverlaySubmit;
@@ -35,6 +36,20 @@ TEST(PresentationChangeWatchTest, ASlowSubmitNamesItselfAndTheChangeBeforeIt) {
                  "lastPresentationChange=swapchain handoff 4.2ms earlier");
     FormatSlowOverlaySubmit(3.0, nullptr, false, nullptr, 0.0, line, sizeof(line));
     EXPECT_STREQ(line, "[OVERLAY SUBMIT] slow 3.00ms reason=? stackArmed=0 lastPresentationChange=none");
+}
+
+TEST(PresentationChangeWatchTest, RestartingTheDownCallSpendsOneTransitionSample) {
+    auto& watch = ce::present_stall::PresentationChange();
+    watch.Note("test presentation change", 0);
+    {
+        ce::present_stall::DownCallProbe probe(true);
+        probe.Restart();
+        probe.Restart();
+    }
+    for (uint32_t call = 1; call < PresentationChangeWatch::kCalls; ++call) {
+        EXPECT_TRUE(watch.TakeCall()) << call;
+    }
+    EXPECT_FALSE(watch.TakeCall());
 }
 
 // The stall needs a real driver and a real flip, which neither flow scenarios nor unit tests have, so the wiring is a

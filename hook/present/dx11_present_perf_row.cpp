@@ -48,13 +48,6 @@ DX11PresentPerfRow::DX11PresentPerfRow(bool enabled, const char* api, const char
     // Outermost present row: skipped when the forwarded present logged an inner row, so a present never
     // writes two CSV rows (present-rate dedup).
     PerfLogger::BeginPresentRowScope();
-    if (holdsInnerRow_) {
-        // The frame's own row brings its columns; this row adds the split around the down-call.
-        previousSink_ = PerfLogger::SetInnerRowSink(&held_);
-        return;
-    }
-    // Phases a frame left behind that no row took belong to no present of this row.
-    (void)TakeDX11FramePhases();
     if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
         metrics_.sourceFrameIndex = GetLatestSourceFrameIndex();
         metrics_.sourceCapturePhase = sharedMemory->runtimeState.capturePhase.load(std::memory_order_relaxed);
@@ -66,6 +59,13 @@ DX11PresentPerfRow::DX11PresentPerfRow(bool enabled, const char* api, const char
     if (PerformanceMetrics* perf = GetPerformanceMetrics()) {
         ce::perf_row::FillSourceStats(metrics_, *perf);
     }
+    if (holdsInnerRow_) {
+        // The frame's own row brings its columns; this row adds the split around the down-call.
+        previousSink_ = PerfLogger::SetInnerRowSink(&held_);
+        return;
+    }
+    // Phases a frame left behind that no row took belong to no present of this row.
+    (void)TakeDX11FramePhases();
 }
 
 DX11PresentPerfRow::~DX11PresentPerfRow() {

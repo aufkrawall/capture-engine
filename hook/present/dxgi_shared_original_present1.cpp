@@ -2,15 +2,15 @@
 #include "dx11_present_perf_row.h"
 #include "present_vtable_dispatch.h"
 #include "hook/pacing/pacing_trace_boundary.h"
+#include "hook/present/present_stall_attribution.h"
 
 // Split out of dxgi_shared_original.cpp to keep both units under the source-size
 // ceiling: CallOriginalPresent1 and the SL present-routing switch.
 
 namespace DXGIShared {
 HRESULT ForwardFinalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                             const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow) {
-    HRESULT hr;
-    perfRow.BeginPresentCall();
+                             const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow, bool d3d12) {
+    PFN_Present1 streamlinePresent = nullptr;
     if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire) && dxgi_shared_oPresent1) {
         ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
         bool runtimeOwnedNativeFGPresentPath = false;
@@ -25,19 +25,19 @@ HRESULT ForwardFinalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
                     latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);
             }
             dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
-            hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pParams);
         } else {
-            {
-                ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
-                WaitBackbufferFrameLatency(pSwapChain);
-            }
-            perfRow.BeginPresentCall();
-            hr = ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, Flags, pParams);
+            ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+            WaitBackbufferFrameLatency(pSwapChain);
+            streamlinePresent = dxgi_shared_oPresent1;
         }
-    } else {
-        hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pParams);
     }
+    ce::present_stall::DownCallProbe stallProbe(d3d12);
+    perfRow.BeginPresentCall();
+    const HRESULT hr = streamlinePresent
+                           ? ForwardPresent1Through(streamlinePresent, pSwapChain, SyncInterval, Flags, pParams)
+                           : CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pParams);
     perfRow.EndPresentCall();
+    stallProbe.Finish();
     return hr;
 }
 

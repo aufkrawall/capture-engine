@@ -165,6 +165,8 @@ public:
 
 private:
     bool armed_ = false;
+    bool sampled_ = false;
+    uint64_t stackCall_ = 0;
     int64_t startTicks_ = 0;
     CaptureCopyProgress entry_;
 };

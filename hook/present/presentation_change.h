@@ -63,7 +63,7 @@ public:
 private:
     const char* reason_;
     int64_t startTicks_;
-    bool sampled_;
+    uint64_t stackCall_ = 0;
 };
 
 }  // namespace ce::present_stall

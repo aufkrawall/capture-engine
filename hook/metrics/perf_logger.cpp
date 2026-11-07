@@ -208,14 +208,14 @@ PerfLogger::DrawOutsideRow PerfLogger::TakeDrawOutsideRow() {
 }
 
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
-    ce::pacing_trace::Record(ce::pacing_trace::Kind::Frame, metrics.frameNum, nullptr,
-        metrics.totalUs, metrics.overlayUs, metrics.fenceWaitUs, 0, metrics.qpcUs);
     t_frameRowLoggedInPresentScope = true;
     if (t_innerRowSink && !t_innerRowSink->filled) {
         t_innerRowSink->row = metrics;
         t_innerRowSink->filled = true;
         return;
     }
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::Frame, metrics.frameNum, nullptr,
+        metrics.totalUs, metrics.overlayUs, metrics.fenceWaitUs, 0, metrics.qpcUs);
     const int64_t queueStartUs = g_ActivePresentDebugSample ? GetQpcUs() : 0;
     size_t queuedRows = 0;
     {

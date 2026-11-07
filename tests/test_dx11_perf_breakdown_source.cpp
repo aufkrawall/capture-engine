@@ -151,21 +151,24 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
                                         "HRESULT ForwardFinalPresent1(", "\n}\n");
     ASSERT_FALSE(forward.empty());
     // The frame-latency wait before Streamline's present stays CE's pre-present work.
-    EXPECT_NE(forward.find("WaitBackbufferFrameLatency(pSwapChain);\n"
-                           "            }\n"
-                           "            perfRow.BeginPresentCall();\n"
-                           "            hr = ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, "
-                           "Flags, pParams);"),
-              npos);
-    const size_t begin = forward.find("    HRESULT hr;\n    perfRow.BeginPresentCall();\n");
-    const size_t end = forward.find("    }\n    perfRow.EndPresentCall();\n");
+    const size_t wait = forward.find("WaitBackbufferFrameLatency(pSwapChain);");
+    const size_t probe = forward.find("DownCallProbe stallProbe(");
+    const size_t begin = forward.find("perfRow.BeginPresentCall();");
+    const size_t downCall = forward.find("ForwardPresent1Through(");
+    const size_t end = forward.find("perfRow.EndPresentCall();");
     const size_t call = body.find("const HRESULT hr = ForwardFinalPresent1(");
     const size_t flush = body.find("FlushDX12DeferredOverlaySignalAfterHookedPresent(");
     ASSERT_NE(begin, npos);
+    ASSERT_NE(wait, npos);
+    ASSERT_NE(probe, npos);
+    ASSERT_NE(downCall, npos);
     ASSERT_NE(end, npos);
     ASSERT_NE(call, npos);
     ASSERT_NE(flush, npos);
-    EXPECT_LT(begin, end);
+    EXPECT_LT(wait, probe);
+    EXPECT_LT(probe, begin);
+    EXPECT_LT(begin, downCall);
+    EXPECT_LT(downCall, end);
     EXPECT_LT(limiterEnd, call);
     EXPECT_LT(call, flush) << "post_present_us starts at the down-call's return";
 }

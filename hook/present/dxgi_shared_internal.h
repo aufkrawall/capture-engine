@@ -460,7 +460,8 @@ bool TryGetSwapChainBackBufferIndex(IDXGISwapChain* pSwapChain, UINT* indexOut);
 }
 
 namespace DXGIShared {
-bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, const char* reason, HRESULT* resultOut);
+bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                                 const char* reason, HRESULT* resultOut, bool ownPresentRecord = false);
 }
 
 namespace DXGIShared {
@@ -645,7 +646,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 class DX11PresentPerfRow;
 // DetourPresent1's last step: through Streamline's routing while it is active, timed by `perfRow`.
 HRESULT ForwardFinalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                             const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow);
+                             const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow, bool d3d12);
 void DisableSLPresentRouting();
 }
 

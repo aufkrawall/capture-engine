@@ -276,16 +276,14 @@ int FormatSlowOverlaySubmit(double durationMs, const char* reason, bool sampled,
 }
 
 OverlaySubmitProbe::OverlaySubmitProbe(const char* reason)
-    : reason_(reason), startTicks_(HookQpcTicks()), sampled_(PresentationChange().TakeCall()) {
-    if (sampled_) {
-        ArmStackSample("overlay submit");
+    : reason_(reason), startTicks_(HookQpcTicks()) {
+    if (PresentationChange().TakeCall()) {
+        stackCall_ = ArmStackSample("overlay submit");
     }
 }
 
 OverlaySubmitProbe::~OverlaySubmitProbe() {
-    if (sampled_) {
-        DisarmStackSample();
-    }
+    DisarmStackSample(stackCall_);
     const int64_t nowTicks = HookQpcTicks();
     const double elapsedUs = static_cast<double>(nowTicks - startTicks_) * HookQpcTicksToUs();
     if (elapsedUs < static_cast<double>(kSlowOverlaySubmitUs)) {
@@ -298,7 +296,7 @@ OverlaySubmitProbe::~OverlaySubmitProbe() {
     }
     const PresentationChangeWatch& watch = PresentationChange();
     char line[256];
-    FormatSlowOverlaySubmit(elapsedUs / 1000.0, reason_, sampled_, watch.Why(),
+    FormatSlowOverlaySubmit(elapsedUs / 1000.0, reason_, stackCall_ != 0, watch.Why(),
                             static_cast<double>(nowTicks - watch.AtTicks()) * HookQpcTicksToUs() / 1000.0, line,
                             sizeof(line));
     HookLogImportant("%s", line);
@@ -314,17 +312,17 @@ DownCallProbe::DownCallProbe(bool d3d12) {
     // While capture runs, or right after a presentation change, a call still inside after kStackSampleAfterUs gets its
     // stack sampled (present_stall_stack.h, presentation_change.h).
     if (entry_.valid || PresentationChange().TakeCall()) {
-        ArmStackSample();
+        sampled_ = true;
+        stackCall_ = ArmStackSample();
     }
 }
 
 void DownCallProbe::Restart() {
     if (armed_) {
+        DisarmStackSample(stackCall_);
         entry_ = InvokeDX12SampleCaptureCopyProgress();
         startTicks_ = HookQpcTicks();
-        if (entry_.valid || PresentationChange().TakeCall()) {
-            ArmStackSample();
-        }
+        stackCall_ = sampled_ || entry_.valid ? ArmStackSample() : 0;
     }
 }
 
@@ -333,7 +331,7 @@ void DownCallProbe::Finish() {
         return;
     }
     armed_ = false;
-    DisarmStackSample();
+    DisarmStackSample(stackCall_);
     const int64_t exitTicks = HookQpcTicks();
     const int64_t elapsedTicks = exitTicks - startTicks_;
     DownCall call;

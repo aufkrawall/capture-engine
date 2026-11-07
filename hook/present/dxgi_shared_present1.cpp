@@ -773,7 +773,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // CRITICAL: SL thread Steam bypass — handled in CallOriginalPresent1.
 
     EnterStage(CostStage::kCorePolicy);
-    const HRESULT hr = ForwardFinalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters, perfRow);
+    const HRESULT hr = ForwardFinalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters, perfRow,
+                                            api == APIType::D3D12);
 
     // Flush deferred overlay fence Signal AFTER Present.
     EnterStage(CostStage::kDeferredSignal);
