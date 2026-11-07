@@ -1,5 +1,7 @@
 #include "ddraw_hook_internal.h"
 #include "hook/runtime/api_translator_modules.h"
+#include "hook/runtime/module_set_generation.h"
+#include "hook/wrappers/wrapper_hooks.h"
 
 
 uintptr_t DirectDrawObjectIdentity(IUnknown* object) {
@@ -476,15 +478,23 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
         ddraw_hook_g_ActiveDirectDrawVersion.load(std::memory_order_acquire));
     const unsigned d3dVersion = ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
     const char* legacyLabel = ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion);
-    std::string finalLabel;
-    if (ce::api_translator::IsDxupModuleLoaded("ddraw.dll")) {
-        const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-        const bool isDx12 = intermediateDx11;
-        finalLabel = ce::graphics_api_identity::WithDxup(legacyLabel, intermediateDx11, isDx12);
-    } else {
-        finalLabel = legacyLabel;
+    static unsigned long long s_lastModules = 0;
+    static unsigned long long s_lastVersionKey = ~0ull;
+    static std::string s_finalLabel;
+    const unsigned long long modules = LoadedModuleSetGeneration();
+    const unsigned long long versionKey = (static_cast<unsigned long long>(directDrawVersion) << 32) | d3dVersion;
+    if (modules != s_lastModules || versionKey != s_lastVersionKey) {
+        if (ce::api_translator::IsDxupModuleLoaded("ddraw.dll")) {
+            const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
+            const bool isDx12 = intermediateDx11 && WasD3D12DeviceCreated();
+            s_finalLabel = ce::graphics_api_identity::WithDxup(legacyLabel, intermediateDx11, isDx12);
+        } else {
+            s_finalLabel = legacyLabel;
+        }
+        s_lastModules = modules;
+        s_lastVersionKey = versionKey;
     }
-    g_OverlayAdapter.SetGraphicsAPI(finalLabel.c_str(), "active DirectDraw presentation surface");
+    g_OverlayAdapter.SetGraphicsAPI(s_finalLabel.c_str(), "active DirectDraw presentation surface");
     return EnsureOverlayRouteBackend(DDrawOverlayRoute::HelperComposite, nullptr);
 }
 

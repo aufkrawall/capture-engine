@@ -1,5 +1,7 @@
 #include "dx9_hook_internal.h"
 #include "hook/runtime/api_translator_modules.h"
+#include "hook/runtime/module_set_generation.h"
+#include "hook/wrappers/wrapper_hooks.h"
 
 
 void DrawDX9Overlay(IDirect3DDevice9* device) {
@@ -77,14 +79,16 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     // comes with another dispatch table, so no loader query is needed on every frame.
     static IDirect3DDevice9* s_lastApiDevice = nullptr;
     static const void* s_lastDeviceVTable = nullptr;
+    static unsigned long long s_lastModules = 0;
     const void* deviceVTable = *reinterpret_cast<void* const*>(device);
-    if (device != s_lastApiDevice || deviceVTable != s_lastDeviceVTable) {
+    const unsigned long long modules = LoadedModuleSetGeneration();
+    if (device != s_lastApiDevice || deviceVTable != s_lastDeviceVTable || modules != s_lastModules) {
         const bool isEx = ResolveD3D9DeviceIsEx(device);
         namespace identity = ce::graphics_api_identity;
         std::string finalApi;
         if (ce::api_translator::IsDxupModuleLoaded("d3d9.dll")) {
             const bool intermediateDx11 = ce::api_translator::IsDxupModuleLoaded("d3d11.dll");
-            const bool isDx12 = intermediateDx11 || (GetModuleHandleA("d3d12.dll") != nullptr);
+            const bool isDx12 = intermediateDx11 && WasD3D12DeviceCreated();
             finalApi = identity::WithDxup(identity::D3D9Label(isEx, false), intermediateDx11, isDx12);
         } else {
             finalApi = identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
@@ -93,6 +97,7 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
         g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
         s_lastApiDevice = device;
         s_lastDeviceVTable = deviceVTable;
+        s_lastModules = modules;
     }
 
     // Render Custom Overlay

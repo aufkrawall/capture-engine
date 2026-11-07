@@ -8,6 +8,7 @@ struct BootstrapEnvironment {
     bool inLoaderCallout = false;
     bool vulkanActive = false;
     bool residentVulkanLayer = false;
+    bool dxvkEvidence = false;
     unsigned loaderDeferrals = 0;
     unsigned vulkanBypasses = 0;
     unsigned layerQueries = 0;
@@ -19,6 +20,7 @@ struct BootstrapEnvironment {
         ++layerQueries;
         return residentVulkanLayer;
     }
+    bool HasDXVKEvidence() const { return dxvkEvidence; }
     void NoteVulkanBypass() { ++vulkanBypasses; }
 };
 
@@ -74,6 +76,16 @@ TEST(Dx12FactoryBootstrapTest, PublishedVulkanOwnershipBypassesEvenWithoutReside
     environment.vulkanActive = false;
     EXPECT_TRUE(ce::dx12_factory_bootstrap::CanInstall(environment));
     EXPECT_EQ(environment.vulkanBypasses, 1u);
+}
+
+TEST(Dx12FactoryBootstrapTest, DxvkEvidencePreventsDxgiMutationBeforeLayerLoad) {
+    BootstrapEnvironment environment;
+    environment.dxvkEvidence = true;
+    ASSERT_FALSE(environment.vulkanActive);
+    ASSERT_FALSE(environment.residentVulkanLayer);
+    EXPECT_FALSE(ce::dx12_factory_bootstrap::CanInstall(environment));
+    EXPECT_EQ(environment.vulkanBypasses, 1u);
+    EXPECT_EQ(environment.loaderDeferrals, 0u);
 }
 
 }  // namespace

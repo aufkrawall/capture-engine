@@ -4,6 +4,8 @@
 #include "dx12_factory_bootstrap.h"
 #include "dx12_factory_slot_policy.h"
 #include "dx12_device_creation_report.h"
+#include "hook/runtime/api_translator_modules.h"
+#include "hook/runtime/main_internal.h"
 
 namespace {
 
@@ -30,6 +32,12 @@ struct FactoryBootstrapEnvironment {
     bool HasResidentVulkanLayer() const {
         return GetModuleHandleW(L"VK_LAYER_CE_overlay.dll") != nullptr ||
                GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll") != nullptr;
+    }
+
+    bool HasDXVKEvidence() const {
+        return IsDXVKD3D11WrapperLoaded() ||
+               ce::api_translator::IsDxvkModuleLoaded("dxgi.dll") ||
+               ce::api_translator::IsDxvkModuleLoaded("d3d11.dll");
     }
 
     void NoteVulkanBypass() const {
