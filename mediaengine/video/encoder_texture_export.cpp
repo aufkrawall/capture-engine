@@ -15,9 +15,7 @@ struct EncoderTextureExport::Set {
     HANDLE kmt[ENCODER_TEXTURE_SLOT_COUNT] = {};  // legacy global handles: they die with the textures
     ComGuard<ID3D11Fence> fence;
     HandleGuard fenceHandle;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t format = 0;
+    EncoderTextureRequest request;
 };
 
 namespace {
@@ -84,12 +82,12 @@ bool EncoderTextureExport::Ensure(const EncoderTextureRequest& request, SharedMe
     std::lock_guard serialize(serialize_);
     route_.InitializeIfEmpty(binding);
 
-    std::unique_ptr<Set> retired;
+    std::shared_ptr<const Set> retired;
     uint64_t retiredGeneration = 0;
     {
         std::unique_lock state(state_);
-        if (set_ && set_->format == request.format) {
-            // Only this lock's holders replace the set, so it stays valid unlocked.
+        if (set_ && set_->request == request) {
+            // serialize_ keeps the set installed while it is published.
             const Set& kept = *set_;
             state.unlock();
             Publish(kept, generation_.load(std::memory_order_acquire), false);
@@ -105,8 +103,13 @@ bool EncoderTextureExport::Ensure(const EncoderTextureRequest& request, SharedMe
         // The producer drops the old imports on the withdrawn publication; views the
         // encoder still holds keep their allocation alive until it refreshes.
         Withdraw();
-        DLL_Log("[EncoderTextures] Format %u -> %u: retired the old set (generation=%llu)", retired->format,
-                request.format, static_cast<unsigned long long>(retiredGeneration));
+        const auto& old = retired->request;
+        DLL_Log("[EncoderTextures] Retired generation=%llu %ux%u format=%u adapter=%08x:%08x for "
+                "%ux%u format=%u adapter=%08x:%08x",
+                static_cast<unsigned long long>(retiredGeneration), old.width, old.height, old.format,
+                static_cast<unsigned>(old.luidHigh), static_cast<unsigned>(old.luidLow), request.width,
+                request.height, request.format, static_cast<unsigned>(request.luidHigh),
+                static_cast<unsigned>(request.luidLow));
         retired.reset();
     }
 
@@ -122,10 +125,8 @@ bool EncoderTextureExport::Ensure(const EncoderTextureRequest& request, SharedMe
         return false;
     }
 
-    auto fresh = std::make_unique<Set>();
-    fresh->width = request.width;
-    fresh->height = request.height;
-    fresh->format = request.format;
+    auto fresh = std::make_shared<Set>();
+    fresh->request = request;
     for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; ++i) {
         D3D11_TEXTURE2D_DESC desc = {};
         desc.Width = request.width;
@@ -190,9 +191,9 @@ void EncoderTextureExport::Publish(const Set& set, uint64_t generation, bool fre
         for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; ++i)
             publication->encoderTextures.SetKmtTextureHandle(i, reinterpret_cast<uint64_t>(set.kmt[i]));
         publication->encoderTextures.SetFenceHandle(reinterpret_cast<uint64_t>(set.fenceHandle.get()));
-        publication->encoderTextures.SetWidth(set.width);
-        publication->encoderTextures.SetHeight(set.height);
-        publication->encoderTextures.SetFormat(set.format);
+        publication->encoderTextures.SetWidth(set.request.width);
+        publication->encoderTextures.SetHeight(set.request.height);
+        publication->encoderTextures.SetFormat(set.request.format);
         publication->encoderTextures.kmtReady.store(true, std::memory_order_release);
         publication->encoderTextures.ready.store(true, std::memory_order_release);
         published = true;
@@ -203,10 +204,10 @@ void EncoderTextureExport::Publish(const Set& set, uint64_t generation, bool fre
     // always means the current route carries the set.
     DLL_Log("[EncoderTextures] %s generation=%llu %ux%u format=%u slots=%d adapter=%08x:%08x fence=%p "
             "published=%d",
-            fresh ? "Exported" : "Republished", static_cast<unsigned long long>(generation), set.width, set.height,
-            set.format, ENCODER_TEXTURE_SLOT_COUNT,
-            static_cast<unsigned>(deviceLuidHigh_), static_cast<unsigned>(deviceLuidLow_), set.fenceHandle.get(),
-            published ? 1 : 0);
+            fresh ? "Exported" : "Republished", static_cast<unsigned long long>(generation), set.request.width,
+            set.request.height, set.request.format, ENCODER_TEXTURE_SLOT_COUNT,
+            static_cast<unsigned>(set.request.luidHigh), static_cast<unsigned>(set.request.luidLow),
+            set.fenceHandle.get(), published ? 1 : 0);
 }
 
 void EncoderTextureExport::Withdraw() {
@@ -218,7 +219,7 @@ void EncoderTextureExport::Withdraw() {
 
 bool EncoderTextureExport::Release(const char* reason) {
     std::lock_guard serialize(serialize_);
-    std::unique_ptr<Set> released;
+    std::shared_ptr<const Set> released;
     uint64_t generation = 0;
     {
         std::lock_guard state(state_);
@@ -256,17 +257,19 @@ EncoderTextureExport::Handles EncoderTextureExport::Snapshot() const {
 ID3D11Texture2D* EncoderTextureExport::OpenOn(ID3D11Device* device, uint64_t generation, int slot) const {
     if (!device || slot < 0 || slot >= ENCODER_TEXTURE_SLOT_COUNT)
         return nullptr;
-    ID3D11Texture2D* view = nullptr;
-    HRESULT hr = S_OK;
+    std::shared_ptr<const Set> pinned;
     {
-        // The set stays alive while its handle is opened.
         std::lock_guard state(state_);
         if (!set_ || generation_.load(std::memory_order_acquire) != generation || !set_->kmt[slot])
             return nullptr;
-        hr = device->OpenSharedResource(set_->kmt[slot], IID_PPV_ARGS(&view));
+        pinned = set_;
     }
+    // The KMT handle needs its backing allocation until the driver returns. Pin the
+    // set without making capture-side Ensure/Release wait for the encoder's device.
+    ComGuard<ID3D11Texture2D> view;
+    const HRESULT hr = device->OpenSharedResource(pinned->kmt[slot], IID_PPV_ARGS(view.put()));
     if (SUCCEEDED(hr) && view)
-        return view;
+        return view.release();
     if (const auto verdict = openFailureGate_.Observe(log_meter::FieldKey(generation, hr)))
         DLL_Log("[EncoderTextures] Opening slot %d of generation=%llu on the encoder device failed: HR=0x%08lx "
                 "(repeats suppressed=%llu)",

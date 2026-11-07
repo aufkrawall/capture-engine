@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-07 - Review of encoder texture replacement
+
+- `EncoderTextureExport` keys reuse on the entire request. DXVK requests replacement
+  after old leases and GPU copies drain, including a resize with the same format.
+- Opening a KMT slot pins its backing set and releases the export lock before
+  calling the driver. WARP tests reproduce stale size and adapter reuse on the
+  old code and cover the lifetime of an acquired view across replacement.
+
 ### 2026-11-07 - Encoder texture export split from the codec lock
 
 - Residual from the AAC hang review: `MediaEngine_CreateSharedCaptureTextures` and

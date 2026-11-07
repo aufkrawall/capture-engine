@@ -67,8 +67,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         LayerLog("Vulkan Layer: [Error] Failed to get LUID from physical device");
         return;
     }
-    LayerIPC_SetLUID(static_cast<int32_t>(luid.LowPart), static_cast<int32_t>(luid.HighPart));
-
     uint64_t luidKey = MakeLuidKey(luid);
 
     SharedMemoryLayout* generationSharedMem = mem;
@@ -107,6 +105,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             it->second.captureFormat == normalizedFormat && it->second.colorSpace == colorSpace &&
             it->second.copyFences.size() == expectedSubmissionCount &&
             it->second.signalSemaphores.size() == imageCount) {
+            LayerIPC_SetLUID(static_cast<int32_t>(luid.LowPart), luid.HighPart);
             return;
         }
 
@@ -129,6 +128,10 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         layer_capture_g_RetiredCaptureStates.emplace_back(std::move(it->second));
         layer_capture_g_CaptureStates.erase(it);
     }
+
+    const auto luidLow = static_cast<int32_t>(luid.LowPart);
+    const bool adapterChanged = mem && (mem->GetLuidLowPart() != luidLow || mem->GetLuidHighPart() != luid.HighPart);
+    LayerIPC_SetLUID(luidLow, luid.HighPart);
 
     // Once old leases and GPU copies are complete, no capture state can still
     // reference texture generations for obsolete dimensions/formats. Reclaim
@@ -162,21 +165,20 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     if (allowDxvkEncoderTextures && mem) {
         // DXVK D3D11 zero-copy path: import encoder's KMT handles into Vulkan.
 
-        // Publish resolution FIRST so the encoder can create textures
+        // Old leases and GPU copies have drained. Publish the new request before
+        // withdrawing the old export so media creates textures for this swapchain.
+        const uint32_t ourDxgiFormat = VkFormatToDXGI(format);
         mem->SetWidth(extent.width);
         mem->SetHeight(extent.height);
-        mem->SetFormat(VkFormatToDXGI(format));
-
-        // If existing KMT textures have a different format, clear kmtReady to
-        // force the encoder to recreate them with the correct format.
-        uint32_t ourDxgiFormat = VkFormatToDXGI(format);
-        if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
-            uint32_t existingFormat = mem->encoderTextures.GetFormat();
-            if (existingFormat != 0 && existingFormat != ourDxgiFormat) {
-                LayerLog("Vulkan Layer: KMT format mismatch (existing=%d, need=%d) - requesting recreation",
-                         existingFormat, ourDxgiFormat);
-                mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
-            }
+        mem->SetFormat(ourDxgiFormat);
+        if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
+            (adapterChanged || mem->encoderTextures.GetWidth() != extent.width ||
+             mem->encoderTextures.GetHeight() != extent.height || mem->encoderTextures.GetFormat() != ourDxgiFormat)) {
+            LayerLog("Vulkan Layer: Requesting encoder KMT textures for %ux%u format=%u adapter=%08x:%08x",
+                     extent.width, extent.height, ourDxgiFormat, static_cast<unsigned>(luid.HighPart),
+                     static_cast<unsigned>(luid.LowPart));
+            mem->useEncoderTextures.store(false, std::memory_order_release);
+            mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
         }
 
         LayerLog(
@@ -292,7 +294,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // D3D fence and must never be published as though it were one.
     constexpr VkExternalSemaphoreHandleTypeFlagBits semHandleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
 
-    VkSemaphoreTypeCreateInfo timelineInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+    VkSemaphoreTypeCreateInfo timelineInfo{};
+    timelineInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     timelineInfo.initialValue = 0;
 
@@ -304,17 +307,20 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     secAttr.bInheritHandle = FALSE;
     secAttr.lpSecurityDescriptor = nullptr;  // Default security descriptor (full access)
 
-    VkExportSemaphoreWin32HandleInfoKHR exportWin32Info = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR};
+    VkExportSemaphoreWin32HandleInfoKHR exportWin32Info{};
+    exportWin32Info.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR;
     exportWin32Info.pAttributes = &secAttr;
     exportWin32Info.dwAccess = GENERIC_ALL;
     exportWin32Info.name = nullptr;
     exportWin32Info.pNext = &timelineInfo;
 
-    VkExportSemaphoreCreateInfo exportInfo = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
+    VkExportSemaphoreCreateInfo exportInfo{};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
     exportInfo.handleTypes = semHandleType;
     exportInfo.pNext = &exportWin32Info;
 
-    VkSemaphoreCreateInfo timelineSemInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphoreCreateInfo timelineSemInfo{};
+    timelineSemInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     timelineSemInfo.pNext = &exportInfo;
 
     VkResult semResult = disp->fp_vkCreateSemaphore(device, &timelineSemInfo, nullptr, &state.timelineSemaphore);
@@ -322,7 +328,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     if (semResult == VK_SUCCESS) {
         if (disp->fp_vkGetSemaphoreWin32HandleKHR) {
             // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-            VkSemaphoreGetWin32HandleInfoKHR getHandleInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR};
+            VkSemaphoreGetWin32HandleInfoKHR getHandleInfo{};
+            getHandleInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
             getHandleInfo.semaphore = state.timelineSemaphore;
             getHandleInfo.handleType = semHandleType;
 

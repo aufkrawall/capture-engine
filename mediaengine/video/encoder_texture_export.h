@@ -14,9 +14,9 @@
 // so the path stays zero-copy.
 //
 // Locks: Ensure and Release serialize on their own lock, which covers the device work,
-// and take the state lock only to swap the set. The encoder takes only the state lock, for
-// one OpenSharedResource per slot and generation. Neither lock is held while waiting for
-// anything else; the publication guard is taken after them and only for atomic stores.
+// and take the state lock only to access the current set. The encoder pins the set under
+// the state lock, then opens each slot outside it. The publication guard is taken outside
+// the state lock and covers only atomic reads and stores.
 
 #include <d3d11_4.h>
 #include <windows.h>
@@ -39,6 +39,8 @@ struct EncoderTextureRequest {
     uint32_t format = 0;  // DXGI_FORMAT the producer renders
     int32_t luidLow = 0;  // the producer's adapter; zero selects the default hardware adapter
     int32_t luidHigh = 0;
+
+    bool operator==(const EncoderTextureRequest&) const = default;
 };
 
 class EncoderTextureExport {
@@ -51,9 +53,9 @@ public:
     EncoderTextureExport& operator=(const EncoderTextureExport&) = delete;
 
     // Publishes a texture set for the request. `binding` becomes the route only when the
-    // route has none yet: a detached recording keeps publishing privately. A set of the
-    // same format is kept, since producers re-request it; a format change retires the old
-    // set (and its publication) first. False when no set could be created.
+    // route has none yet: a detached recording keeps publishing privately. An identical
+    // request keeps the set. A new geometry, format or adapter retires the old set and
+    // publication first. False when no set could be created.
     bool Ensure(const EncoderTextureRequest& request, SharedMemoryLayout* binding);
 
     // Withdraws the publication and releases the set and its device. False when nothing
@@ -88,7 +90,7 @@ private:
     ComGuard<ID3D11Device5> device_;
     int32_t deviceLuidLow_ = 0;
     int32_t deviceLuidHigh_ = 0;
-    std::unique_ptr<Set> set_;
+    std::shared_ptr<const Set> set_;
     std::atomic<uint64_t> generation_{0};
     std::atomic<bool> exported_{false};
     log_meter::ChangeGate failureGate_;

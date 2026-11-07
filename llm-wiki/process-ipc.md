@@ -219,21 +219,24 @@ call: create ran `EnsureDevice` (device plus codec open) under both locks. The 1
 textures and the shared fence the DXVK layer imports now belong to
 `MediaEngineInstance::encoderTextures` (`mediaengine/video/encoder_texture_export.h`),
 which owns its own D3D11 device on the published adapter LUID and two leaf locks:
-`serialize_` for Ensure/Release device work, `state_` for swapping the set. The encoder
-reaches the slots by KMT handle through `ExportedTextureViews`, opening each on its own
-device once per export generation (OpenSharedResource aliases the allocation, so the path
+`serialize_` for Ensure/Release device work, `state_` for swapping or pinning the set. The
+encoder reaches the slots by KMT handle through `ExportedTextureViews`, opening each on
+its own device once per export generation. It pins the set before releasing `state_` and
+calling the driver, so a slow open cannot hold up Ensure/Release.
+OpenSharedResource aliases the allocation, so the path
 stays zero-copy; inject frames take their LUID from the same shared-memory field, so both
-devices sit on one adapter). The encoder therefore never preserves its device across
+devices sit on one adapter. The encoder therefore never preserves its device across
 `CleanupResources` any more; the export outlives encoder and engine re-creation and is
 released by the host call, the screen-grab switch, or silently with the pipeline.
-Contract: a same-format request keeps the set and republishes a withdrawn handshake, so
-`true` always means the current route carries it; a format change retires the old set
-and its publication first; a detached route keeps late exports private; failures leave
-no partial publication and are metered (`[EncoderTextures] Export failed at <stage>`).
-Covered by `EncoderTextureExportTest` (WARP: publication, re-request, format change,
-release, views on the encoder device, producer-to-encoder pixel readback, unknown adapter,
-detached route) and `MediaEngineHandleTest.EncoderTextureExportsDoNotWaitForTheCodecLock`;
-with `apiMutex` put back into the create export, that test hangs (verified 2026-11-07).
+An identical request keeps the set and republishes a withdrawn handshake. A change in
+size, format or LUID retires the old set and its publication first. The Vulkan layer
+requests a replacement after old swapchain leases and GPU copies drain. A detached
+route keeps late exports private. Failures leave no partial publication and are
+metered (`[EncoderTextures] Export failed at <stage>`).
+Covered by `EncoderTextureExportTest` (WARP publication, re-request, resize, format and
+adapter change, retired view lifetime, release, producer-to-encoder shared fence and
+pixel readback, and detached route) and `MediaEngineHandleTest.EncoderTextureExportsDoNotWaitForTheCodecLock`.
+With `apiMutex` put back into the create export, that test hangs (verified 2026-11-07).
 
 ## Open Questions / Stale-risk
 

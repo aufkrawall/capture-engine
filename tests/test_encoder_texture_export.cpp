@@ -7,7 +7,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <thread>
 
 #include "common/capture/recording_memory.h"
 #include "common/ipc/shared_defs.h"
@@ -27,17 +26,6 @@ ce::ComGuard<ID3D11Device> CreateWarpDevice(ce::ComGuard<ID3D11DeviceContext>& c
                                  device.put(), nullptr, context.put())))
         device.reset();
     return device;
-}
-
-// Waits for the context's submitted work on a completion signal, not a duration.
-void WaitForCompletion(ID3D11Device* device, ID3D11DeviceContext* context) {
-    D3D11_QUERY_DESC desc{D3D11_QUERY_EVENT, 0};
-    ce::ComGuard<ID3D11Query> query;
-    ASSERT_TRUE(SUCCEEDED(device->CreateQuery(&desc, query.put())));
-    context->End(query.get());
-    BOOL done = FALSE;
-    while (context->GetData(query.get(), &done, sizeof(done), 0) != S_OK || !done)
-        std::this_thread::yield();
 }
 
 class EncoderTextureExportTest : public ::testing::Test {
@@ -124,6 +112,29 @@ TEST_F(EncoderTextureExportTest, AFormatChangeReplacesTheSetAndTheEncoderViewsFo
     EXPECT_EQ(DescOf(view.get()).Format, DXGI_FORMAT_R10G10B10A2_UNORM);
 }
 
+TEST_F(EncoderTextureExportTest, AResizeReplacesTheSetWhileAnAcquiredViewStaysValid) {
+    EncoderTextureExport exported(route_);
+    ExportedTextureViews views;
+    EncoderTextureRequest request = Request();
+    ASSERT_TRUE(exported.Ensure(request, layout_.get()));
+    const uint64_t first = exported.Generation();
+    ce::ComGuard<ID3D11Texture2D> oldView(views.AcquireSlot(exported, encoderDevice_.get(), 0));
+    ASSERT_TRUE(oldView);
+
+    request.width = 80;
+    request.height = 48;
+    ASSERT_TRUE(exported.Ensure(request, layout_.get()));
+    EXPECT_GT(exported.Generation(), first);
+    EXPECT_EQ(layout_->encoderTextures.GetWidth(), 80u);
+    EXPECT_EQ(layout_->encoderTextures.GetHeight(), 48u);
+    ce::ComGuard<ID3D11Texture2D> view(views.AcquireSlot(exported, encoderDevice_.get(), 0));
+    ASSERT_TRUE(view);
+    EXPECT_EQ(DescOf(view.get()).Width, 80u);
+    EXPECT_EQ(DescOf(view.get()).Height, 48u);
+    EXPECT_EQ(DescOf(oldView.get()).Width, 64u);
+    EXPECT_EQ(DescOf(oldView.get()).Height, 32u);
+}
+
 TEST_F(EncoderTextureExportTest, ReleaseWithdrawsThePublicationAndLeavesNothingToOpen) {
     EncoderTextureExport exported(route_);
     ExportedTextureViews views;
@@ -177,10 +188,21 @@ TEST_F(EncoderTextureExportTest, TheEncoderReadsWhatAProducerRenderedIntoTheExpo
         ASSERT_TRUE(SUCCEEDED(producer->OpenSharedResource(handle, IID_PPV_ARGS(target.put()))));
         ce::ComGuard<ID3D11RenderTargetView> rtv;
         ASSERT_TRUE(SUCCEEDED(producer->CreateRenderTargetView(target.get(), nullptr, rtv.put())));
+        ce::ComGuard<ID3D11Device5> device5;
+        ce::ComGuard<ID3D11DeviceContext4> context4;
+        ASSERT_TRUE(SUCCEEDED(producer->QueryInterface(IID_PPV_ARGS(device5.put()))));
+        ASSERT_TRUE(SUCCEEDED(producerContext->QueryInterface(IID_PPV_ARGS(context4.put()))));
+        ce::ComGuard<ID3D11Fence> fence;
+        const HANDLE fenceHandle = reinterpret_cast<HANDLE>(layout_->encoderTextures.GetFenceHandle());
+        ASSERT_TRUE(SUCCEEDED(device5->OpenSharedFence(fenceHandle, IID_PPV_ARGS(fence.put()))));
+        ce::HandleGuard completed(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+        ASSERT_TRUE(completed);
+        ASSERT_TRUE(SUCCEEDED(fence->SetEventOnCompletion(1, completed.get())));
         const float red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
         producerContext->ClearRenderTargetView(rtv.get(), red);
+        ASSERT_TRUE(SUCCEEDED(context4->Signal(fence.get(), 1)));
         producerContext->Flush();
-        WaitForCompletion(producer.get(), producerContext.get());
+        ASSERT_EQ(WaitForSingleObject(completed.get(), 5000), WAIT_OBJECT_0);
     }
 
     ce::ComGuard<ID3D11Texture2D> view(views.Acquire(exported, encoderDevice_.get(), handle));
@@ -213,6 +235,25 @@ TEST_F(EncoderTextureExportTest, AnAdapterThatIsNotPresentExportsNothing) {
     EXPECT_FALSE(exported.Exported());
     EXPECT_EQ(exported.Generation(), 0u);
     EXPECT_FALSE(layout_->encoderTextures.kmtReady.load());
+}
+
+TEST_F(EncoderTextureExportTest, AnAdapterChangeCannotReuseTexturesFromThePreviousAdapter) {
+    EncoderTextureExport exported(route_);
+    EncoderTextureRequest request = Request();
+    ASSERT_TRUE(exported.Ensure(request, layout_.get()));
+    const auto first = exported.Snapshot();
+    request.luidLow = 0x7ffffff0;
+    request.luidHigh = 0x7ffffff0;
+
+    EXPECT_FALSE(exported.Ensure(request, layout_.get()));
+    EXPECT_FALSE(exported.Exported());
+    EXPECT_FALSE(layout_->encoderTextures.kmtReady.load());
+    EXPECT_FALSE(layout_->encoderTextures.ready.load());
+    EXPECT_GT(exported.Generation(), first.generation);
+    ce::ComGuard<ID3D11Texture2D> retired(exported.OpenOn(encoderDevice_.get(), first.generation, 0));
+    EXPECT_FALSE(retired);
+    ASSERT_TRUE(exported.Ensure(Request(), layout_.get()));
+    EXPECT_TRUE(layout_->encoderTextures.kmtReady.load());
 }
 
 // Late texture creation after a stop must not advertise handles on the live mapping that
