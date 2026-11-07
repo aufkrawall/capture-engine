@@ -165,12 +165,14 @@ public:
         device->SetScissorRect(&scissor);
         device->SetVertexShader(vertexShader);
         device->SetPixelShader(pixelShader);
-        // Restore the runtime's FVF binding or the application's declaration,
-        // including a device that had no vertex input bound.
-        if (fvf)
+        // A declaration can report a compatible FVF. Keep the actual object
+        // the application bound, including the runtime's cached FVF declaration.
+        if (declaration)
+            device->SetVertexDeclaration(declaration);
+        else if (fvf)
             device->SetFVF(fvf);
         else
-            device->SetVertexDeclaration(declaration);
+            device->SetVertexDeclaration(nullptr);
         device->SetStreamSource(0, stream, streamOffset, streamStride);
         device->SetStreamSourceFreq(0, streamFrequency);
         device->SetIndices(indices);

@@ -535,6 +535,33 @@ TEST_F(DX9OverlayBackendTest, AShapeThroughTheAtlasMatchesTheDiffusePathExactly)
     EXPECT_EQ(ReadPixel(device_.Get(), backBuffer_.Get(), 28, 12), ReadPixel(device_.Get(), backBuffer_.Get(), 44, 12));
 }
 
+TEST_F(DX9OverlayBackendTest, RestoresAnUnboundVertexDeclaration) {
+    ASSERT_EQ(device_->SetVertexDeclaration(nullptr), D3D_OK);
+    Render();
+    ComPtr<IDirect3DVertexDeclaration9> declaration;
+    EXPECT_EQ(device_->GetVertexDeclaration(&declaration), D3D_OK);
+    EXPECT_EQ(declaration.Get(), nullptr);
+}
+
+class DX9InstancedOverlayBackendTest : public DX9OverlayBackendTest {
+protected:
+    DWORD CreationFlags() const override {
+        return D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE;
+    }
+};
+
+TEST_F(DX9InstancedOverlayBackendTest, DrawsNormallyAndRestoresTheGamesStreamFrequency) {
+    constexpr UINT kGameFrequency = D3DSTREAMSOURCE_INDEXEDDATA | 3u;
+    ASSERT_EQ(device_->SetStreamSource(0, gameVertices_.Get(), 0, kGameStride), D3D_OK);
+    ASSERT_EQ(device_->SetStreamSourceFreq(0, kGameFrequency), D3D_OK);
+    ASSERT_EQ(device_->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF000000u, 1.0f, 0), D3D_OK);
+    Render();
+    EXPECT_EQ(ReadPixel(device_.Get(), backBuffer_.Get(), 4, 4), 0x00FF0000u);
+    UINT frequency = 0;
+    EXPECT_EQ(device_->GetStreamSourceFreq(0, &frequency), D3D_OK);
+    EXPECT_EQ(frequency, kGameFrequency);
+}
+
 TEST_F(DX9OverlayBackendTest, RestoresAFixedFunctionFormatTheGameSetInsteadOfADeclaration) {
     SetGameState(gameTarget_.Get(), {4, 4, 32, 32, 0.25f, 0.75f}, {1, 2, 30, 40});
     constexpr DWORD kGameFvf = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX2;
