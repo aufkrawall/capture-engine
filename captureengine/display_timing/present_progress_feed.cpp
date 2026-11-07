@@ -106,7 +106,13 @@ bool TraceFeed::TrySource(Source source) {
     trace.EventRecordCallback = &EventRecordCallback;
     trace.BufferCallback = &BufferCallback;
     trace.Context = this;
-    return consumer_.Start(&trace);
+    const bool started = consumer_.Start(&trace);
+    if (!started && source_ == Source::OwnSession && ownSessionStatus_ == ERROR_SUCCESS) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_SUCCESS)
+            ownSessionStatus_ = err;
+    }
+    return started;
 }
 
 void TraceFeed::Route(const EVENT_RECORD& event, Tracker& tracker) {

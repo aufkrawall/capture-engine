@@ -112,10 +112,12 @@ bool ReadProperty(const EVENT_RECORD* event, const wchar_t* name, T& value,
 #endif
 
 inline TracePropertiesBuffer MakeProperties(const wchar_t* name, ULONG flushTimerMs = 1) noexcept {
-    const std::size_t nameBytes = (std::wcslen(name) + 1) * sizeof(wchar_t);
+    const std::size_t rawLen = name ? std::wcslen(name) : 0;
+    const std::size_t clampedLen = (std::min)(rawLen, kTraceSessionNameCapacity - 1);
+    const std::size_t nameBytes = clampedLen * sizeof(wchar_t);
     TracePropertiesBuffer buffer;
     auto* properties = buffer.Get();
-    properties->Wnode.BufferSize = static_cast<ULONG>(sizeof(EVENT_TRACE_PROPERTIES) + nameBytes);
+    properties->Wnode.BufferSize = static_cast<ULONG>(buffer.storage.size());
     properties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
     properties->Wnode.ClientContext = 1;
     properties->BufferSize = 64;
@@ -127,7 +129,10 @@ inline TracePropertiesBuffer MakeProperties(const wchar_t* name, ULONG flushTime
                               EVENT_TRACE_INDEPENDENT_SESSION_MODE | EVENT_TRACE_USE_MS_FLUSH_TIMER;
     properties->FlushTimer = flushTimerMs;
     properties->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
-    std::memcpy(buffer.storage.data() + properties->LoggerNameOffset, name, nameBytes);
+    if (clampedLen > 0) {
+        std::memcpy(buffer.storage.data() + properties->LoggerNameOffset, name, nameBytes);
+    }
+    *reinterpret_cast<wchar_t*>(buffer.storage.data() + properties->LoggerNameOffset + nameBytes) = L'\0';
     return buffer;
 }
 

@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **ETW trace properties buffer sizing and session reclaim validation:** trace property buffers now declare their full capacity and clamp session name lengths to prevent buffer overruns during trace control calls. Session reclamation validates logger name offset bounds and alignment, and feed startup captures specific error codes when opening own trace sessions.
+
 - **Graphics runtime module identity verification:** streamline interposer checks and DLSS version reporting now verify that the loaded image path matches the queried module name, preventing foreign hook answers from blocking plugin placement or misreporting version numbers.
 
 - **Graphics API label caching and DXVK bootstrap admission:** overlay API labels across D3D12, D3D9, D3D8, and DirectDraw now cache their translation evidence against the loaded module generation, eliminating repeated per-frame loader lock queries and false D3D12 detections from mapped DLLs. The D3D12 factory hook bootstrap validates verified DXVK runtime evidence, preventing premature DXGI factory patching in DXVK games before Vulkan layer load.

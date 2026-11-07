@@ -76,11 +76,23 @@ int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName, cons
     int reclaimed = 0;
     for (ULONG i = 0; i < returnedSessions; ++i) {
         auto* properties = sessions[i];
-        if (!properties || properties->LoggerNameOffset == 0) {
+        if (!properties || properties->LoggerNameOffset < sizeof(EVENT_TRACE_PROPERTIES) ||
+            properties->LoggerNameOffset >= kSessionBufferBytes - sizeof(wchar_t) ||
+            (properties->LoggerNameOffset % sizeof(wchar_t)) != 0) {
             continue;
         }
         const auto* name = reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(properties) +
                                                             properties->LoggerNameOffset);
+        const size_t maxChars = (kSessionBufferBytes - properties->LoggerNameOffset) / sizeof(wchar_t);
+        bool hasNull = false;
+        for (size_t ch = 0; ch < maxChars; ++ch) {
+            if (name[ch] == L'\0') {
+                hasNull = true;
+                break;
+            }
+        }
+        if (!hasNull)
+            continue;
         const uint32_t ownerPid = ce::display_timing_reclaim::ParseSessionOwnerPid(name);
         if (ownerPid == 0) {
             continue;
@@ -88,9 +100,11 @@ int ReclaimLeakedSessions(uint32_t startStatus, const wchar_t* openingName, cons
         bool ownerAlive = true;
         if (ownerPid != currentPid) {
             DWORD ownerError = ERROR_SUCCESS;
+            SetLastError(ERROR_SUCCESS);
             HANDLE owner = env.openOwner(ownerPid);
             if (owner) {
                 DWORD exitCode = 0;
+                SetLastError(ERROR_SUCCESS);
                 if (env.queryOwnerExit(owner, &exitCode)) {
                     ownerAlive = exitCode == STILL_ACTIVE;
                 } else {
