@@ -12,7 +12,7 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Build verification:** split oversized configuration and overlay test groups so the complete verification gate can run without relaxing source-size limits.
+- **Build verification:** split oversized configuration and overlay test groups and cast media shared-memory slot indices so the complete verification gate and clang-tidy ratchet run cleanly without relaxing source-size limits.
 - **D3D9 hook recovery and build verification:** bounded hook restoration now selects slots in table order. Explicit graphics enum defaults, pointer conversions and test arithmetic clear the Windows verification regressions.
 
 - **Overlay colors now mean something:** values stay neutral until they need attention. Load turns amber at 85%, memory amber at 90% and red at 97% of its total, and recording shows as white text on a filled red chip that reads on any scene. A changing digit count no longer moves other values or resizes the panel, and a sensor dropping out reads `--` in place.

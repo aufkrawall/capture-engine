@@ -397,7 +397,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.isHDR = MediaState().pSharedMem->GetIsHDR();
                     if (qf.isShmem) {
                         const auto geometry = MediaState().pShmem
-                            ? MediaState().pShmem->ReadGeometry(qf.shmemSlot, MediaState().pSharedMem->GetShmemMappingSize())
+                            ? MediaState().pShmem->ReadGeometry(
+                                  static_cast<int>(qf.shmemSlot), MediaState().pSharedMem->GetShmemMappingSize())
                             : ShmemBuffer::Geometry{};
                         qf.width = geometry.width;
                         qf.height = geometry.height;
