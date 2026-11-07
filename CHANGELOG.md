@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **In-game screenshots with FSR frame generation across graphics device views:** no-callback FSR screenshots with overlay inclusion now recognize different interface views of the same graphics device during overlay rendering and renderer caching, preventing failed captures and repeated GPU retry work.
+
 - **Native AAC state isolation across legality retries:** the encoder now snapshots its persistent rate-control and psychoacoustic history before the per-frame encode loop and rewinds that history when retrying an oversized frame at reduced lambda, preventing temporary retry passes from corrupting long-term slew and hysteresis state.
 
 - **Resilient recording output spool handle safety and range validation:** the output spool writer handle is now preserved across failed live reconnect probes without closing and reopening, eliminating write errors during temporary network share stalls. Replay validates signed file offset ranges to prevent integer overflow and distinguishes unfinalized crash tails from corrupt finalized data.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dx12_ffx_suspend_overlay.h"
+#include "dx12_device_identity.h"
 #include "dx12_post_process_routes.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
@@ -205,7 +206,9 @@ public:
 
     bool Matches(ID3D12Device* candidateDevice, ID3D12CommandQueue* candidateQueue, DXGI_FORMAT candidateFormat,
                  bool candidateInlineCompletionMarker) const {
-        return SameComObject(device.Get(), candidateDevice) && queue.Get() == candidateQueue &&
+        return (SameComObject(device.Get(), candidateDevice) ||
+                ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(device.Get(), candidateDevice))) &&
+               queue.Get() == candidateQueue &&
                format == candidateFormat && inlineCompletionMarker == candidateInlineCompletionMarker;
     }
 

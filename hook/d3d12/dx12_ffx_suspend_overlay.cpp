@@ -86,7 +86,8 @@ bool Render(const RenderRequest& request) {
     ComPtr<ID3D12Device> queueDevice;
     if (FAILED(targetResource->GetDevice(IID_PPV_ARGS(&backBufferDevice))) || !backBufferDevice ||
         FAILED(request.presentationQueue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !queueDevice ||
-        !SameComObject(backBufferDevice.Get(), queueDevice.Get())) {
+        !(SameComObject(backBufferDevice.Get(), queueDevice.Get()) ||
+          ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(backBufferDevice.Get(), queueDevice.Get())))) {
         static std::atomic<int> s_deviceMismatchLogCount{0};
         const int logCount = s_deviceMismatchLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
