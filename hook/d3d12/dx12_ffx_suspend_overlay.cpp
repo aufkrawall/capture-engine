@@ -93,10 +93,12 @@ RenderOutcome RenderWithOutcome(const RenderRequest& request) {
     }
     PruneRetiredStates();
     auto& states = request.inlineCompletionMarker ? g_InlineProxyStates : g_ProxyStates;
-    auto& state = states[request.proxySwapChain];
+    // Looked up, not inserted: a request that fails validation must not leave an empty entry for its proxy.
+    const auto known = states.find(request.proxySwapChain);
+    const RendererState* const knownState = known != states.end() ? known->second.get() : nullptr;
     if (FAILED(targetResource->GetDevice(IID_PPV_ARGS(&backBufferDevice))) || !backBufferDevice ||
         FAILED(request.presentationQueue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !queueDevice ||
-        (!(state && state->HasValidatedQueueDevice(backBufferDevice.Get(), queueDevice.Get())) &&
+        (!(knownState && knownState->HasValidatedQueueDevice(backBufferDevice.Get(), queueDevice.Get())) &&
          !ce::dx12_device_identity::IsOneDevice(
              ce::dx12_device_identity::Compare(backBufferDevice.Get(), queueDevice.Get())))) {
         static std::atomic<int> s_deviceMismatchLogCount{0};
@@ -131,6 +133,7 @@ RenderOutcome RenderWithOutcome(const RenderRequest& request) {
         return RenderOutcome::kFailed;
     }
 
+    auto& state = states[request.proxySwapChain];
     if (state && !state->Matches(backBufferDevice.Get(), request.presentationQueue, rtvFormat,
                                  request.inlineCompletionMarker)) {
         RetireState(state, "device/queue/format change");
