@@ -633,26 +633,25 @@ void ReleaseStatusOverlayDarkForCapture(const char* reason) {
 }
 
 void SetRecordingVisibleState(bool enabled) {
-    auto publication = MediaState().pSharedMem.Publish();
-    if (!publication) {
-        return;
-    }
-
     if (enabled) {
-        const bool wasVisible = publication->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
-        if (!wasVisible) {
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            publication->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            const bool wasVisible = publication->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
+            if (!wasVisible) {
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+                publication->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
+            }
+            // Propagate audio-only flag so overlay can show AUDIO vs REC
+            publication->runtimeState.audioOnly.store(MediaState().audioOnly, std::memory_order_release);
+            publication->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
         }
-        // Propagate audio-only flag so overlay can show AUDIO vs REC
-        publication->runtimeState.audioOnly.store(MediaState().audioOnly, std::memory_order_release);
-        publication->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
-        ce::status_overlay::ReleaseDarkForCapture(publication->runtimeState, "recording live");
+        ReleaseStatusOverlayDarkForCapture("recording live");
     } else {
-        publication->runtimeState.isRecording.store(false, std::memory_order_release);
-        publication->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-        publication->runtimeState.audioOnly.store(false, std::memory_order_release);
-        ce::status_overlay::ReleaseDarkForCapture(publication->runtimeState, "recording not live");
+        if (auto publication = MediaState().pSharedMem.Publish(); publication) {
+            publication->runtimeState.isRecording.store(false, std::memory_order_release);
+            publication->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+            publication->runtimeState.audioOnly.store(false, std::memory_order_release);
+        }
+        ReleaseStatusOverlayDarkForCapture("recording not live");
     }
     // Publish the resolved status before waking the overlay so it renders the final state.
     SignalStatusOverlaySync();

@@ -192,6 +192,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     pSwapChain, "DetourPresent: startup-handoff normal-route transport");
             }
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+            ForwardedPresentRecord record(presentBypass != nullptr, "Streamline startup-handoff Present");
             bool exactStartupTransportDrawn = false;
             if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
                     ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, ctx.safePostFSRBootstrapPath, ctx.streamlineFGRunning,
@@ -200,9 +201,10 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     pSwapChain, "DetourPresent/startup-handoff-transport");
             }
             HRESULT guardedSteamHr = S_OK;
+            record.BeginDownCall();
             if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
-                                                            "Streamline startup-handoff Present", &guardedSteamHr,
-                                                            /*ownPresentRecord=*/true)) {
+                                                            "Streamline startup-handoff Present", &guardedSteamHr)) {
+                record.EndDownCall();
                 if (SUCCEEDED(guardedSteamHr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
                                                         "streamline-startup-handoff-transport",
@@ -230,7 +232,6 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                                                                    ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
                                                                    ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
                                                                    "startupHandoffNormalRoute");
-                ForwardedPresentRecord record(true, "Streamline startup-handoff Present");
                 const HRESULT hr =
                     record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });
                 if (SUCCEEDED(hr)) {

@@ -460,8 +460,7 @@ bool TryGetSwapChainBackBufferIndex(IDXGISwapChain* pSwapChain, UINT* indexOut);
 }
 
 namespace DXGIShared {
-bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                                                 const char* reason, HRESULT* resultOut, bool ownPresentRecord = false);
+bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, const char* reason, HRESULT* resultOut);
 }
 
 namespace DXGIShared {
