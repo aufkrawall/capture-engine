@@ -51,8 +51,8 @@ void VideoEncoder::RequestStopForSourceContractChange(const char* reason, bool s
         "reported as degraded%s",
         reason ? reason : "unknown", currentIsHDR ? 1 : 0, sourceIsHdr ? 1 : 0, currentUse10BitInput ? 1 : 0,
         sourceIs10Bit ? 1 : 0, isStopping.load(std::memory_order_acquire) ? "" : " - stopping the recording now");
-    if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
-        ce::media_end::RequestStop(pSharedMem->runtimeState, ce::media_end::Reason::SourceContractChanged,
+    if (auto publication = pSharedMem.Publish(); !isStopping.load(std::memory_order_acquire) && publication) {
+        ce::media_end::RequestStop(publication->runtimeState, ce::media_end::Reason::SourceContractChanged,
                                    GetTickCount64());
     }
 }

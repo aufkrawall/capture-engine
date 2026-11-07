@@ -4,6 +4,7 @@
 #include "mediaengine/mux/recording_recovery.h"
 
 #include <libavutil/log.h>
+#include <cstring>
 
 extern "C" {
 
@@ -62,7 +63,8 @@ void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list 
     // and then sample, so one bad stream cannot flood a session log.
     static std::atomic<uint32_t> s_count{0};
     const uint32_t seen = s_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (seen > 200 && (seen % 500) != 0)
+    const bool boundedAacDiagnostic = fmt && std::strncmp(fmt, "AAC NMR ", 8) == 0;
+    if (!boundedAacDiagnostic && seen > 200 && (seen % 500) != 0)
         return;
 
     std::string message(line);
@@ -87,6 +89,7 @@ void InstallAvLogCallback() {
 extern "C" {
 
 MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
+    InstallAvLogCallback();
     g_LogCallback.store(callback, std::memory_order_release);
     DLL_Log("MediaEngine Logging Initialized");
 }
@@ -407,9 +410,26 @@ MEDIAENGINE_API void MediaEngine_SetSharedMem(MediaEngineHandle engine, void* pS
     if (!lease)
         return;
     MediaEngineInstance& instance = *lease;
-    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
-    if (instance.engine)
-        instance.engine->UpdateVideoEncoderSharedMem(pSharedMem, pShmem);
+    // The lease pins the stable publication route, not the current codec call.
+    // Retarget waits only for short state publications; no old writer can touch
+    // the live mapping once this returns and the controller accepts the stop.
+    const uint64_t generation = instance.recordingMemory.Retarget(
+        static_cast<SharedMemoryLayout*>(pSharedMem), static_cast<ShmemBuffer*>(pShmem));
+    if (generation != 0)
+        DLL_Log("[RecordingMemory] Shared-state route committed generation=%llu bound=%d",
+                static_cast<unsigned long long>(generation), pSharedMem ? 1 : 0);
+}
+
+MEDIAENGINE_API bool MediaEngine_DetachSharedMem(MediaEngineHandle engine, const void* live, void* detached) {
+    MediaEngineLease lease(engine);
+    if (!lease || !live || !detached || live == detached)
+        return false;
+    const uint64_t generation = lease->recordingMemory.Detach(
+        *static_cast<const SharedMemoryLayout*>(live), *static_cast<SharedMemoryLayout*>(detached));
+    if (generation != 0)
+        DLL_Log("[RecordingMemory] Detached snapshot committed generation=%llu",
+                static_cast<unsigned long long>(generation));
+    return true;
 }
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs(MediaEngineHandle engine) {

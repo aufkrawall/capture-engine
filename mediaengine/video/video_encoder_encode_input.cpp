@@ -66,6 +66,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
     ID3D11Fence* d3d11Fence = nullptr;
     int cacheSlot = -1;
 
+    ShmemBuffer* const pShmem = pSharedMem.PixelBuffer();
     if (isShmem) {
         if (pShmem && pSharedMem && pSharedMem->GetShmemMappingCreated()) {
             // Shmem Path: Upload pixels to our owned texture

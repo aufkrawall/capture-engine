@@ -88,6 +88,7 @@ static void ReleaseMediaEngineModule() {
     ce::mediaengine_api::MediaEngine_SetInjectSourceReadWakeEvent = nullptr;
     ce::mediaengine_api::MediaEngine_FinishInjectSourceReads = nullptr;
     ce::mediaengine_api::MediaEngine_SetSharedMem = nullptr;
+    ce::mediaengine_api::MediaEngine_DetachSharedMem = nullptr;
     ce::mediaengine_api::MediaEngine_LockD3D11 = nullptr;
     ce::mediaengine_api::MediaEngine_UnlockD3D11 = nullptr;
     ce::mediaengine_api::MediaEngine_SetAudioOnly = nullptr;
@@ -170,6 +171,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
                        &ce::mediaengine_api::MediaEngine_FinishInjectSourceReads,
                        resolve);
     success &= GetFunc(module, "MediaEngine_SetSharedMem", &ce::mediaengine_api::MediaEngine_SetSharedMem, resolve);
+    success &= GetFunc(module, "MediaEngine_DetachSharedMem", &ce::mediaengine_api::MediaEngine_DetachSharedMem, resolve);
     success &= GetFunc(module, "MediaEngine_LockD3D11", &ce::mediaengine_api::MediaEngine_LockD3D11, resolve);
     success &= GetFunc(module, "MediaEngine_UnlockD3D11", &ce::mediaengine_api::MediaEngine_UnlockD3D11, resolve);
     success &= GetFunc(module, "MediaEngine_SetSourcePrefers10Bit",

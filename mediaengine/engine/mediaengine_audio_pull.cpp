@@ -218,8 +218,8 @@ void MediaEngine::PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain) {
         for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
             ServiceAudioEpochResetOnPull(audioSources[srcIdx], srcIdx);
         }
-        if (sharedMemLayout) {
-            sharedMemLayout->runtimeState.wgcAudioLeadExcessSamples.store(
+        if (auto publication = sharedMemLayout.Publish(); publication) {
+            publication->runtimeState.wgcAudioLeadExcessSamples.store(
                 s.isWgcCfrRecording ? s.maxWgcAudioLeadExcessSamples : 0u, std::memory_order_relaxed);
         }
 

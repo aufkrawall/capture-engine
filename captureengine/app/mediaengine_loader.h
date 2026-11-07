@@ -53,6 +53,7 @@ typedef bool (*MediaEngine_IsInjectSourceReadComplete_t)(MediaEngineHandle engin
 typedef void (*MediaEngine_SetInjectSourceReadWakeEvent_t)(MediaEngineHandle engine, HANDLE event);
 typedef bool (*MediaEngine_FinishInjectSourceReads_t)(MediaEngineHandle engine, uint32_t timeoutMs);
 typedef void (*MediaEngine_SetSharedMem_t)(MediaEngineHandle engine, void* pSharedMem, void* pShmem);
+typedef bool (*MediaEngine_DetachSharedMem_t)(MediaEngineHandle engine, const void* live, void* detached);
 typedef void (*MediaEngine_LockD3D11_t)(MediaEngineHandle engine);
 typedef void (*MediaEngine_UnlockD3D11_t)(MediaEngineHandle engine);
 typedef void (*MediaEngine_SetAudioOnly_t)(MediaEngineHandle engine, bool audioOnly);
@@ -117,6 +118,7 @@ inline MediaEngine_IsInjectSourceReadComplete_t MediaEngine_IsInjectSourceReadCo
 inline MediaEngine_SetInjectSourceReadWakeEvent_t MediaEngine_SetInjectSourceReadWakeEvent = nullptr;
 inline MediaEngine_FinishInjectSourceReads_t MediaEngine_FinishInjectSourceReads = nullptr;
 inline MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
+inline MediaEngine_DetachSharedMem_t MediaEngine_DetachSharedMem = nullptr;
 inline MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
 inline MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
 inline MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly = nullptr;

@@ -165,9 +165,9 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
     DLL_Log("[VideoEncoder] Releasing preserved encoder textures (game exited)");
 
     // Clear shared memory flags so a new game won't try to import stale handles
-    if (pSharedMem) {
-        pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
-        pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
+    if (auto publication = pSharedMem.Publish(); publication) {
+        publication->encoderTextures.kmtReady.store(false, std::memory_order_release);
+        publication->encoderTextures.ready.store(false, std::memory_order_release);
     }
 
     // Release encoder-owned KMT textures (mirrors !preserveEncoderTextures path in CleanupResources)

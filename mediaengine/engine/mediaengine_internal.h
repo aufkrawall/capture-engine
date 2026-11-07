@@ -12,7 +12,7 @@ class MediaEngine;
 
 #include "common/capture/capture_policy/recording_health.h"
 
-#include "common/ipc/shared_memory_ref.h"
+#include "common/capture/recording_memory.h"
 #include "common/logging/logging.h"
 #include "common/logging/log_meter.h"
 
@@ -100,6 +100,7 @@ public:
     // `owner` is the pipeline this engine runs in; it outlives the engine (MediaEngineInstance::engine).
     explicit MediaEngine(MediaEngineInstance& owner)
         : instance(owner),
+          sharedMemLayout(owner.recordingMemory),
           recording(false),
           audioRunning(false),
           recordingStartTime(),
@@ -282,7 +283,7 @@ public:
     std::unique_ptr<VideoEncoder> videoEnc;
     std::vector<AudioSource> audioSources;
     // Retargeted by MediaEngine_SetSharedMem while the writer and audio threads run (a session detaching).
-    ce::SharedMemoryRef sharedMemLayout;
+    ce::RecordingMemory& sharedMemLayout;
 
     // Audio-only recording mode (no video capture/encoding)
     bool audioOnly = false;
@@ -469,7 +470,6 @@ public:
     bool CanRepeatLastFrame();
     void ResetRepeatFrameCache();
     void ReleaseEncoderTextures();
-    void UpdateVideoEncoderSharedMem(void* sharedMem, void* shmemBuffer);
     void SetSourcePrefers10BitHint(bool prefer10Bit);
     bool QueryRetainedFrameRoute(const MediaEngineRetainedFrameQuery& query, MediaEngineRetainedFrameRoute* route);
     void SetCursorCompositionSuppressedHint(bool suppressed);

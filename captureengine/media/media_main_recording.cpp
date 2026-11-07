@@ -525,13 +525,18 @@ void DetachFromSharedLiveState(const char* reason) {
     }
     const FrameRingBuffer& ring = live->frameRing;
     auto detached = std::make_unique<SharedMemoryLayout>();
-    ce::detached_live_state::CopyForDetachedSession(*live, *detached);
     SharedMemoryLayout* const view = detached.get();
-    MediaState().detachedSharedMem = std::move(detached);
-    // The engine first: the encoder<->media channel (overload flags, mux queue) then lives in the copy on both sides.
-    if (ce::mediaengine_api::MediaEngine_SetSharedMem && MediaState().engine) {
-        ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, view, MediaState().pShmem);
+    // Snapshot and route commit share the engine's short publication barrier.
+    // The stopped session retains both mappings until all of its workers join.
+    const bool engineDetached = ce::mediaengine_api::MediaEngine_DetachSharedMem && MediaState().engine &&
+                                ce::mediaengine_api::MediaEngine_DetachSharedMem(MediaState().engine, live, view);
+    if (!engineDetached) {
+        // A stop before engine creation still owes the host its private state.
+        ce::detached_live_state::CopyForDetachedSession(*live, *view);
+        if (ce::mediaengine_api::MediaEngine_SetSharedMem && MediaState().engine)
+            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, view, MediaState().pShmem);
     }
+    MediaState().detachedSharedMem = std::move(detached);
     MediaState().pSharedMem = view;
     // The hook drops its imports of this session's encoder textures now, not after the drain: a newer recording
     // publishes its own. The drain keeps encoding from them through the copied handshake.

@@ -541,6 +541,7 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
 }
 
 bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t fmt, SharedMemoryLayout* sharedMem) {
+    pSharedMem.InitializeIfEmpty(sharedMem);
     if (sharedCaptureTexturesCreated) {
         if (sharedCaptureTextureFormat == fmt) {
             return true;  // Already created with same format
@@ -636,19 +637,21 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
     DLL_Log("[VideoEncoder] Created shared fence, handle=%p", sharedCaptureFenceHandle);
 
     // Publish to shared memory
-    if (sharedMem) {
-        this->pSharedMem = sharedMem;
+    bool published = false;
+    if (auto publication = pSharedMem.Publish(); publication) {
         for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
-            sharedMem->encoderTextures.SetKmtTextureHandle(i, (uint64_t)sharedCaptureKmtHandles[i]);
+            publication->encoderTextures.SetKmtTextureHandle(i, (uint64_t)sharedCaptureKmtHandles[i]);
         }
-        sharedMem->encoderTextures.SetFenceHandle((uint64_t)sharedCaptureFenceHandle);
-        sharedMem->encoderTextures.SetWidth(w);
-        sharedMem->encoderTextures.SetHeight(h);
-        sharedMem->encoderTextures.SetFormat(fmt);
-        sharedMem->encoderTextures.kmtReady.store(true, std::memory_order_release);
-        sharedMem->encoderTextures.ready.store(true, std::memory_order_release);
-        DLL_Log("[VideoEncoder] Published encoder KMT textures to shared memory");
+        publication->encoderTextures.SetFenceHandle((uint64_t)sharedCaptureFenceHandle);
+        publication->encoderTextures.SetWidth(w);
+        publication->encoderTextures.SetHeight(h);
+        publication->encoderTextures.SetFormat(fmt);
+        publication->encoderTextures.kmtReady.store(true, std::memory_order_release);
+        publication->encoderTextures.ready.store(true, std::memory_order_release);
+        published = true;
     }
+    if (published)
+        DLL_Log("[VideoEncoder] Published encoder KMT textures to shared memory");
 
     sharedCaptureTextureFormat = fmt;
     sharedCaptureTexturesCreated = true;

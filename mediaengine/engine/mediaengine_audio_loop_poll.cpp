@@ -135,11 +135,11 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                             "[AudioLoop] FATAL: app-audio transport integrity failure src=%zu track=%d "
                             "status=%u; requesting a failed recording stop",
                             srcIdx, src.track, status);
-                        if (sharedMemLayout) {
-                            sharedMemLayout->runtimeState.recordingFailureCode.store(
+                        if (auto publication = sharedMemLayout.Publish(); publication) {
+                            publication->runtimeState.recordingFailureCode.store(
                                 static_cast<uint32_t>(RecordingFailureCode::ProcessLoopbackTransportIntegrity),
                                 std::memory_order_release);
-                            sharedMemLayout->runtimeState.cmdStopRecording.store(true,
+                            publication->runtimeState.cmdStopRecording.store(true,
                                                                                  std::memory_order_release);
                         }
                     }

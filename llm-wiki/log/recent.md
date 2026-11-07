@@ -1,25 +1,27 @@
 # llm-wiki Log
 
-### 2026-11-07 - Recording stop blocked behind a non-converging native AAC NMR encode
+### 2026-11-07 - Bounded AAC legality repair and codec-independent recording-state detach
 
 - Session `20261106_223450`, build `0.1.7441`, r0005: encoding stopped near 306.4 s;
-  stop eleven minutes later timed out before acknowledgement. Two dumps retain the same
-  AAC frame; the first shows 1,495,662 outer retries and lambda at `FLT_EPSILON`.
-- Matching archived CE symbols and the mutex owner prove stop/shared-memory detach waits
-  behind that encoder. Independent audio/capture workers keep running. Current dependency
-  pin is the same FFmpeg revision. Details and the unproven initial trigger are in
-  [multi-audio-capture.md](../multi-audio-capture.md#unresolved-native-aac-nmr-retry-hang-2026-11-07).
-- Diagnostic investigation only; no fix or behavioral test claimed. Preserved the supplied
-  dump and staging MKV; terminated the stuck media/audio-worker tree with user authorization.
-- Upstream follow-up: master `e196e57c` retains the pin's identical AAC retry/NMR sources.
-  Dump state selects CBR and rails its inner solve; VBR alone has the band-shedding
-  legality fallback. This narrows a patch candidate, but needs a failing reproduction
-  before claiming a correct fix. Topic page records CE detachment's independent invariant.
-- Implementation: local patch 0007 shares final budget repair across CBR/ABR/VBR
-  and bounds outer retries. All 16 focused allocation/codec/mux tests pass; a
-  deliberate repair bypass fails four tests. The original state contains one
-  short-window channel with 15,699 spectral bits before scalefactor edges, already
-  over the stereo frame limit. Exact original-history replay and hardware remain open.
+  stop eleven minutes later timed out before acknowledgement. Two dumps retain the
+  same AAC frame; the original shows 1,495,662 outer retries at `FLT_EPSILON`.
+  A single short-window channel needs 15,699 spectral bits before SF edges, already
+  over the stereo frame limit. Matching CE symbols prove stop waits on the codec mutex.
+- Master `e196e57c` still has the pin's identical AAC retry/NMR sources. Patch 0007
+  repairs the final CBR/ABR/VBR budget, reopens the full coarse grid before highest-band
+  removal, accounts for PNS, resets transient retry pressure and bounds outer retries.
+- Instance-owned `RecordingMemory` snapshots and retargets under a short publication
+  barrier independent of codec locks. Late writes stay private; no stale pre-barrier
+  snapshot or late texture setup can restore live ownership. Mapping lifetime and
+  inject ingest/ring handover requirements remain. AAC diagnostics survive sampling.
+- All 45 focused allocation/encoder/mux/detach/loader tests pass. Public encoding checks
+  cover 16 configurations and exact decoded MKV/MP4 endpoints. A deliberate repair
+  bypass fails four allocation tests. Original full-history replay and game/hardware
+  validation remain open. Clean full verification/package gate is the closing check.
+- Dumps and staging MKV remain private and preserved. The stuck media/audio-worker
+  tree was terminated with user authorization. Full root cause, test limits and anchors:
+  [multi-audio-capture.md](../multi-audio-capture.md#native-aac-nmr-retry-hang-and-repair-2026-11-07),
+  [process-ipc.md](../process-ipc.md#recording-detachment-publication-barrier-2026-11-07).
 
 ### 2026-11-06 - W3 HDR with Steam, ReShade and OptiScaler: false factor flips, screenshot view, DLSS-G override
 

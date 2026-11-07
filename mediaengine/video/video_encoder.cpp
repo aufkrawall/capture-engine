@@ -193,6 +193,7 @@ VideoEncoder::VideoEncoder(MediaEngineInstance& owner)
       width(0),
       height(0),
       cachedSourcePid(0),
+      pSharedMem(owner.recordingMemory),
       lastEncodeTimeUs(0),
       fenceEvent(nullptr),
       videoDevice(nullptr),
@@ -339,11 +340,6 @@ void VideoEncoder::SetInjectTransportGeneration(uint32_t transportGeneration) {
 
 int VideoEncoder::GetAudioTrackCount() const {
     return (int)audioContexts.size();
-}
-
-void VideoEncoder::SetSharedMem(struct SharedMemoryLayout* shm, struct ShmemBuffer* shmBuf) {
-    pSharedMem = shm;
-    pShmem = shmBuf;
 }
 
 void VideoEncoder::SetSourcePrefers10Bit(bool prefer) {

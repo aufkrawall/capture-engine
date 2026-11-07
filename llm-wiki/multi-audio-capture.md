@@ -3,7 +3,7 @@
 Last cross-checked: 2026-09-25 (cross-pull track fades, intake resampler tail drain, placement drift diagnostic; recording-sticky bootstrap settlement across ordered capture epochs, truthful bootstrap/rejoin drain reasons, timeline-recovery suppression of app-only backlog acceleration, typed source-prime and stop-force-drain diagnostics, inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, the adaptive CFR ingestion reservoir against consumer-overrun starvation, exact finalization, route-local packetless silence, non-destructive backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
-## Unresolved native AAC NMR retry hang (2026-11-07)
+## Native AAC NMR retry hang and repair (2026-11-07)
 
 Session `20261106_223450`, build `0.1.7441`, recording r0005: video/audio encoding stopped
 at about 306.4 s, eleven minutes before the stop hotkey. Two dumps, at 23:59:38 and
@@ -35,9 +35,9 @@ The dump confirms NMR `options.rc=0`, `rc_gl=1`, and internal `lam_rc=10000` whi
 the outer lambda is at its floor. In `nmr_solve_group`, VBR's final legality path can
 remove highest bands if the coarsest candidate grid still exceeds its bit budget;
 the CBR reservoir path only re-solves to its lambda rail, then continues. This is a
-concrete candidate gap, not yet a validated repair. A fix must make legal allocation
-converge after all spend/slew/PNS changes, preserve sample counts and PTS, and have a
-regression that reproduces the stall. A generic retry limit alone is containment.
+concrete gap addressed by patch 0007 below. Legal allocation must converge after
+all spend/slew/PNS changes while preserving sample counts and PTS. A generic retry
+limit alone is containment.
 CE's wrapper cannot cancel a CPU loop inside `avcodec_send_frame`; the observed ACK
 blocking also needs ownership-safe detachment, not simply ACK before detachment
 (the next recording may reuse the shared mapping). Public source anchors:
@@ -45,17 +45,39 @@ blocking also needs ownership-safe detachment, not simply ACK before detachment
 [NMR allocation](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aaccoder_nmr.h).
 
 Patch `tools/patches/ffmpeg/0007-aac-nmr-bounded-frame-legality.patch` now supplies
-one final CBR/ABR/VBR budget repair after PNS: bounded coarsening, then highest-band
-removal while retaining spectral anchors. The shared C policy is tested through
+one final CBR/ABR/VBR budget repair after PNS: reopen the full coarse quantizer range,
+refine around its solution, then remove highest-frequency bands only if necessary,
+retaining spectral anchors. Normalize frequency across long/short windows. Count PNS
+explicitly in the spectral estimate so the side-information EMA does not charge it
+twice. Successful NMR frames restore the normal outer lambda; an exceptional retry
+must not permanently shrink subsequent CBR budgets. The shared C policy is tested through
 injected allocation effects, including a railed grid and non-decreasing costs.
 An independent 32-pass encoder guard reports an internal error if no legal frame
-can be produced. First targeted validation: 16 allocation/runtime-contract/mux
-tests pass, including dense 320 kbps AAC transitions decoded to exact common
-endpoints in MKV/MP4. Disabling repair fails four policy tests; restoration passes.
+can be produced. The original dump's one short-window channel requires 15,699
+spectral bits before scalefactor edges, already exceeding the stereo limit of 12,288.
+Targeted validation: 45 allocation/runtime-contract/mux/detach tests pass, including
+16 real encoder configurations (mono/stereo, 48/96 kHz, CBR/strict CBR/ABR/VBR) and
+dense 320 kbps AAC transitions decoded to exact common endpoints in MKV/MP4.
+Disabling repair fails four policy tests; restoration passes. `AAC NMR` diagnostics
+are metered inside the codec and bypass CE's additional generic libav sampler.
 The original waveform plus its complete encoder history has not been replayed.
 The unpublished MKV retained AV1 video and two AAC tracks; recovery/content validation
 is separate from proving the hang. Do not delete staging output or claim the missing
 post-hang interval can be recovered. See [recording-output-paths.md](recording-output-paths.md).
+
+CE also replaces per-engine/encoder raw routes with instance-owned `RecordingMemory`
+(`common/capture/recording_memory.h`). `MediaEngine_DetachSharedMem` snapshots and
+retargets under the same exclusive publication barrier, without `apiMutex` or
+`muxMutex`. Mutable publications take short shared guards; codec/GPU/log work stays
+outside them. Read pointers are const; late texture initialization cannot restore
+the live route. The instance lease pins the route; the host retains both mappings
+and the pixel buffer until workers join. The inject ingest/ring handover still
+precedes detach; this API does not make unrelated GPU or ingest operations cancelable.
+Tests hold the codec mutex while detach returns, refresh a stale seed only after an
+old publication ends, and prove late writes cannot modify the next recording.
+The package-private media DLL export is loaded/cleared with the rest of its exports;
+the public `cengine` ABI and shared mapping layout are unchanged. See
+[process-ipc.md](process-ipc.md#recording-detachment-publication-barrier-2026-11-07).
 
 ## Live profile exclusions (2026-10-31)
 

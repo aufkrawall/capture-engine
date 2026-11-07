@@ -77,6 +77,7 @@ void ExpectPointersCleared() {
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_Create, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_Destroy, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetSharedMem, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_DetachSharedMem, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_LockD3D11, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_UnlockD3D11, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetAudioOnly, nullptr);

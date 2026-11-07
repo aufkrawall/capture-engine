@@ -9,6 +9,11 @@
 #include "mediaengine/engine/mediaengine.h"
 #include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/engine/mediaengine_instance.h"
+#include "common/ipc/shared_defs.h"
+
+extern "C" {
+#include <libavutil/log.h>
+}
 
 namespace {
 
@@ -52,6 +57,54 @@ TEST(MediaEngineHandleTest, TwoPipelinesInOneProcessAreIndependent) {
     }
     MediaEngine_Destroy(first);
     MediaEngine_Destroy(second);
+}
+
+TEST(MediaEngineHandleTest, SharedStateRetargetDoesNotWaitForTheCodecLock) {
+    const MediaEngineHandle handle = CreatePipeline();
+    auto live = std::make_unique<SharedMemoryLayout>();
+    auto detached = std::make_unique<SharedMemoryLayout>();
+    MediaEngine_SetSharedMem(handle, live.get(), nullptr);
+    live->runtimeState.liveFramesEncoded.store(12);
+    {
+        MediaEngineLease lease(handle);
+        ASSERT_TRUE(lease);
+        // Simulate the serialized codec call without a codec thread or timing
+        // assumption. The binder must return while this lock is still held.
+        std::lock_guard codecCall(lease->apiMutex);
+        bool detachedOk = false;
+        std::thread binder([&] { detachedOk = MediaEngine_DetachSharedMem(handle, live.get(), detached.get()); });
+        binder.join();
+        EXPECT_TRUE(detachedOk);
+        EXPECT_EQ(detached->runtimeState.liveFramesEncoded.load(), 12u);
+        live->runtimeState.liveFramesEncoded.store(1000);
+        {
+            auto publication = lease->recordingMemory.Publish();
+            ASSERT_EQ(lease->recordingMemory.get(), detached.get());
+            publication->runtimeState.liveFramesEncoded.store(42);
+        }
+        EXPECT_EQ(live->runtimeState.liveFramesEncoded.load(), 1000u);
+    }
+    MediaEngine_Destroy(handle);
+    EXPECT_FALSE(MediaEngine_DetachSharedMem(handle, live.get(), detached.get()));
+}
+
+TEST(MediaEngineHandleTest, MeteredAacRepairDiagnosticsSurviveTheGlobalLibavSampler) {
+    LineSink sink;
+    const MediaEngineHandle handle = CreatePipeline(LineSink::Append, &sink);
+    MediaEngine_SetLogCallback(nullptr);
+    const int previousLevel = av_log_get_level();
+    av_log_set_level(AV_LOG_WARNING);
+    {
+        MediaEngineLease lease(handle);
+        for (int message = 0; message < 250; ++message)
+            av_log(nullptr, AV_LOG_WARNING, "ordinary diagnostic %d\n", message);
+        av_log(nullptr, AV_LOG_WARNING, "AAC NMR budget repair: frame=17 events=1\n");
+        EXPECT_FALSE(sink.lines.empty());
+        if (!sink.lines.empty())
+            EXPECT_NE(sink.lines.back().find("AAC NMR budget repair: frame=17"), std::string::npos);
+    }
+    av_log_set_level(previousLevel);
+    MediaEngine_Destroy(handle);
 }
 
 TEST(MediaEngineHandleTest, DestroyingOnePipelineLeavesTheOtherWorking) {

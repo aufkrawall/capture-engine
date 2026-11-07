@@ -167,8 +167,8 @@ void VideoEncoder::CheckLocalOutputSpoolHealth() {
         "[VideoEncoder] ERROR: local output spool exhausted (%llu bytes) while target '%s' remained unreachable; "
         "stopping recording cleanly so trailer and index can finalize into the spool reserve",
         static_cast<unsigned long long>(outputSink.SpooledPayloadBytes()), OutputTargetForLog().c_str());
-    if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
-        ce::media_end::RequestStop(pSharedMem->runtimeState, ce::media_end::Reason::OutputSpoolExhausted,
+    if (auto publication = pSharedMem.Publish(); !isStopping.load(std::memory_order_acquire) && publication) {
+        ce::media_end::RequestStop(publication->runtimeState, ce::media_end::Reason::OutputSpoolExhausted,
                                    GetTickCount64());
     }
     queueCV.notify_all();
@@ -210,8 +210,8 @@ void VideoEncoder::RequestLocalOutputFailure(const char* operation, int errorCod
     // first loss - the orderly stop finalizes and publishes what is committed -
     // instead of silently dropping the rest of the session. The controller is
     // told the media ended it, so the saved output is not reported as a crash.
-    if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
-        ce::media_end::RequestStop(pSharedMem->runtimeState, ce::media_end::Reason::OutputFailed, GetTickCount64());
+    if (auto publication = pSharedMem.Publish(); !isStopping.load(std::memory_order_acquire) && publication) {
+        ce::media_end::RequestStop(publication->runtimeState, ce::media_end::Reason::OutputFailed, GetTickCount64());
     }
     queueCV.notify_all();
 }
@@ -229,10 +229,10 @@ void VideoEncoder::RequestLiveOutputFailure(const char* operation, int errorCode
     // During a user-requested Stop, still record that the final queue drain failed, but do not
     // re-issue the stop command. While running, the controller command is what terminates all
     // audio/video producers on the same timeline after a terminal transport failure.
-    if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
-        pSharedMem->runtimeState.recordingFailureCode.store(
+    if (auto publication = pSharedMem.Publish(); !isStopping.load(std::memory_order_acquire) && publication) {
+        publication->runtimeState.recordingFailureCode.store(
             static_cast<uint32_t>(RecordingFailureCode::LiveStreamOutputFailed), std::memory_order_release);
-        pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+        publication->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
     }
     queueCV.notify_all();
 }

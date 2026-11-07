@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 
+#include "common/capture/recording_memory.h"
 #include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/video/encoder_auto_probe.h"
 #include "mediaengine/video/gpu_memory_breakdown.h"
@@ -32,7 +33,10 @@ public:
     MediaEngineInstance(const MediaEngineInstance&) = delete;
     MediaEngineInstance& operator=(const MediaEngineInstance&) = delete;
 
-    // Taken by every export and entry point that touches the engine. Held across a whole encode.
+    // Stable for the handle lifetime, including before Init and during codec work.
+    ce::RecordingMemory recordingMemory;
+
+    // Serializes engine lifetime/codec operations. Recording-memory retarget is independent.
     std::recursive_mutex apiMutex;
 
     // Serializes the immediate context and the encoder device. Lock order: this, then retainedConverterMutex.

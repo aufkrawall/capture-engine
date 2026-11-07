@@ -13,18 +13,6 @@ void MediaEngine::ReleaseEncoderTextures() {
 }
 
 
-void MediaEngine::UpdateVideoEncoderSharedMem(void* sharedMem,  void* shmemBuffer) {
-
-
-        std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        sharedMemLayout = (SharedMemoryLayout*)sharedMem;
-        if (videoEnc) {
-            videoEnc->SetSharedMem((SharedMemoryLayout*)sharedMem, (ShmemBuffer*)shmemBuffer);
-        }
-
-}
-
-
 bool MediaEngine::CreateSharedCaptureTextures(uint32_t width,  uint32_t height,  uint32_t format,  SharedMemoryLayout* sharedMem) {
 
 
@@ -79,8 +67,8 @@ void MediaEngine::WritePacket(AVPacket* pkt) {
                 }
                 // Sticky AVIO error: every later packet would be dropped as
                 // well, so stop at the first loss and keep the committed ones.
-                if (audioOnlyWriteErrorCount == 1 && sharedMemLayout) {
-                    ce::media_end::RequestStop(sharedMemLayout->runtimeState, ce::media_end::Reason::OutputFailed,
+                if (auto publication = sharedMemLayout.Publish(); audioOnlyWriteErrorCount == 1 && publication) {
+                    ce::media_end::RequestStop(publication->runtimeState, ce::media_end::Reason::OutputFailed,
                                                GetTickCount64());
                 }
             }

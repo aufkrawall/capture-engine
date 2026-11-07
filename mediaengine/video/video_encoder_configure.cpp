@@ -222,10 +222,10 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
     luidLow = 0;
     luidHigh = 0;
 
-    if (pSharedMem) {
-        pSharedMem->useEncoderTextures.store(false, std::memory_order_release);
-        pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
-        pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+    if (auto publication = pSharedMem.Publish(); publication) {
+        publication->useEncoderTextures.store(false, std::memory_order_release);
+        publication->encoderTextures.ready.store(false, std::memory_order_release);
+        publication->encoderTextures.kmtReady.store(false, std::memory_order_release);
     }
 
     if (hadSharedCapture) {

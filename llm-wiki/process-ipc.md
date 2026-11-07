@@ -180,6 +180,30 @@ Ping has a 10 s window.
 
 The focused `TrayIconSourceTest.*` gate passed. Incremental product build `0.1.5089` passed both hook architectures, CaptureEngine/MediaEngine, packaging, both Vulkan layers, import closure, PE mitigations, architecture, and PDB checks. The exact-build no-build gate passed the complete native suite and all five Python tool self-tests.
 
+## Recording detachment publication barrier (2026-11-07)
+
+`MediaEngine_DetachSharedMem` is a package-private DLL entry loaded by
+`captureengine/app/mediaengine_loader.cpp`. A handle lease pins instance-owned
+`RecordingMemory`, so detach needs neither the codec's `apiMutex` nor `muxMutex`.
+It waits only for short state publications, copies the last completed state and
+switches the engine/encoder route in the same exclusive critical section. Copying
+before this barrier could lose the last producer update. Mutable publications use
+shared guards; ordinary reads remain atomic and const. Codec, GPU, waits and logging
+must never run under a publication guard. Late texture creation uses the current
+route and cannot rebind the old live layout. Changed generations get one log each.
+
+`DetachFromSharedLiveState` first stops inject ingest and hands over its ring, then
+calls this API before acknowledging stop. The finishing host retains both mappings
+and the pixel buffer until all workers join; borrowed reads may still finish on the
+old mapping. New recordings may reuse the live mapping only after safe detach.
+An early stop before engine creation seeds the private host state directly.
+`RecordingMemoryTest` and `MediaEngineHandleTest` cover old publication completion,
+stale snapshot refresh, late writes, early abort, invalid handles, and detach while
+another thread holds the codec lock, without sleeps or elapsed-time assertions.
+This fixes the observed AAC stop-lock coupling, not cancellation of arbitrary GPU
+or inject ingest work. Root cause and codec repair:
+[multi-audio-capture.md](multi-audio-capture.md#native-aac-nmr-retry-hang-and-repair-2026-11-07).
+
 ## Open Questions / Stale-risk
 
 - Logger and sensor process behavior remains outside the private pipe-command set, but both are strict consumers of the shared-memory ABI.

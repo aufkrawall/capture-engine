@@ -487,7 +487,7 @@ void VideoEncoder::PublishRuntimeState() {
         return;
     }
 
-    // Keep this cheap and lock-free: only atomics.
+    // Keep reads and potentially slow GPU-priority work outside publication.
     uint32_t flags = 0;
     uint64_t nowMs = GetTickCount64();
 
@@ -505,33 +505,36 @@ void VideoEncoder::PublishRuntimeState() {
         flags |= ce::capture_policy::kEncoderOverloadFlagMux;
     }
 
-    pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
     const double encodeMs = static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0;
     UpdateAdaptiveGpuThreadPriority(nowMs, encodeMs, (flags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0);
     const double sustainFps = ce::capture_policy::GetEncoderSustainableOutputFps(encodeMs);
     const uint32_t sustainFpsX100 =
         sustainFps > 0.0 ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0)) : 0u;
-    pSharedMem->runtimeState.encoderSustainFpsX100.store(sustainFpsX100, std::memory_order_relaxed);
+    auto publication = pSharedMem.Publish();
+    if (!publication)
+        return;
+    publication->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
+    publication->runtimeState.encoderSustainFpsX100.store(sustainFpsX100, std::memory_order_relaxed);
 
     size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
     uint32_t qBytes32 = (qBytes > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)qBytes;
-    pSharedMem->runtimeState.muxQueueBytes.store(qBytes32, std::memory_order_relaxed);
-    pSharedMem->runtimeState.muxQueuePackets.store(currentQueuePackets.load(std::memory_order_relaxed),
+    publication->runtimeState.muxQueueBytes.store(qBytes32, std::memory_order_relaxed);
+    publication->runtimeState.muxQueuePackets.store(currentQueuePackets.load(std::memory_order_relaxed),
                                                    std::memory_order_relaxed);
-    pSharedMem->runtimeState.muxQueuePeakBytes.store(peakQueueBytes.load(std::memory_order_relaxed),
+    publication->runtimeState.muxQueuePeakBytes.store(peakQueueBytes.load(std::memory_order_relaxed),
                                                      std::memory_order_relaxed);
-    pSharedMem->runtimeState.muxQueuePeakPackets.store(peakQueuePackets.load(std::memory_order_relaxed),
+    publication->runtimeState.muxQueuePeakPackets.store(peakQueuePackets.load(std::memory_order_relaxed),
                                                        std::memory_order_relaxed);
-    pSharedMem->runtimeState.muxBackpressureCount.store(muxBackpressureCount.load(std::memory_order_relaxed),
+    publication->runtimeState.muxBackpressureCount.store(muxBackpressureCount.load(std::memory_order_relaxed),
                                                         std::memory_order_relaxed);
-    pSharedMem->runtimeState.muxBackpressureWaitUs.store(muxBackpressureWaitUs.load(std::memory_order_relaxed),
+    publication->runtimeState.muxBackpressureWaitUs.store(muxBackpressureWaitUs.load(std::memory_order_relaxed),
                                                          std::memory_order_relaxed);
-    pSharedMem->runtimeState.muxBackpressureMaxWaitUs.store(muxBackpressureMaxWaitUs.load(std::memory_order_relaxed),
+    publication->runtimeState.muxBackpressureMaxWaitUs.store(muxBackpressureMaxWaitUs.load(std::memory_order_relaxed),
                                                             std::memory_order_relaxed);
-    pSharedMem->runtimeState.packetDurationClamps.store(packetDurationClampCount.load(std::memory_order_relaxed),
+    publication->runtimeState.packetDurationClamps.store(packetDurationClampCount.load(std::memory_order_relaxed),
                                                         std::memory_order_relaxed);
-    pSharedMem->runtimeState.negativePtsCount.store(negativePtsCount.load(std::memory_order_relaxed),
+    publication->runtimeState.negativePtsCount.store(negativePtsCount.load(std::memory_order_relaxed),
                                                     std::memory_order_relaxed);
-    pSharedMem->runtimeState.nonMonotonicPtsCount.store(nonMonotonicPtsCount.load(std::memory_order_relaxed),
+    publication->runtimeState.nonMonotonicPtsCount.store(nonMonotonicPtsCount.load(std::memory_order_relaxed),
                                                         std::memory_order_relaxed);
 }

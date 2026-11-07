@@ -221,7 +221,11 @@ MEDIAENGINE_API int MediaEngine_RecoverRecording(const wchar_t* stagingPath, wch
                                                  uint32_t outputCapacity, int64_t* endUs, const volatile long* cancel);
 
 // Set shared memory pointers for fallback capture paths
+// Retargets short recording-state publications independently of codec calls.
+// Keep the old and new mappings and pixel buffer alive until the pipeline joins its workers.
 MEDIAENGINE_API void MediaEngine_SetSharedMem(MediaEngineHandle engine, void* pSharedMem, void* pShmem = nullptr);
+// Copies and detaches under the publication barrier; no codec lock is taken.
+MEDIAENGINE_API bool MediaEngine_DetachSharedMem(MediaEngineHandle engine, const void* live, void* detached);
 
 // Thread synchronization for D3D11 Immediate Context
 // Required because WGC callback and Encoder thread share the same Immediate
