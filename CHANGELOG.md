@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Smooth Motion on dedicated presenter threads:** submission samples now sustain their own cadence window and yield to direct application Presents when both signals exist. A worker changing threads no longer supplies a false 1:1 verdict.
+
 - **ETW trace properties buffer sizing and session reclaim validation:** trace property buffers now declare their full capacity and clamp session name lengths to prevent buffer overruns during trace control calls. Session reclamation validates logger name offset bounds and alignment, and feed startup captures specific error codes when opening own trace sessions.
 
 - **Graphics runtime module identity verification:** streamline interposer checks and DLSS version reporting now verify that the loaded image path matches the queried module name, preventing foreign hook answers from blocking plugin placement or misreporting version numbers.

@@ -286,11 +286,13 @@ public:
             std::lock_guard<std::mutex> lock(interposerEvidenceLock);
             interposerEvidence.Reset();
             interposerLatch.Reset();
+            applicationSubmissions.exchange(0, std::memory_order_acq_rel);
+            interposerSubmissionObserved_ = false;
+            nvidiaSMMeasuredOutputFps.store(0.0f, std::memory_order_release);
+            nvidiaSMMeasuredApplicationFps.store(0.0f, std::memory_order_release);
+            nvidiaSMMeasuredMultiplier.store(0, std::memory_order_release);
             resetCadenceAuthority = interposerCadenceDecided.exchange(false, std::memory_order_acq_rel);
         }
-        nvidiaSMMeasuredOutputFps.store(0.0f, std::memory_order_release);
-        nvidiaSMMeasuredApplicationFps.store(0.0f, std::memory_order_release);
-        nvidiaSMMeasuredMultiplier.store(0, std::memory_order_release);
         const bool wasDetected = nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel);
         if (wasDetected || resetCadenceAuthority) {
             HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup, cadenceAuthorityReset=%d)",
@@ -342,6 +344,7 @@ private:
     std::mutex interposerEvidenceLock;
     ce::present_interposer::InterposerEvidence interposerEvidence;  // guarded by interposerEvidenceLock
     ce::present_interposer::GenerationLatch interposerLatch;        // guarded by interposerEvidenceLock
+    bool interposerSubmissionObserved_ = false;                      // guarded by interposerEvidenceLock
     // A window decided the status: from here the heuristics below have no say in it.
     std::atomic<bool> interposerCadenceDecided{false};
 

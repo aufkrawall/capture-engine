@@ -369,8 +369,14 @@ TEST(SmoothMotionStatusTest, TheGamesOwnSubmissionsAnswerForADedicatedPresenter)
         for (int draw = 0; draw < 100; ++draw) {
             fg->NoteApplicationSubmission();
         }
-        fg->NoteInterposerOutputPresent(0x1234, nowUs);
-        fg->NoteInterposerOutputPresent(0x1234, nowUs + 3'900);
+        const auto application = fg->NoteInterposerOutputPresent(0x1234, nowUs);
+        const auto generated = fg->NoteInterposerOutputPresent(0x1234, nowUs + 3'900);
+        if (frame >= 32) {
+            EXPECT_TRUE(application.measured);
+            EXPECT_TRUE(application.applicationFrame);
+            EXPECT_TRUE(generated.measured);
+            EXPECT_FALSE(generated.applicationFrame);
+        }
         nowUs += 13'889;
     }
     EXPECT_EQ(fg->GetRuntimeMode(), RuntimeMode::kNvidiaSmoothMotion);
@@ -405,7 +411,7 @@ TEST(SmoothMotionStatusTest, ClearingStateResetsMeasuredRatesAndMultiplier) {
     ASSERT_GT(fg->GetOutputFPS(), 0.0f);
     fg->ClearNvidiaSMState();
     EXPECT_EQ(fg->GetRuntimeMode(), RuntimeMode::kOff);
-    EXPECT_EQ(fg->GetFGMultiplier(), 0);
+    EXPECT_EQ(fg->GetFGMultiplier(), 1);
     EXPECT_EQ(fg->GetOutputFPS(), 0.0f);
     EXPECT_EQ(fg->GetBaseFPS(), 0.0f);
 }
@@ -413,9 +419,11 @@ TEST(SmoothMotionStatusTest, ClearingStateResetsMeasuredRatesAndMultiplier) {
 // The exact stream decides directly, as it does in DX12.
 TEST(SmoothMotionStatusTest, TheApplicationStreamDecidesWhereItExists) {
     auto fg = MakeWithNvPresent();
+    fg->SetApplicationSubmissionCountingEnabled(true);
     int64_t nowUs = 0;
     for (int frame = 0; frame < 150; ++frame) {
         fg->NoteInterposerApplicationPresent(nowUs);
+        fg->NoteApplicationSubmission();
         fg->NoteInterposerOutputPresent(0x1234, nowUs);
         fg->NoteInterposerOutputPresent(0x1234, nowUs + 3'900);
         nowUs += 13'889;

@@ -21,7 +21,7 @@
 //    still drawing while the interposer presents a generated frame reads as an application frame.
 namespace ce::present_interposer {
 
-enum class EvidenceStream { kNone, kWorkerRuns, kApplicationPresents };
+enum class EvidenceStream { kNone, kWorkerRuns, kApplicationPresents, kApplicationSubmissions };
 
 inline const char* EvidenceStreamName(EvidenceStream stream) {
     switch (stream) {
@@ -29,6 +29,8 @@ inline const char* EvidenceStreamName(EvidenceStream stream) {
             return "worker-runs";
         case EvidenceStream::kApplicationPresents:
             return "application-presents";
+        case EvidenceStream::kApplicationSubmissions:
+            return "application-submissions";
         case EvidenceStream::kNone:
         default:
             return "none";
@@ -86,14 +88,6 @@ public:
         }
         const bool dedicated = runLength_ >= kDedicatedPresenterRun;
         if (dedicated) {
-            if (factor_ > 1 && windowStartUs_ != kNoTime && nowUs - windowStartUs_ >= kWindowUs) {
-                result.report.verdict.decided = true;
-                result.report.verdict.generating = false;
-                result.report.verdict.multiplier = 1;
-                result.report.stream = EvidenceStream::kWorkerRuns;
-                result.windowClosed = true;
-                factor_ = 1;
-            }
             ClearWindow();
             windowStartUs_ = nowUs;
         }
@@ -222,6 +216,9 @@ public:
         application_.NoteOutputPresent();
         const WorkerRunWindow::Result runs = runs_.Note(threadId, nowUs);
         *present = runs.present;
+        if (runs.present.measured && applicationSource_ == EvidenceStream::kApplicationSubmissions) {
+            ResetApplication();
+        }
         if (!runs.windowClosed) {
             return false;
         }
@@ -233,40 +230,49 @@ public:
         return true;
     }
 
-    // One application frame seen directly. Returns true and fills `report` when it closed a window.
-    bool NoteApplication(int64_t nowUs, WindowReport* report) {
-        if (lastApplicationUs_ != kNoTime && nowUs - lastApplicationUs_ >= kApplicationStoppedWindowUs) {
-            application_.Reset();
+    bool HasDirectApplicationStream(int64_t nowUs) const {
+        return applicationSource_ == EvidenceStream::kApplicationPresents &&
+               nowUs - lastApplicationUs_ < kApplicationStoppedWindowUs;
+    }
+
+    // Direct and inferred frames cannot share a measurement window.
+    bool NoteApplication(int64_t nowUs, WindowReport* report,
+                         EvidenceStream source = EvidenceStream::kApplicationPresents) {
+        if (source != applicationSource_ || nowUs - lastApplicationUs_ >= kApplicationStoppedWindowUs) {
+            ResetApplication();
         }
+        applicationSource_ = source;
         lastApplicationUs_ = nowUs;
         CadenceVerdict verdict;
         if (!application_.NoteApplicationPresent(nowUs, &verdict)) {
             return false;
         }
         report->verdict = verdict;
-        report->stream = EvidenceStream::kApplicationPresents;
+        report->stream = source;
         report->runs = lastRuns_.runs;
         report->modalRun = lastRuns_.modalRun;
         return true;
     }
 
     void Reset() {
-        application_.Reset();
+        ResetApplication();
         runs_.Reset();
         lastRuns_ = WindowReport{};
-        lastApplicationUs_ = kNoTime;
-    }
-
-    bool HasApplicationStream() const {
-        return lastApplicationUs_ != kNoTime;
     }
 
 private:
     static constexpr int64_t kNoTime = -1;
 
+    void ResetApplication() {
+        application_.Reset();
+        applicationSource_ = EvidenceStream::kNone;
+        lastApplicationUs_ = kNoTime;
+    }
+
     CadenceTracker application_;
     WorkerRunWindow runs_;
     WindowReport lastRuns_;
+    EvidenceStream applicationSource_ = EvidenceStream::kNone;
     int64_t lastApplicationUs_ = kNoTime;
 };
 

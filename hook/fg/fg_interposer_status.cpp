@@ -13,39 +13,42 @@ pi::OutputPresentClass FGCompatibility::NoteInterposerOutputPresent(uint32_t thr
     }
     pi::OutputPresentClass present;
     pi::WindowReport report;
-    bool windowClosed = false;
+    bool submissionObserved = false;
+    bool dedicated = false;
     {
         std::lock_guard<std::mutex> lock(interposerEvidenceLock);
-        windowClosed = interposerEvidence.NoteOutput(threadId, nowUs, &present, &report);
-    }
-    if (windowClosed) {
-        NotePresentInterposerCadence(report);
+        bool windowClosed = interposerEvidence.NoteOutput(threadId, nowUs, &present, &report);
+        dedicated = !present.measured;
+        if (IsApplicationSubmissionCountingEnabled()) {
+            const uint64_t submissions = applicationSubmissions.exchange(0, std::memory_order_acq_rel);
+            if (dedicated && !interposerEvidence.HasDirectApplicationStream(nowUs)) {
+                interposerSubmissionObserved_ |= submissions != 0;
+                if (interposerSubmissionObserved_) {
+                    present.measured = true;
+                    present.applicationFrame = ce::fg_runtime::IsApplicationSourcedInterposerPresent(submissions);
+                    if (present.applicationFrame) {
+                        windowClosed = interposerEvidence.NoteApplication(
+                                           nowUs, &report, pi::EvidenceStream::kApplicationSubmissions) ||
+                                       windowClosed;
+                    }
+                }
+            } else {
+                interposerSubmissionObserved_ = false;
+            }
+            submissionObserved = interposerSubmissionObserved_;
+        }
+        if (windowClosed) {
+            NotePresentInterposerCadence(report);
+        }
     }
 
     static ce::log_meter::ChangeGate s_dedicatedPresenter;
-    if (const auto verdict = s_dedicatedPresenter.Observe(ce::log_meter::FieldKey(present.measured))) {
-        if (!present.measured) {
+    if (const auto verdict = s_dedicatedPresenter.Observe(ce::log_meter::FieldKey(dedicated, submissionObserved))) {
+        if (dedicated) {
             HookLogImportant("FG: The present interposer's output stream is on one thread (tid=0x%04X) - its runs say "
                              "nothing; submissionEvidence=%d%s",
-                             threadId, IsApplicationSubmissionCountingEnabled() ? 1 : 0,
+                             threadId, submissionObserved ? 1 : 0,
                              ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
-        }
-    }
-    if (present.measured) {
-        applicationSubmissions.store(0, std::memory_order_relaxed);
-    } else if (IsApplicationSubmissionCountingEnabled()) {
-        const uint64_t submissions = applicationSubmissions.exchange(0, std::memory_order_acq_rel);
-        if (submissions > 0) {
-            present.measured = true;
-            present.applicationFrame = ce::fg_runtime::IsApplicationSourcedInterposerPresent(submissions);
-            bool hasDirectAppPresents = false;
-            {
-                std::lock_guard<std::mutex> lock(interposerEvidenceLock);
-                hasDirectAppPresents = interposerEvidence.HasApplicationStream();
-            }
-            if (present.applicationFrame && !hasDirectAppPresents) {
-                NoteInterposerApplicationPresent(nowUs);
-            }
         }
     }
     return present;
@@ -53,12 +56,8 @@ pi::OutputPresentClass FGCompatibility::NoteInterposerOutputPresent(uint32_t thr
 
 void FGCompatibility::NoteInterposerApplicationPresent(int64_t nowUs) {
     pi::WindowReport report;
-    bool windowClosed = false;
-    {
-        std::lock_guard<std::mutex> lock(interposerEvidenceLock);
-        windowClosed = interposerEvidence.NoteApplication(nowUs, &report);
-    }
-    if (windowClosed) {
+    std::lock_guard<std::mutex> lock(interposerEvidenceLock);
+    if (interposerEvidence.NoteApplication(nowUs, &report)) {
         NotePresentInterposerCadence(report);
     }
 }
@@ -67,6 +66,8 @@ void FGCompatibility::ResetInterposerEvidence() {
     std::lock_guard<std::mutex> lock(interposerEvidenceLock);
     interposerEvidence.Reset();
     interposerLatch.Reset();
+    applicationSubmissions.exchange(0, std::memory_order_acq_rel);
+    interposerSubmissionObserved_ = false;
     interposerCadenceDecided.store(false, std::memory_order_release);
     nvidiaSMMeasuredOutputFps.store(0.0f, std::memory_order_release);
     nvidiaSMMeasuredApplicationFps.store(0.0f, std::memory_order_release);
@@ -102,11 +103,7 @@ void FGCompatibility::NotePresentInterposerCadence(const pi::WindowReport& repor
         return;
     }
     interposerCadenceDecided.store(true, std::memory_order_release);
-    bool active = false;
-    {
-        std::lock_guard<std::mutex> lock(interposerEvidenceLock);
-        active = interposerLatch.Observe(verdict);
-    }
+    const bool active = interposerLatch.Observe(verdict);
     if (active) {
         if (verdict.generating) {
             nvidiaSMMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
