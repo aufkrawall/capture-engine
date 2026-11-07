@@ -32,6 +32,11 @@ inline void CopyForDetachedSession(const SharedMemoryLayout& live, SharedMemoryL
     Copy(live.structSize, detached.structSize);
     Copy(live.abiSignature, detached.abiSignature);
     detached.SetHostPID(live.GetHostPID());
+    detached.SetSourcePid(live.GetSourcePid());
+    detached.SetWidth(live.GetWidth());
+    detached.SetHeight(live.GetHeight());
+    detached.SetFormat(live.GetFormat());
+    detached.SetIsHDR(live.GetIsHDR());
     detached.SetLuidLowPart(live.GetLuidLowPart());
     detached.SetLuidHighPart(live.GetLuidHighPart());
     detached.SetLuidSourcePid(live.GetLuidSourcePid());

@@ -80,6 +80,11 @@ TEST(DetachedLiveStateTest, TheCopyCarriesWhatTheFinishingSessionStillReads) {
     live->structSize.store(static_cast<uint32_t>(sizeof(SharedMemoryLayout)));
     live->abiSignature.store(0xABCDu);
     live->SetHostPID(4242);
+    live->SetSourcePid(12345);
+    live->SetWidth(3840);
+    live->SetHeight(2160);
+    live->SetFormat(28);  // DXGI_FORMAT_R8G8B8A8_UNORM
+    live->SetIsHDR(true);
     live->runtimeState.capturePhase.store(Phase(CapturePipelinePhase::kDrain));
     live->runtimeState.liveFramesEncoded.store(77);
     live->runtimeState.encoderOverloadFlags.store(0x5);
@@ -99,6 +104,11 @@ TEST(DetachedLiveStateTest, TheCopyCarriesWhatTheFinishingSessionStillReads) {
     EXPECT_EQ(detached->structSize.load(), static_cast<uint32_t>(sizeof(SharedMemoryLayout)));
     EXPECT_EQ(detached->abiSignature.load(), 0xABCDu);
     EXPECT_EQ(detached->GetHostPID(), 4242u);
+    EXPECT_EQ(detached->GetSourcePid(), 12345u);
+    EXPECT_EQ(detached->GetWidth(), 3840u);
+    EXPECT_EQ(detached->GetHeight(), 2160u);
+    EXPECT_EQ(detached->GetFormat(), 28u);
+    EXPECT_TRUE(detached->GetIsHDR());
     EXPECT_EQ(PhaseOf(*detached), Phase(CapturePipelinePhase::kDrain));
     EXPECT_EQ(detached->runtimeState.liveFramesEncoded.load(), 77u);
     EXPECT_EQ(detached->runtimeState.encoderOverloadFlags.load(), 0x5u);
@@ -130,4 +140,9 @@ TEST(DetachedLiveStateTest, TheRefRetargetsBetweenLayoutsAndReadsAsAPointer) {
     EXPECT_EQ(second->runtimeState.framesEncoded.load(), 9u);
     SharedMemoryLayout* const raw = ref;
     EXPECT_EQ(raw, second.get());
+
+    auto third = std::make_unique<SharedMemoryLayout>();
+    ref.Detach(*second, *third);
+    EXPECT_EQ(ref.get(), third.get());
+    EXPECT_EQ(third->runtimeState.framesEncoded.load(), 9u);
 }

@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Shared-memory capture drain after recording stop:** detaching from the shared recording state now synchronizes across media workers under a publication barrier before stop acknowledgement, preventing late worker updates from landing on the live layout. Detached layouts preserve frame geometry and process identification, ensuring in-flight shared-memory frames drain and upload with valid dimensions.
+
 - **Strict AAC packet sizes:** the encoder counts the end marker and byte padding against the per-frame bitrate limit. If a frame needs the silence fallback, the packet uses only the required AAC syntax and preserves the original sample count and timestamp.
 
 - **Zero-copy capture after a DXVK resize:** the Vulkan layer requests replacement textures once the outgoing swapchain's reads and copies finish. It also rejects an offer for the old size if allocation finishes after the resize. Media reuses the export only when its dimensions, format and adapter match, and opening a slot on the encoder device no longer holds up export replacement.

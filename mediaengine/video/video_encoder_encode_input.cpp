@@ -78,17 +78,23 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                 uint8_t* pSrc = pShmem->GetData(slot);
 
                 if (pSrc) {
-                    D3D11_BOX box;
-                    box.left = 0;
-                    box.right = pSharedMem->GetWidth();  // Use current frame resolution
-                    box.top = 0;
-                    box.bottom = pSharedMem->GetHeight();
-                    box.front = 0;
-                    box.back = 1;
+                    const uint32_t uploadWidth =
+                        pSharedMem->GetWidth() > 0 ? pSharedMem->GetWidth() : static_cast<uint32_t>(this->width);
+                    const uint32_t uploadHeight =
+                        pSharedMem->GetHeight() > 0 ? pSharedMem->GetHeight() : static_cast<uint32_t>(this->height);
+                    if (uploadWidth > 0 && uploadHeight > 0) {
+                        D3D11_BOX box;
+                        box.left = 0;
+                        box.right = uploadWidth;  // Use current frame resolution
+                        box.top = 0;
+                        box.bottom = uploadHeight;
+                        box.front = 0;
+                        box.back = 1;
 
-                    // We need a pitch. Use pSharedMem->width * 4 if not stored in
-                    // ShmemBuffer Actually ShmemBuffer has pitch.
-                    d3d11Context->UpdateSubresource(bgraTex, 0, &box, pSrc, pShmem->pitch, 0);
+                        // We need a pitch. Use pSharedMem->width * 4 if not stored in
+                        // ShmemBuffer Actually ShmemBuffer has pitch.
+                        d3d11Context->UpdateSubresource(bgraTex, 0, &box, pSrc, pShmem->pitch, 0);
+                    }
                 }
                 d3d11Fence = nullptr;  // No fence for shmem
             }

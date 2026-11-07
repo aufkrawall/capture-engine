@@ -7,6 +7,7 @@
 // threads run; it is set to null only after they have joined (unmapping).
 
 #include <atomic>
+#include "common/capture/recording_memory.h"
 
 struct SharedMemoryLayout;
 
@@ -19,15 +20,22 @@ public:
     SharedMemoryRef& operator=(const SharedMemoryRef&) = delete;
 
     SharedMemoryRef& operator=(SharedMemoryLayout* layout) noexcept {
-        target_.store(layout, std::memory_order_release);
+        memory_.Retarget(layout, nullptr);
         return *this;
     }
-    SharedMemoryLayout* get() const noexcept { return target_.load(std::memory_order_acquire); }
+    SharedMemoryLayout* get() const noexcept {
+        return const_cast<SharedMemoryLayout*>(memory_.get());
+    }
     SharedMemoryLayout* operator->() const noexcept { return get(); }
     operator SharedMemoryLayout*() const noexcept { return get(); }
 
+    uint64_t Detach(const SharedMemoryLayout& fallbackLive, SharedMemoryLayout& detached) {
+        return memory_.Detach(fallbackLive, detached);
+    }
+    RecordingMemory::Publication Publish() { return memory_.Publish(); }
+
 private:
-    std::atomic<SharedMemoryLayout*> target_{nullptr};
+    RecordingMemory memory_;
 };
 
 }  // namespace ce
