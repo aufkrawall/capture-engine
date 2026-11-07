@@ -131,7 +131,8 @@ void ReleaseFFXUiCompositeInfra();
 DXGI_FORMAT FFXUiCompositeRtvFormat(DXGI_FORMAT texFormat);
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxState, uint32_t flags);
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason);
-AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy, ID3D12Resource* target);
+AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy, ID3D12Resource* target,
+                                                                        bool acceptDeviceView = false);
 bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* commandList);
 bool SubmitNativeFSROwnerQueueOverlayCommandLists(ID3D12CommandQueue* queue, ID3D12CommandList* preceding,
                                                   ID3D12CommandList* commandList);

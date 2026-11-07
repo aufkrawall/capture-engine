@@ -283,7 +283,7 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
     }
 
     // The owner queue is the one the UI-resource overlay already submits on: the game's queue, not AMD's FG queue.
-    AcquiredNativeFSROwnerQueue ownerQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer.Get());
+    AcquiredNativeFSROwnerQueue ownerQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer.Get(), true);
     ComPtr<ID3D12CommandQueue> queue;
     queue.Attach(ownerQueue.queue);
     if (!queue) {

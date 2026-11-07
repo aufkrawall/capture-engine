@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "dx12_device_identity.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/sharpen_dxgi_format.h"
@@ -232,7 +233,10 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
     ce::dx12_ffx_suspend_overlay::RetireAllForNativeFSRTeardown(reason);
 }
 
-static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target, ID3D12Device** queueDeviceOut) {
+// `acceptDeviceView` also takes another interface of the target's device (a probe that writes private data, so only
+// for once-per-request callers such as screenshots, never a per-frame path).
+static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target, ID3D12Device** queueDeviceOut,
+                                    bool acceptDeviceView) {
     if (queueDeviceOut) {
         *queueDeviceOut = nullptr;
     }
@@ -243,7 +247,14 @@ static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* t
     if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !queueDevice) {
         return false;
     }
-    const bool matches = IsResourceOwnedByDevice(target, queueDevice);
+    bool matches = IsResourceOwnedByDevice(target, queueDevice);
+    if (!matches && acceptDeviceView) {
+        ID3D12Device* targetDevice = nullptr;
+        if (SUCCEEDED(target->GetDevice(IID_PPV_ARGS(&targetDevice))) && targetDevice) {
+            matches = ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(targetDevice, queueDevice));
+            targetDevice->Release();
+        }
+    }
     if (queueDeviceOut) {
         *queueDeviceOut = queueDevice;
     } else {
@@ -253,7 +264,7 @@ static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* t
 }
 
 AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy,
-                                                                              ID3D12Resource* target) {
+                                                                              ID3D12Resource* target, bool acceptDeviceView) {
     if (!proxy || !target) {
         return {};
     }
@@ -281,8 +292,8 @@ AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwap
 
     ID3D12Device* descriptorDevice = nullptr;
     ID3D12Device* underlyingDevice = nullptr;
-    const bool exactMatches = QueueDeviceOwnsResource(binding.descriptorQueue, target, &descriptorDevice);
-    const bool underlyingMatches = QueueDeviceOwnsResource(binding.underlyingGameQueue, target, &underlyingDevice);
+    const bool exactMatches = QueueDeviceOwnsResource(binding.descriptorQueue, target, &descriptorDevice, acceptDeviceView);
+    const bool underlyingMatches = QueueDeviceOwnsResource(binding.underlyingGameQueue, target, &underlyingDevice, acceptDeviceView);
     const auto route = ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(
         exactMatches, binding.descriptorQueueUsesAcceptedStreamlineDevice, underlyingMatches);
 
