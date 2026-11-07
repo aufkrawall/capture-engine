@@ -91,6 +91,9 @@ TEST(MediaEngineHandleTest, SharedStateRetargetDoesNotWaitForTheCodecLock) {
 TEST(MediaEngineHandleTest, MeteredAacRepairDiagnosticsSurviveTheGlobalLibavSampler) {
     LineSink sink;
     const MediaEngineHandle handle = CreatePipeline(LineSink::Append, &sink);
+    // Another component replaced the process-global libav sink; configuring
+    // logging must route libav into the session log again.
+    av_log_set_callback(av_log_default_callback);
     MediaEngine_SetLogCallback(nullptr);
     const int previousLevel = av_log_get_level();
     av_log_set_level(AV_LOG_WARNING);

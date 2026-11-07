@@ -76,12 +76,12 @@ void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list 
     DLL_Log("[ffmpeg] %s", ce::privacy::RedactStreamEndpointsForLog(message).c_str());
 }
 
+// Idempotent, and re-asserted on every call: the libav sink is process-global and
+// another component may have replaced it since the first installation.
 void InstallAvLogCallback() {
+    av_log_set_callback(CaptureEngineAvLogCallback);
     static std::once_flag once;
-    std::call_once(once, [] {
-        av_log_set_callback(CaptureEngineAvLogCallback);
-        DLL_Log("[Media] libav diagnostics routed into the session log (endpoints redacted)");
-    });
+    std::call_once(once, [] { DLL_Log("[Media] libav diagnostics routed into the session log (endpoints redacted)"); });
 }
 
 }  // namespace
