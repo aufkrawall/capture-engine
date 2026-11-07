@@ -128,7 +128,7 @@ private:
     bool Rasterize(const wchar_t* face, int fontSize, float scale, int resolvedWeight, bool acceptSubstitute);
     void BuildGlyphSpans(GlyphSet& set);
     // Shares the finished atlas with later renderers (see the cache in custom_font.cpp).
-    void PublishSnapshot(const char* fontName, int fontSize, float scale) const;
+    void PublishSnapshot(const char* fontName, int fontSize, float scale, bool acceptSubstitute) const;
 
     std::vector<uint8_t> textureData;  // RGBA pixel data
     int textureWidth = 0;

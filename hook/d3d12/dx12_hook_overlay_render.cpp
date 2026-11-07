@@ -120,7 +120,6 @@ if (logThisDraw) {
 // RenderOverlay() guards on ipc being non-null, so if this was only set
 // on real frames, overlay would never render when isRealFrame is false.
 g_OverlayAdapter.SetIPCClient(g_IPC);
-g_OverlayAdapter.SetReserveInactiveFGSpace(ShouldReserveInactiveFGOverlaySpaceNow());
 const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
 if (metricsBinding.bindMetrics) {
     g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());

@@ -408,7 +408,6 @@ public:
             }
             if (renderOverlay) {
                 overlay.SetIPCClient(g_IPC);
-                overlay.SetReserveInactiveFGSpace(false);
                 if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
                     overlay.SetMetrics(perf);
                 }

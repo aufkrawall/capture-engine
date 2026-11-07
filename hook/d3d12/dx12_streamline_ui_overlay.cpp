@@ -194,7 +194,6 @@ public:
         const UINT64 guardValue = ++lastFenceValue;
         Transition(request.commandList, request.uiResource, request.resourceState, D3D12_RESOURCE_STATE_RENDER_TARGET);
         overlay.SetIPCClient(g_IPC);
-        overlay.SetReserveInactiveFGSpace(false);
         if (auto* metrics = DXGIShared::GetPerformanceMetrics()) {
             overlay.SetMetrics(metrics);
         }

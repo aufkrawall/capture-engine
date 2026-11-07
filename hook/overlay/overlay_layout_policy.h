@@ -140,7 +140,6 @@ struct RowInputs {
     bool showSystemLatency = false;
     bool showFG = false;
     bool fgActive = false;
-    bool reserveFGSpace = false;
     bool showRecording = false;
     bool warnNotRecording = false;
     bool recordingActive = false;

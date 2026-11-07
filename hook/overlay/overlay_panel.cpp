@@ -92,10 +92,10 @@ int WrapLines(const char* text, float width, Width measure, Emit emit) {
         while (text[count] && count < sizeof(part) - 1) {
             part[count] = text[count];
             part[count + 1] = '\0';
-            if (count > 0 && measure(part) > width)
-                break;
             if (text[count] == ' ')
                 space = count;
+            if (count > 0 && measure(part) > width)
+                break;
             ++count;
         }
         if (text[count] && space > 0)
@@ -355,22 +355,21 @@ void DrawRecordingSlotRight(Composer& c, float right, float top) {
 
 float DrawRecordingFullRow(Composer& c, float y, float width) {
     const float pitch = c.Pitch(Size::Small);
-    if (!c.in.recording.visible) {
-        const float pad = (std::min)(c.Px(kChipPadX), width / 4.0f);
-        return y + (std::max)(pitch, c.WrappedHeight(width - pad * 2.0f, RecordingChipText(c).c(), Size::Small));
+    const RecordingValue& recording = c.in.recording;
+    if (recording.kind == RecordingKind::None)
+        return y + pitch;
+    if (recording.kind == RecordingKind::Starting) {
+        return recording.visible ? c.WrappedText(c.left, y, width, recording.text, Size::Small, Tone::Warn)
+                                 : y + c.WrappedHeight(width, recording.text, Size::Small);
     }
-    if (c.in.recording.visible) {
-        if (c.in.recording.kind == RecordingKind::Starting) {
-            return c.WrappedText(c.left, y, width, c.in.recording.text, Size::Small, Tone::Warn);
-        } else if (c.in.recording.kind != RecordingKind::None) {
-            // Only a warning earns the whole width; a plain timer stays the size of its text.
-            const Short text = RecordingChipText(c);
-            return DrawChip(c, c.left, y,
-                            (std::min)(width, HasRecordingWarning(c) ? width : c.W(text, Size::Small) +
-                                                                                 c.Px(kChipPadX) * 2.0f), text.c());
-        }
-    }
-    return y + pitch;
+    // Only a warning earns the whole width; a plain timer stays the size of its text.
+    const Short text = RecordingChipText(c);
+    const float chipWidth = HasRecordingWarning(c) ? width
+        : (std::min)(width, c.W(text, Size::Small) + c.Px(kChipPadX) * 2.0f);
+    if (recording.visible)
+        return DrawChip(c, c.left, y, chipWidth, text.c());
+    const float pad = (std::min)(c.Px(kChipPadX), chipWidth / 4.0f);
+    return y + (std::max)(pitch, c.WrappedHeight(chipWidth - pad * 2.0f, text.c(), Size::Small));
 }
 
 Short FgStatusText(const Composer& c) {

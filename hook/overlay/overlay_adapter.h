@@ -95,7 +95,6 @@ public:
     static void RememberDpiReferenceHwnd(void* hwnd);
     void SetGraphicsAPI(const char* api, const char* evidenceSource = nullptr);
     void SetLatencyDevice(void* device);
-    void SetReserveInactiveFGSpace(bool reserve);
     void InvalidateCachedFrame();
     void SetDroppedFrames(uint32_t count) {
         std::lock_guard<std::mutex> lock(stateMutex);
@@ -158,7 +157,6 @@ private:
         uint32_t rowMask = 0;
         uint32_t rowCount = 0;
         bool fgActive = false;
-        bool reserveFGSpace = false;
         int fgMultiplier = 1;
         char fgLabel[16] = "";
         float fgBaseFPS = 0.0f;
@@ -328,7 +326,6 @@ private:
     int lastViewportHeight = 0;
     bool hasCachedFrame = false;
     bool hasRenderedConfig = false;
-    bool reserveInactiveFGSpace = false;
     bool hasLastFrameLayout = false;
     FrameLayoutSnapshot lastFrameLayout = {};
     OverlayConfig lastRenderedConfig = {};

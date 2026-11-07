@@ -203,9 +203,10 @@ void OverlayAdapter::FillPanelInputs(const OverlayConfig& cfg, const FrameLayout
     char recordingText[32] = "";
     std::string recordingWarning;
     if ((frameLayout.rowMask & kRowRecording) != 0) {
-        if (ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark) {
+        if (ce::recording_indicator::IsStarting(frameLayout.recordingState)) {
             in.recording.kind = panel::RecordingKind::Starting;
             in.recording.text = ce::recording_indicator::GetStartingText(frameLayout.recordingState);
+            in.recording.visible = !frameLayout.recordingStatusDark;
         } else if (frameLayout.recordingActive) {
             in.recording.kind = panel::RecordingKind::Live;
             const int hours = static_cast<int>(frameLayout.recordingSeconds / 3600);

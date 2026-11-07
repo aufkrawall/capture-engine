@@ -111,14 +111,6 @@ inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool 
     return false;
 }
 
-inline bool ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(bool postFSRNonFGRecovery, bool recentStreamlineTeardown,
-                                                               bool postSLRecentTeardownActivity) {
-    (void)postFSRNonFGRecovery;
-    (void)recentStreamlineTeardown;
-    (void)postSLRecentTeardownActivity;
-    return false;
-}
-
 inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool endingPostFSRNonFGRecovery) {
     // Once post-FSR non-FG recovery reaches a clean swapchain transition, the
     // queue-change heuristic's old initial/current anchors belong to the

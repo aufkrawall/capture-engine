@@ -31,6 +31,10 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay layout and fonts:** the starting-recording blink keeps its row and panel size. Strip uses wrapped vertical rows when a cell exceeds the viewport, and strict font selection rejects substitutions even when a permissive lookup previously cached them.
+- **D3D9 overlay rendering:** the overlay draws with normal stream frequency and restores the application's instancing and vertex input state afterwards.
+- **Unicode recording filenames and AV1 repeats:** long profile names keep complete characters at the filename limit, and AV1 repeats no longer inherit overlay metadata from an earlier encoder submission.
+
 - **Present stall and pacing diagnostics:** concurrent presenter threads keep their own stack-sample identity, and restarting a measurement uses one transition sample. Forwarded Present1 and guarded Steam calls include timing, and held frame rows retain source metrics and emit their pacing trace once.
 
 - **Smooth Motion on dedicated presenter threads:** submission samples now sustain their own cadence window and yield to direct application Presents when both signals exist. A worker changing threads no longer supplies a false 1:1 verdict.

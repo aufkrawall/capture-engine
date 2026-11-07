@@ -155,6 +155,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Update global stats
     diagnostics.frameAnalysis.framesEncoded++;
     outputFrameCount++;
+    lastSubmittedRepeatOverlayState = {};
     if (stagedDynamicOverlaySource) {
         CommitStagedRepeatSourceFrameTexture(static_cast<uint32_t>(this->width), static_cast<uint32_t>(this->height), isHDR, 0,
                                              0);

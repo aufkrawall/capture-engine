@@ -322,25 +322,6 @@ return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmooth
 }
 
 
-bool ShouldReserveInactiveFGOverlaySpaceNow() {
-const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-ID3D12CommandQueue* currentSwapchainQueue = nullptr;
-{
-    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-    currentSwapchainQueue = dx12_hook_g_SwapchainQueue;
-}
-
-const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
-    dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(), streamlineFGRunning,
-    currentSwapchainQueue != nullptr);
-const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
-const bool postSLRecentTeardownActivity =
-    ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-return ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(
-    postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
-}
-
-
 ID3D12CommandQueue* GetFrameClassificationQueue() {
 ID3D12CommandQueue* primaryQueue = dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire);
 ID3D12CommandQueue* originalQueue = dx12_hook_g_OriginalGameQueue;

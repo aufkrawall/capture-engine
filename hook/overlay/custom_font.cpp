@@ -21,6 +21,7 @@ namespace {
 // and CE builds a renderer per route: GTA's FSR FG start built two on AMD's presenter thread inside one
 // ExecuteCommandLists (session 20260925_225006). Later renderers copy the finished atlas instead.
 struct AtlasSnapshot {
+    bool acceptsSubstitute = false;
     std::string fontName;
     std::string faceName;
     int fontSize = 0;
@@ -44,11 +45,12 @@ std::vector<std::shared_ptr<const AtlasSnapshot>>& AtlasCache() {
     return cache;
 }
 
-std::shared_ptr<const AtlasSnapshot> FindAtlasSnapshot(const char* fontName, int fontSize, float scale, int weight) {
+std::shared_ptr<const AtlasSnapshot> FindAtlasSnapshot(const char* fontName, int fontSize, float scale, int weight,
+                                                       bool acceptSubstitute) {
     std::lock_guard<std::mutex> lock(AtlasCacheMutex());
     for (const auto& snapshot : AtlasCache()) {
         if (snapshot->fontSize == fontSize && snapshot->dpiScale == scale && snapshot->weight == weight &&
-            snapshot->fontName == fontName) {
+            snapshot->fontName == fontName && (acceptSubstitute || !snapshot->acceptsSubstitute)) {
             return snapshot;
         }
     }
@@ -184,7 +186,7 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale, int 
         return false;
 
     const int resolvedWeight = ce::overlay_font::ResolveWeight(fontName, requestedWeight);
-    if (const auto snapshot = FindAtlasSnapshot(fontName, fontSize, scale, resolvedWeight)) {
+    if (const auto snapshot = FindAtlasSnapshot(fontName, fontSize, scale, resolvedWeight, acceptSubstitute)) {
         textureData = snapshot->textureData;
         textureWidth = snapshot->textureWidth;
         textureHeight = snapshot->textureHeight;
@@ -203,7 +205,7 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale, int 
 
     initialized = true;
     g_RasterizedAtlasCount.fetch_add(1, std::memory_order_relaxed);
-    PublishSnapshot(fontName, fontSize, scale);
+    PublishSnapshot(fontName, fontSize, scale, acceptSubstitute);
     return true;
 }
 
@@ -409,9 +411,10 @@ uint32_t FontAtlas::RasterizedAtlasCount() {
     return g_RasterizedAtlasCount.load(std::memory_order_relaxed);
 }
 
-void FontAtlas::PublishSnapshot(const char* fontName, int fontSize, float scale) const {
+void FontAtlas::PublishSnapshot(const char* fontName, int fontSize, float scale, bool acceptSubstitute) const {
     auto snapshot = std::make_shared<AtlasSnapshot>();
     snapshot->fontName = fontName;
+    snapshot->acceptsSubstitute = acceptSubstitute;
     snapshot->faceName = faceName;
     snapshot->fontSize = fontSize;
     snapshot->dpiScale = scale;
@@ -424,7 +427,7 @@ void FontAtlas::PublishSnapshot(const char* fontName, int fontSize, float scale)
     std::lock_guard<std::mutex> lock(AtlasCacheMutex());
     for (const auto& existing : AtlasCache()) {
         if (existing->fontSize == fontSize && existing->dpiScale == scale && existing->weight == weight &&
-            existing->fontName == fontName) {
+            existing->fontName == fontName && existing->acceptsSubstitute == acceptSubstitute) {
             return;
         }
     }

@@ -132,6 +132,7 @@ void SetOverlayState(IDirect3DDevice9* device, DX9States& states, const D3DVIEWP
     states.Sampler(0, D3DSAMP_SRGBTEXTURE, 0);
 
     device->SetStreamSource(0, vertexBuffer, 0, sizeof(DX9Vertex));
+    device->SetStreamSourceFreq(0, 1);
     device->SetIndices(indexBuffer);
     device->SetFVF(D3DFVF_CUSTOMVERTEX);
 }
@@ -154,6 +155,7 @@ public:
                SUCCEEDED(device->GetPixelShader(&pixelShader)) &&
                SUCCEEDED(device->GetVertexDeclaration(&declaration)) && SUCCEEDED(device->GetFVF(&fvf)) &&
                SUCCEEDED(device->GetStreamSource(0, &stream, &streamOffset, &streamStride)) &&
+               SUCCEEDED(device->GetStreamSourceFreq(0, &streamFrequency)) &&
                SUCCEEDED(device->GetIndices(&indices)) && SUCCEEDED(device->GetViewport(&viewport)) &&
                SUCCEEDED(device->GetScissorRect(&scissor));
     }
@@ -163,14 +165,14 @@ public:
         device->SetScissorRect(&scissor);
         device->SetVertexShader(vertexShader);
         device->SetPixelShader(pixelShader);
-        // The declaration object itself, so the game's own stays bound. A format
-        // the game set with SetFVF comes back through the declaration the
-        // runtime made for it; the format alone only when no declaration was set.
-        if (declaration)
-            device->SetVertexDeclaration(declaration);
-        else if (fvf)
+        // Restore the runtime's FVF binding or the application's declaration,
+        // including a device that had no vertex input bound.
+        if (fvf)
             device->SetFVF(fvf);
+        else
+            device->SetVertexDeclaration(declaration);
         device->SetStreamSource(0, stream, streamOffset, streamStride);
+        device->SetStreamSourceFreq(0, streamFrequency);
         device->SetIndices(indices);
         device->SetTexture(0, texture);
         Release();
@@ -198,6 +200,7 @@ private:
     IDirect3DPixelShader9* pixelShader = nullptr;
     IDirect3DVertexDeclaration9* declaration = nullptr;
     DWORD fvf = 0;
+    UINT streamFrequency = 1;
     IDirect3DVertexBuffer9* stream = nullptr;
     UINT streamOffset = 0;
     UINT streamStride = 0;

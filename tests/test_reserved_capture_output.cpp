@@ -256,6 +256,11 @@ TEST_F(ReservedCaptureOutputTest, RecordingOutputPrefixSanitizesAndReplacesCaptu
     const std::wstring longAudioPrefix = RecordingOutputPrefix(longName, L"capture_audio");
     EXPECT_EQ(longAudioPrefix.size(), 64u);
     EXPECT_EQ(longAudioPrefix.substr(58), L"_audio");
+
+    const std::string emoji = "\xF0\x9F\x98\x80";
+    EXPECT_EQ(RecordingOutputPrefix(std::string(63, 'x') + emoji, L"capture"), std::wstring(63, L'x'));
+    EXPECT_EQ(RecordingOutputPrefix(std::string(57, 'x') + emoji, L"capture_audio"), std::wstring(57, L'x') + L"_audio");
+    EXPECT_EQ(RecordingOutputPrefix(std::string(62, 'x') + emoji, L"capture").size(), 64u);
 }
 
 TEST_F(ReservedCaptureOutputTest, AtomicNewPathPublicationSupportsProfileNamesWithSpaces) {

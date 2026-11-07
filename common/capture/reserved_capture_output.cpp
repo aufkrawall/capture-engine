@@ -175,7 +175,8 @@ std::wstring RecordingOutputPrefix(const std::string& profileName, const std::ws
     const bool isAudioOnly = (defaultPrefix == L"capture_audio");
     const size_t allowedLen = isAudioOnly ? (kMaxPrefixLength - 6) : kMaxPrefixLength;
     if (sanitized.size() > allowedLen) {
-        sanitized.resize(allowedLen);
+        const bool splitsSurrogatePair = IS_HIGH_SURROGATE(sanitized[allowedLen - 1]);
+        sanitized.resize(allowedLen - static_cast<size_t>(splitsSurrogatePair));
         while (!sanitized.empty() && (iswspace(sanitized.back()) || sanitized.back() == L'.'))
             sanitized.pop_back();
     }

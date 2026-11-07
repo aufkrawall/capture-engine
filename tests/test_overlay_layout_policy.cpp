@@ -23,9 +23,6 @@ TEST(OverlayLayoutPolicyTest, FrameGenerationRowsAppearAndDisappearAtomicallyAcr
 
     input.fgActive = false;
     EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), offMask);
-    input.reserveFGSpace = true;
-    // Inactive FG must never reserve blank gap lines in the row mask
-    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), offMask);
 
     input.recordingActive = true;
     input.showRecording = true;

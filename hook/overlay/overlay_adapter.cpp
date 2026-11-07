@@ -112,15 +112,6 @@ void OverlayAdapter::BindLatencyDeviceLocked(void* device) {
         metrics->ResetSystemLatency();
 }
 
-void OverlayAdapter::SetReserveInactiveFGSpace(bool reserve) {
-    std::lock_guard<std::mutex> lock(stateMutex);
-    if (reserveInactiveFGSpace != reserve) {
-        reserveInactiveFGSpace = reserve;
-        layoutDirty = true;
-        hasCachedFrame = false;
-    }
-}
-
 void OverlayAdapter::InvalidateCachedFrame() {
     std::lock_guard<std::mutex> lock(stateMutex);
     hasCachedFrame = false;
@@ -216,7 +207,6 @@ void OverlayAdapter::ResetStateLocked() {
     lastViewportWidth = 0;
     lastViewportHeight = 0;
     lastUpdateTime = 0;
-    reserveInactiveFGSpace = false;
     hasLastFrameLayout = false;
     lastFrameLayout = {};
     lastEncoderOverloadTick = 0;

@@ -179,6 +179,8 @@ TEST(CustomFontAtlas, AMissingFontFailsUnlessASubstituteIsAccepted) {
     EXPECT_TRUE(missing.Initialize("CE No Such Font Face", 14, 1.0f, 0, true));
     EXPECT_FALSE(missing.GetFaceName().empty());
     EXPECT_NE(missing.GetFaceName(), "CE No Such Font Face");
+    FontAtlas strict;
+    EXPECT_FALSE(strict.Initialize("CE No Such Font Face", 14, 1.0f));
 
     FontAtlas truncated;
     if (truncated.Initialize("Bahnschrift SemiBold SemiConden", 14, 1.0f)) {
@@ -222,6 +224,7 @@ TEST(OverlayFontPolicy, FaceMatchReadsWhatGdiReads) {
     EXPECT_TRUE(FaceMatches(L"Bahnschrift SemiBold SemiCondensed", L"Bahnschrift SemiBold SemiCondensed"));
     EXPECT_FALSE(FaceMatches(L"No Such Font", L"Arial"));
     EXPECT_FALSE(FaceMatches(L"", L"Arial"));
+    EXPECT_FALSE(FaceMatches(L"Segoe", L"Segoe UI"));
     EXPECT_FALSE(FaceMatches(L"Segoe UI Semibold", L"Segoe UI"));
 }
 

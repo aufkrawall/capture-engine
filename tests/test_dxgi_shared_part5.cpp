@@ -779,9 +779,6 @@ TEST(DXGISharedTest, DirectPostFSROffIsTreatedAsPostFSRNonFGRecovery) {
 }
 
 TEST(DXGISharedTest, InactiveFGOverlaySpaceIsNeverReserved) {
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(false, true, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true, true));
     EXPECT_FALSE(

@@ -53,16 +53,16 @@ inline int ResolveWeight(const char* face, int configuredWeight) {
 
 // CreateFont never fails for a font that is not installed: GDI substitutes the nearest one, so the only
 // proof is the face it selected. GDI reads 31 characters of a requested name and reports the full name
-// back ("Bahnschrift SemiBold SemiConden" selects "... SemiCondensed"), so a prefix match is the test.
+// back ("Bahnschrift SemiBold SemiConden" selects "... SemiCondensed"). Shorter requests must match exactly.
 inline bool FaceMatches(const wchar_t* requested, const wchar_t* selected) {
     if (!requested || !selected || !*requested)
         return false;
     size_t index = 0;
-    for (; requested[index] && index < 31; ++index) {
+    for (; index < 31 && requested[index]; ++index) {
         if (AsciiLower(requested[index]) != AsciiLower(selected[index]))
             return false;
     }
-    return true;
+    return index == 31 || selected[index] == L'\0';
 }
 
 }  // namespace ce::overlay_font

@@ -507,7 +507,6 @@ if (willRender) {
     // the first frame after an FG-driven reinit is classified as interpolated.
     bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
     dx12_hook_g_NativeOverlayAdapter.SetIPCClient(g_IPC);
-    dx12_hook_g_NativeOverlayAdapter.SetReserveInactiveFGSpace(ShouldReserveInactiveFGOverlaySpaceNow());
     const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
     if (metricsBinding.bindMetrics) {
         dx12_hook_g_NativeOverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());

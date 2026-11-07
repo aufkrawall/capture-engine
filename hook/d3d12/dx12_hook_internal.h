@@ -666,7 +666,6 @@ bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRender, HWN
 bool ApplyOverlayStartupCompatMode(HWND gameWindow);
 void DisableDedicatedOverlayQueueForOverlayCompat();
 void EnsureDedicatedOverlayQueueForFGCompat();
-bool ShouldReserveInactiveFGOverlaySpaceNow();
 ID3D12CommandQueue* GetFrameClassificationQueue();
 // Per Present, beside the classification count: reports when the classification queue starves while
 // the primary queue carries the game's work (dx12_overlay_policy/frame_classification_starvation.h).

@@ -328,7 +328,6 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     FrameLayoutSnapshot frameLayout = {};
     frameLayout.systemLatency = cachedSystemLatency;
     frameLayout.fgActive = cfg.showFG && metrics && metrics->IsFGActive();
-    frameLayout.reserveFGSpace = false;
     if (frameLayout.fgActive && metrics) {
         frameLayout.fgMultiplier = metrics->GetFGMultiplier();
         std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "%s", metrics->GetFGTypeLabel());
@@ -459,12 +458,10 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         rowInputs.showSystemLatency = cfg.showSystemLatency;
         rowInputs.showFG = cfg.showFG;
         rowInputs.fgActive = frameLayout.fgActive;
-        rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
         rowInputs.showRecording = cfg.showRecording;
         rowInputs.warnNotRecording = frameLayout.warnNotRecording;
         rowInputs.recordingActive = frameLayout.recordingActive;
-        rowInputs.recordingStarting =
-            ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark;
+        rowInputs.recordingStarting = ce::recording_indicator::IsStarting(frameLayout.recordingState);
         rowInputs.notificationVisible = frameLayout.notificationVisible;
     }
     rowInputs.showBenchmarkTimer = (benchState != BenchmarkState::Idle);
@@ -483,7 +480,6 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
     const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
     const bool fgIdentityChanged = !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
-                                   frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
                                    frameLayout.fgMultiplier != lastFrameLayout.fgMultiplier ||
                                    std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
     const bool recordingChanged = !hasLastFrameLayout ||

@@ -257,7 +257,6 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
         TransitionResourceIfNeeded(cmdList, targetResource, targetState, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
         dx12_hook_g_FFXPresentOverlayAdapter.SetIPCClient(g_IPC);
-        dx12_hook_g_FFXPresentOverlayAdapter.SetReserveInactiveFGSpace(false);
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             dx12_hook_g_FFXPresentOverlayAdapter.SetMetrics(perf);
         }

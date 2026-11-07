@@ -269,6 +269,13 @@ void BuildStrip(Composer& c) {
     const float padBottom = c.Px(kStripPadBottom);
     const float rule = (std::max)(1.0f, std::floor(c.in.unit));
     const float limit = c.in.maxWidth > 0.0f ? c.in.maxWidth : FLT_MAX;
+    // When a whole cell cannot fit, use the existing vertical layout's wrapped rows.
+    for (const CellKind& kind : kCells) {
+        if (kind.shown(c) && kind.width(c) + padX * 2.0f > limit) {
+            BuildList(c);
+            return;
+        }
+    }
 
     float panelWidth = 0.0f;
     float x = 0.0f;

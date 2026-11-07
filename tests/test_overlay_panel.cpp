@@ -471,6 +471,12 @@ TEST(OverlayPanelTest, RecordingStatesKeepTheirPlaceAndTheirMeaning) {
         EXPECT_EQ(startingText->tone, Tone::Warn);
         EXPECT_EQ(startingScene.width, live.width);
         EXPECT_EQ(startingScene.height, live.height);
+        Inputs startingDark = starting;
+        startingDark.recording.visible = false;
+        const Scene startingDarkScene = BuildScene(layout, startingDark);
+        EXPECT_FALSE(Shows(startingDarkScene, "STARTING"));
+        EXPECT_EQ(startingDarkScene.width, startingScene.width);
+        EXPECT_EQ(startingDarkScene.height, startingScene.height);
 
         // The dark phase of the blink must not make the panel jump.
         const Scene on = BuildScene(layout, blinkOn);
@@ -551,11 +557,11 @@ TEST(OverlayPanelTest, TheStripIsNarrowAndWrapsBeforeLeavingTheScreen) {
     EXPECT_TRUE(Shows(wrapped, "REC 00:00:01")) << "wrapping loses nothing";
     EXPECT_TRUE(Shows(wrapped, "31.93"));
 
-    // A window narrower than any cell still draws everything rather than looping or dropping it.
-    in.maxWidth = 10.0f;
+    // A window narrower than a cell uses the wrapped vertical layout.
+    in.maxWidth = 80.0f;
     const Scene narrow = BuildScene(Layout::Strip, in);
-    EXPECT_TRUE(Shows(narrow, "140"));
-    EXPECT_TRUE(Shows(narrow, "REC 00:00:01"));
+    EXPECT_LE(narrow.width, in.maxWidth);
+    EXPECT_EQ(narrow.height, BuildScene(Layout::List, in).height);
 }
 
 TEST(OverlayPanelTest, AGraphOnlyPanelStillHasItsLabelsInside) {

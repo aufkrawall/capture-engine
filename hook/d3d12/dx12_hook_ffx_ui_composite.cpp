@@ -538,7 +538,6 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     {
         std::lock_guard<std::recursive_mutex> olock(dx12_hook_g_OverlayMutex);
         dx12_hook_g_FFXPresentOverlayAdapter.SetIPCClient(g_IPC);
-        dx12_hook_g_FFXPresentOverlayAdapter.SetReserveInactiveFGSpace(false);
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             dx12_hook_g_FFXPresentOverlayAdapter.SetMetrics(perf);
         }

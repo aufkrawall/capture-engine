@@ -190,8 +190,6 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                 : (dx12_hook_g_DescFreeBackend && dx12_hook_g_NativeOverlayAdapter.IsInitialized());
         if (primaryOverlayReady) {
             bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
-            dx12_hook_g_NativeOverlayAdapter.SetReserveInactiveFGSpace(
-                ShouldReserveInactiveFGOverlaySpaceNow());
 
             // After FSR→DLSS: ANY direct backbuffer access (barriers,
             // RT, ClearRTV) causes DEVICE_HUNG because SL's FG pipeline
