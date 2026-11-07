@@ -55,10 +55,13 @@ keeping chain anchors. Re-fits bisect up to lambda 1e18 (lam^2 must stay finite 
 `nmr_solve`) and keep the last lambda proven to fit: the dump's frame railed at the
 solver's 1e4 rail with 15,699 spectral bits in one short-window channel because
 distortion still outweighed bits there, so coarser legal quantization was never
-reached. The outer NMR loop enforces only the hard bound (decoder buffer or strict
-rate), shrinks lambda by at least 10% per retry and restores in-place coefficients;
-after 32 passes it writes the frame silent. An error return was rejected: libavcodec
-skips `frame_num++` and `aac_encode_frame` leaves the frame in its `AudioFrameQueue`,
+reached. The outer NMR loop checks the decoder buffer and strict-rate bound against
+the final packet size including the end marker and byte padding. It shrinks lambda
+by at least 10% per retry and restores in-place coefficients. After 32 passes it
+writes a decodable silent packet using only mandatory syntax. An impossible strict
+bound can be below that minimum. The metered fallback log includes the rejected
+size, final size and bound. Returning an error makes libavcodec skip `frame_num++`
+and leaves the frame in its `AudioFrameQueue`,
 so every later packet would be stamped one frame early while CE records a hole at the
 original position (about 21 ms of A/V offset for the rest of the track).
 Real-codec evidence (2026-11-07): `AacNmrRuntimeTest.NearCapCbrTakesTheLegalityRepairAndStaysLegal`

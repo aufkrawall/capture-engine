@@ -162,11 +162,14 @@ band is removed; the bisection keeps the last lambda proven to fit, not its
 final midpoint. Work is bounded by the finite band count. Repair events are
 logged at powers of two, separately for lossless re-fits and band removals.
 
-The outer NMR loop enforces only the hard bound (decoder buffer, or the strict
-per-frame rate). Each retry shrinks lambda, and with it every legality cap, by
-at least 10%, and restores in-place stereo/TNS coefficients (upstream's strict
-retry did not). After 32 passes the frame is written silent: always legal, and
-its packet keeps its samples and timestamp, so no track loses length or sync.
+The outer NMR loop checks the complete byte-aligned packet, including the end
+marker, against the decoder buffer and any strict per-frame rate. Strict-rate
+packets omit the optional encoder identification. Each retry shrinks lambda by
+at least 10% and restores in-place stereo/TNS coefficients. After 32 passes,
+the encoder writes a decodable silent packet using only mandatory syntax and
+preserving sample count and timestamp. A strict bound below the syntax minimum
+can still be exceeded. The metered fallback log reports both packet sizes and
+the configured bound.
 Returning an error instead would leave the frame queued and shift every later
 packet's PTS by one frame. Successful NMR frames reset the outer lambda so one
 overflow does not permanently reduce later budgets. New counters sit at the end
@@ -179,7 +182,7 @@ prebuilt FFmpeg explicitly skip it. `AacNmrRuntimeTest` drives the real codec:
 CBR, strict CBR, ABR and VBR with mono/stereo audio at 48/96 kHz; a near-cap
 288 kbps mono CBR run that must take the repair path; and an unreachable strict
 bound (upstream retries forever) that must end in decodable silent frames. Every
-run checks legal packet sizes, continuous sample PTS, priming-aware totals and
+run checks packet sizes, continuous sample PTS, priming-aware totals and
 that the AAC decoder accepts every frame; real content must never be silenced or
 lose bands. With the final repair disabled and the old error return restored,
 mono ABR at 160 kbps and the near-cap CBR run could not reach a legal frame within

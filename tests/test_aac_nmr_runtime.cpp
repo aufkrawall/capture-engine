@@ -77,6 +77,7 @@ struct EncodeConfig {
 
 struct EncodeResult {
     int packets = 0;
+    int maxPacketBits = 0;
     int64_t packetSamples = 0;
     int64_t packetEnd = 0;
     int initialPadding = 0;
@@ -178,7 +179,9 @@ void Encode(const EncodeConfig& config, EncodeResult& result) {
             if (received < 0)
                 return false;
             EXPECT_GT(packet->size, 0);
-            EXPECT_LE(packet->size * 8, 6144 * config.channels);
+            const int packetBits = packet->size * 8;
+            EXPECT_LE(packetBits, 6144 * config.channels);
+            result.maxPacketBits = std::max(result.maxPacketBits, packetBits);
             EXPECT_EQ(packet->duration, samplesPerFrame);
             if (result.packets != 0)
                 EXPECT_EQ(packet->pts, result.packetEnd);
@@ -222,6 +225,9 @@ TEST(AacNmrRuntimeTest, RateModesKeepLegalPacketsAndContinuousSampleTimeAcrossSh
                 if (HasFatalFailure())
                     return;
                 ExpectCompleteTimeline(config, result);
+                EXPECT_GT(result.decodedPeak, 0.0f);
+                if (mode == 3)
+                    EXPECT_LE(result.maxPacketBits, config.bitRate * 1024 / rate);
                 // Real content must always be repaired, never silenced.
                 EXPECT_EQ(AacDiagnostics::Count("AAC NMR emitted a silent frame"), 0);
                 EXPECT_EQ(AacDiagnostics::Count("removal_events="), 0);
@@ -249,8 +255,8 @@ TEST(AacNmrRuntimeTest, NearCapCbrTakesTheLegalityRepairAndStaysLegal) {
     RecordProperty("logged_removals", AacDiagnostics::Count("removal_events="));
 }
 
-// An unreachable strict per-frame bound used to retry forever. Every frame
-// must now end as a legal silent frame that keeps its samples and timestamp.
+// A rate below the minimum AAC syntax overhead cannot fit even silence. The
+// fallback must use only mandatory syntax and preserve samples and timestamps.
 TEST(AacNmrRuntimeTest, UnreachableStrictBoundEndsInSilentFramesInsteadOfAHang) {
     AacDiagnostics diagnostics;
     const EncodeConfig config{1, 48000, 1000, 3, 6};
@@ -259,6 +265,10 @@ TEST(AacNmrRuntimeTest, UnreachableStrictBoundEndsInSilentFramesInsteadOfAHang) 
     if (HasFatalFailure())
         return;
     ExpectCompleteTimeline(config, result);
+    EXPECT_LE(result.maxPacketBits, 40) << "mono silence should contain only mandatory AAC syntax";
     EXPECT_EQ(result.decodedPeak, 0.0f);
-    EXPECT_GT(AacDiagnostics::Count("AAC NMR emitted a silent frame"), 0);
+    int expectedReports = 0;
+    for (int count = result.packets; count > 0; count /= 2)
+        ++expectedReports;
+    EXPECT_EQ(AacDiagnostics::Count("AAC NMR emitted a silent frame"), expectedReports);
 }

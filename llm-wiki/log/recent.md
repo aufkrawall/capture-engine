@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-07 - Review of AAC packet-size accounting
+
+- Strict NMR AAC checked the budget before the end marker and alignment. The
+  old codec emitted 3416 bits against a 3413-bit limit in the runtime test.
+- Budget checks now include those bits. Strict-rate packets omit optional
+  identification, and the silence fallback logs the original and final sizes.
+  The impossible 1 kbps mono case now checks the syntax minimum and log metering.
+
 ### 2026-11-07 - Review of encoder texture replacement
 
 - `EncoderTextureExport` keys reuse on the entire request. DXVK requests replacement

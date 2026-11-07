@@ -71,7 +71,7 @@ new file mode 100644
 +/* Outer-loop decision after an encode pass. bits_max is the frame's hard
 + * bound (decoder buffer, or the strict per-frame rate). passes counts the
 + * completed passes of this frame. A retry scales lambda by *lambda_scale; a
-+ * silent frame is always legal and keeps the frame's samples and timestamp. */
++ * silent frame stays decodable and keeps the frame's samples and timestamp. */
 +static inline enum AACNMRFrameAction ff_aac_nmr_frame_action(int frame_bits, int bits_max,
 +                                                             int passes, float *lambda_scale)
 +{
@@ -348,8 +348,8 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 +    }
 +}
 +
-+/* An element with every band zero and no coding tools: the same bitstream a
-+ * digitally silent input produces, legal at any rate. */
++/* Encode silence with only mandatory syntax, retaining the window sequence
++ * so the decoder can overlap it with neighbouring frames. */
 +static void nmr_silence_element(ChannelElement *cpe, int chans)
 +{
 +    cpe->common_window = 0;
@@ -367,19 +367,32 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
  static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
                              const AVFrame *frame, int *got_packet_ptr)
  {
-@@ -1293,6 +1321,7 @@
+@@ -1293,6 +1321,9 @@
      IndividualChannelStream *ics;
      int i, its, ch, w, chans, tag, start_ch, ret, frame_bits;
      int target_bits, rate_bits, too_many_bits, too_few_bits;
-+    int nmr_passes = 0, nmr_silent = 0;
++    int nmr_passes = 0, nmr_oversized_bits = 0;
++    const int nmr_strict = s->options.coder == AAC_CODER_NMR &&
++                           !(avctx->flags & AV_CODEC_FLAG_QSCALE) && avctx->bit_rate_tolerance == 0;
      int ms_mode = 0, is_mode = 0, tns_mode = 0, pred_mode = 0;
      int chan_el_counter[4];
      FFPsyWindowInfo windows[AAC_MAX_CHANNELS];
-@@ -1452,6 +1481,17 @@
+@@ -1429,7 +1460,9 @@
+     do {
+         init_put_bits(&s->pb, avpkt->data, avpkt->size);
+
+-        if ((avctx->frame_num & 0xFF)==1 && !(avctx->flags & AV_CODEC_FLAG_BITEXACT))
++        /* Keep optional identification data out of strict-rate and fallback packets. */
++        if (!nmr_strict && !nmr_oversized_bits &&
++            (avctx->frame_num & 0xFF)==1 && !(avctx->flags & AV_CODEC_FLAG_BITEXACT))
+             put_bitstream_info(s, LIBAVCODEC_IDENT);
+         start_ch = 0;
+         target_bits = 0;
+@@ -1452,6 +1485,17 @@
                      if (sce->band_type[w] > RESERVED_BT)
                          sce->band_type[w] = 0;
              }
-+            if (nmr_silent) {
++            if (nmr_oversized_bits) {
 +                nmr_silence_element(cpe, chans);
 +                if (chans == 2)
 +                    put_bits(&s->pb, 1, 0); /* no common window */
@@ -393,7 +406,7 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
              s->psy.bitres.alloc = -1;
              s->psy.bitres.bits = s->last_frame_pb_count / s->channels;
              s->psy.model->analyze(&s->psy, start_ch, coeffs, wi);
-@@ -1569,6 +1609,41 @@
+@@ -1569,6 +1613,44 @@
              start_ch += chans;
          }
 
@@ -401,17 +414,26 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 +            /* The NMR coder rate-controls itself; the outer loop only enforces
 +             * the hard bound: the decoder buffer, or the strict per-frame
 +             * rate. A retry shrinks lambda, and with it every legality cap,
-+             * by at least 10%. If that ever fails to converge, the frame is
-+             * sent silent: always legal, and the packet keeps its samples and
-+             * timestamp, so every track keeps its length and sync. */
-+            int bits_max = 6144 * s->channels - 4;
++             * by at least 10%. If that fails to converge, send minimum-syntax
++             * silence to preserve the samples and timestamp. An infeasible
++             * strict rate may be below even that syntax overhead. */
++            int bits_max = 6144 * s->channels;
 +            float scale = 0.9f;
 +            enum AACNMRFrameAction action;
-+            frame_bits = put_bits_count(&s->pb);
-+            if (nmr_silent)
-+                break;
-+            if (!(avctx->flags & AV_CODEC_FLAG_QSCALE) && avctx->bit_rate_tolerance == 0)
++            /* Include TYPE_END and the byte padding written below. */
++            frame_bits = FFALIGN(put_bits_count(&s->pb) + 3, 8);
++            if (nmr_strict)
 +                bits_max = FFMIN(bits_max, (int)(avctx->bit_rate * 1024 / avctx->sample_rate));
++            if (nmr_oversized_bits) {
++                const unsigned event = ++s->nmr->silent_frames;
++                if (!(event & (event - 1)))
++                    av_log(avctx, AV_LOG_ERROR,
++                           "AAC NMR emitted a silent frame: bits=%d->%d bound=%d passes=%d "
++                           "frame=%lld silent_frames=%u\n",
++                           nmr_oversized_bits, frame_bits, bits_max, nmr_passes,
++                           (long long)avctx->frame_num, event);
++                break;
++            }
 +            action = ff_aac_nmr_frame_action(frame_bits, bits_max, ++nmr_passes, &scale);
 +            if (action == AAC_NMR_FRAME_ACCEPT)
 +                break;
@@ -421,21 +443,15 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 +                its++;
 +                continue;
 +            }
-+            nmr_silent = 1;
++            nmr_oversized_bits = frame_bits;
 +            memset(s->nmr->counted, 0, sizeof(s->nmr->counted)); /* no side estimate */
-+            if (!(++s->nmr->silent_frames & (s->nmr->silent_frames - 1)))
-+                av_log(avctx, AV_LOG_ERROR,
-+                       "AAC NMR emitted a silent frame: bits=%d bound=%d passes=%d "
-+                       "frame=%lld silent_frames=%u\n",
-+                       frame_bits, bits_max, nmr_passes, (long long)avctx->frame_num,
-+                       s->nmr->silent_frames);
 +            continue;
 +        }
 +
          if (avctx->flags & AV_CODEC_FLAG_QSCALE) {
              /* When using a constant Q-scale, don't mess with lambda, unless
               * the frame does not fit the decoder buffer: retry coarser (the
-@@ -1588,13 +1663,6 @@
+@@ -1588,13 +1670,6 @@
          }
 
          frame_bits = put_bits_count(&s->pb);
@@ -449,7 +465,7 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 
          /* rate control stuff
           * allow between the nominal bitrate, and what psy's bit reservoir says to target
-@@ -1662,7 +1730,7 @@
+@@ -1662,7 +1737,7 @@
              break;
          }
      } while (1);
