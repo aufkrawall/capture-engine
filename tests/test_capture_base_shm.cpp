@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <dxgiformat.h>
 #include <atomic>
 #include <cstdint>
 
@@ -221,6 +222,29 @@ TEST(CaptureBaseShmTest, LateEncoderTextureAdoptionPublishesTheProducerFence) {
     EXPECT_TRUE(snapshot.consistent);
     EXPECT_EQ(snapshot.fenceHandle, 0x2210u);
     EXPECT_EQ(shm.GetFenceShareHandle(), 0x2200u);
+}
+
+TEST(CaptureBaseShmTest, LateStaleEncoderTextureOfferIsWithdrawnBeforeAdoption) {
+    SharedMemoryLayout shm{};
+    InitShm(shm);
+    constexpr uint32_t format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    shm.encoderTextures.SetWidth(1280);
+    shm.encoderTextures.SetHeight(720);
+    shm.encoderTextures.SetFormat(format);
+    shm.encoderTextures.kmtReady.store(true);
+
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format), ce::EncoderKmtOffer::Withdrawn);
+    EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
+    EXPECT_FALSE(shm.useEncoderTextures.load());
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format), ce::EncoderKmtOffer::Pending);
+
+    shm.encoderTextures.SetWidth(1920);
+    shm.encoderTextures.SetHeight(1080);
+    shm.encoderTextures.kmtReady.store(true);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format), ce::EncoderKmtOffer::Matches);
+    EXPECT_TRUE(shm.encoderTextures.kmtReady.load());
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, true), ce::EncoderKmtOffer::Withdrawn);
+    EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
 }
 
 TEST(CaptureBaseShmTest, FencePublishFollowsEncoderTextureAdoption) {

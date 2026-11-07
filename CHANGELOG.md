@@ -33,7 +33,7 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Strict AAC packet sizes:** the encoder counts the end marker and byte padding against the per-frame bitrate limit. If a frame needs the silence fallback, the packet uses only the required AAC syntax and preserves the original sample count and timestamp.
 
-- **Zero-copy capture after a DXVK resize:** the Vulkan layer requests replacement textures once the outgoing swapchain's reads and copies finish. Media reuses the export only when its dimensions, format and adapter match, and opening a slot on the encoder device no longer holds up export replacement.
+- **Zero-copy capture after a DXVK resize:** the Vulkan layer requests replacement textures once the outgoing swapchain's reads and copies finish. It also rejects an offer for the old size if allocation finishes after the resize. Media reuses the export only when its dimensions, format and adapter match, and opening a slot on the encoder device no longer holds up export replacement.
 
 - **Recording stop blocked by an active codec call:** detaching the finishing recording now snapshots and switches its shared-state route under a short publication barrier, independently of codec locks. Late encoder updates stay private and cannot overwrite the next recording's state. Capture threads also read encoder timings without the codec lock, so a stalled codec call no longer keeps an injected-capture recording from acknowledging its stop. Creating and releasing the textures that Vulkan/DXVK games render into for zero-copy capture no longer waits for the encoder either: they now have their own device and locks, and the encoder reads them without a copy. Diagnostic logs retain exceptional AAC repair events.
 

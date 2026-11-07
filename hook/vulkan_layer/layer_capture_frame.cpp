@@ -171,14 +171,12 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         mem->SetWidth(extent.width);
         mem->SetHeight(extent.height);
         mem->SetFormat(ourDxgiFormat);
-        if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
-            (adapterChanged || mem->encoderTextures.GetWidth() != extent.width ||
-             mem->encoderTextures.GetHeight() != extent.height || mem->encoderTextures.GetFormat() != ourDxgiFormat)) {
+        const auto offer = ce::ValidateEncoderKmtOffer(*mem, extent.width, extent.height, ourDxgiFormat,
+                                                       adapterChanged);
+        if (offer == ce::EncoderKmtOffer::Withdrawn) {
             LayerLog("Vulkan Layer: Requesting encoder KMT textures for %ux%u format=%u adapter=%08x:%08x",
                      extent.width, extent.height, ourDxgiFormat, static_cast<unsigned>(luid.HighPart),
                      static_cast<unsigned>(luid.LowPart));
-            mem->useEncoderTextures.store(false, std::memory_order_release);
-            mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
         }
 
         LayerLog(
@@ -189,7 +187,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // Never block swapchain creation waiting for the media process. The
         // capture hot path already retries encoder KMT adoption once media has
         // published the textures, so an immediate interop fallback is lossless.
-        if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+        if (offer == ce::EncoderKmtOffer::Matches) {
             SharedTextureEntry encoderEntry;
             HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
             if (ImportEncoderKmtTextures(device, disp, luidKey, extent.width, extent.height,

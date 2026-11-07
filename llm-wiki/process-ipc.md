@@ -230,8 +230,12 @@ devices sit on one adapter. The encoder therefore never preserves its device acr
 released by the host call, the screen-grab switch, or silently with the pipeline.
 An identical request keeps the set and republishes a withdrawn handshake. A change in
 size, format or LUID retires the old set and its publication first. The Vulkan layer
-requests a replacement after old swapchain leases and GPU copies drain. A detached
-route keeps late exports private. Failures leave no partial publication and are
+requests a replacement after old swapchain leases and GPU copies drain.
+`ValidateEncoderKmtOffer` also withdraws a mismatched offer before asynchronous
+adoption drains any relay leases. This covers an allocation for the old geometry
+that finishes after the swapchain changes. `CaptureBaseShmTest` covers withdrawal
+and acceptance of the replacement. A detached route keeps late exports private.
+Failures leave no partial publication and are
 metered (`[EncoderTextures] Export failed at <stage>`).
 Covered by `EncoderTextureExportTest` (WARP publication, re-request, resize, format and
 adapter change, retired view lifetime, release, producer-to-encoder shared fence and

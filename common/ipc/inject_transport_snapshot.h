@@ -46,6 +46,25 @@ inline bool PublishInjectFenceHandle(SharedMemoryLayout& sharedMem, uint64_t fen
     return encoderTextureSlot;
 }
 
+enum class EncoderKmtOffer { Pending, Matches, Withdrawn };
+
+// Validate an advertised KMT set before attempting to import it. The producer
+// may call this after draining the old transport or while using its own textures.
+// An allocation for the previous swapchain can finish after the producer
+// publishes the new geometry. Withdraw that offer so media retries.
+inline EncoderKmtOffer ValidateEncoderKmtOffer(SharedMemoryLayout& sharedMem, uint32_t width, uint32_t height,
+                                               uint32_t format, bool adapterChanged = false) {
+    auto& offer = sharedMem.encoderTextures;
+    if (!offer.kmtReady.load(std::memory_order_acquire))
+        return EncoderKmtOffer::Pending;
+    if (!adapterChanged && offer.GetWidth() == width && offer.GetHeight() == height && offer.GetFormat() == format)
+        return EncoderKmtOffer::Matches;
+
+    sharedMem.useEncoderTextures.store(false, std::memory_order_release);
+    offer.kmtReady.store(false, std::memory_order_release);
+    return EncoderKmtOffer::Withdrawn;
+}
+
 // Switches media to the encoder textures a producer has just adopted. Until
 // then the encoder-texture fence slot holds the handle media stored for itself:
 // a handle value in media's own process that no producer signals. Publish the

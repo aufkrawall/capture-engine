@@ -86,10 +86,18 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 
     auto* mem = g_IPCClient.GetSharedMem();
     const bool allowDxvkEncoderTextures = (state.interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
-    const bool encoderAdoptionRequested = allowDxvkEncoderTextures && mem &&
-                                          !mem->useEncoderTextures.load(std::memory_order_acquire) &&
-                                          mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
-                                          state.captureFrameCounter >= state.nextEncoderImportRetryFrame;
+    bool encoderAdoptionRequested = false;
+    if (allowDxvkEncoderTextures && mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
+        mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
+        state.captureFrameCounter >= state.nextEncoderImportRetryFrame) {
+        const uint32_t format = VkFormatToDXGI(static_cast<VkFormat>(state.captureFormat));
+        const auto offer = ce::ValidateEncoderKmtOffer(*mem, state.captureWidth, state.captureHeight, format);
+        encoderAdoptionRequested = offer == ce::EncoderKmtOffer::Matches;
+        if (offer == ce::EncoderKmtOffer::Withdrawn) {
+            LayerLog("Vulkan Layer: Withdrew stale encoder KMT offer; requesting %ux%u format=%u",
+                     state.captureWidth, state.captureHeight, format);
+        }
+    }
     if (encoderAdoptionRequested && mem->frameRing.readIndex.load(std::memory_order_acquire) !=
                                         mem->frameRing.writeIndex.load(std::memory_order_acquire)) {
         // Handles/fence are generation-global in shared memory. Stop producing
@@ -246,7 +254,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
         return false;
     }
     VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
-                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
     const VkResult beginResult = disp->fp_vkBeginCommandBuffer(cmd, &beginInfo);
     if (beginResult != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Capture command-buffer begin failed (index=%u family=%u result=%d)", cmdIndex,
@@ -257,7 +265,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     const uint32_t externalQueueFamily = VK_QUEUE_FAMILY_EXTERNAL;
 
     // Transition and copy
-    VkImageMemoryBarrier srcBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    VkImageMemoryBarrier srcBarrier{};
+    srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     srcBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;  // Paranoid: Wait for everything
     srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     srcBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;  // Assume presentable layout from game
@@ -267,7 +276,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     srcBarrier.image = srcImage;
     srcBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    VkImageMemoryBarrier dstBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    VkImageMemoryBarrier dstBarrier{};
+    dstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     dstBarrier.srcAccessMask = 0;
     dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     dstBarrier.oldLayout =
@@ -294,7 +304,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     disp->fp_vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sharedTextures->vkImages[slotIndex],
                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    VkImageMemoryBarrier srcBarrier2 = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    VkImageMemoryBarrier srcBarrier2{};
+    srcBarrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     srcBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     srcBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     srcBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -304,7 +315,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     srcBarrier2.image = srcImage;
     srcBarrier2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    VkImageMemoryBarrier dstBarrier2 = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    VkImageMemoryBarrier dstBarrier2{};
+    dstBarrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     dstBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     dstBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     dstBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -322,7 +334,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     if (disp->fp_vkEndCommandBuffer(cmd) != VK_SUCCESS)
         return false;
 
-    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr};
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
     // We signal TWO semaphores:
     // 1. The binary semaphore for Present to wait on (passed as arg)
@@ -389,7 +402,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     }
 
     // Prepare Timeline Info
-    VkTimelineSemaphoreSubmitInfo timelineSubmit = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+    VkTimelineSemaphoreSubmitInfo timelineSubmit{};
+    timelineSubmit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
     timelineSubmit.waitSemaphoreValueCount = waitCount;
     timelineSubmit.pWaitSemaphoreValues = waitValues;
     timelineSubmit.signalSemaphoreValueCount = signalCount;
@@ -558,7 +572,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
 
     // Create staging buffer
-    VkBufferCreateInfo bufInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    VkBufferCreateInfo bufInfo{};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufInfo.size = bufferSize;
     bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
@@ -585,7 +600,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         return false;
     }
 
-    VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReqs.size;
     allocInfo.memoryTypeIndex = memTypeIndex;
 
@@ -601,7 +617,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     }
 
     // Create command pool
-    VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = queueFamilyIndex;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
@@ -613,7 +630,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     }
 
     // Allocate command buffer
-    VkCommandBufferAllocateInfo cmdAllocInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmdAllocInfo.commandPool = cmdPool;
     cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmdAllocInfo.commandBufferCount = 1;
@@ -627,7 +645,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     }
 
     // Record commands
-    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (disp->fp_vkBeginCommandBuffer(cmdBuf, &beginInfo) != VK_SUCCESS) {
         disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
@@ -638,7 +657,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     }
 
     // Transition image: PRESENT_SRC_KHR -> TRANSFER_SRC_OPTIMAL
-    VkImageMemoryBarrier imgBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    VkImageMemoryBarrier imgBarrier{};
+    imgBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     imgBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     imgBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     imgBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -672,7 +692,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     }
 
     // Create fence and submit
-    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
     if (disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
         disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
@@ -682,7 +703,8 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         return false;
     }
 
-    VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmdBuf;
     std::vector<VkPipelineStageFlags> waitStages;
