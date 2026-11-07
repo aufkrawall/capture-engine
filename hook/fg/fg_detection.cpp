@@ -144,6 +144,8 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
     bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (!active) {
         ClearDLSSFGMultiplier();
+    } else {
+        PublishDLSSFGSharedState();
     }
     if (wasActive != active) {
         // A new activation proves idleness afresh (IsDLSSGGenerationIdle).
@@ -175,6 +177,15 @@ void FGCompatibility::NoteDLSSFGRuntimeMultiplier(int multiplier) {
 
 void FGCompatibility::ClearDLSSFGMultiplier() {
     dlssFGMultiplierState.store(0, std::memory_order_release);
+    PublishDLSSFGSharedState();
+}
+
+void FGCompatibility::PublishDLSSFGSharedState() {
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        auto& state = g_IPC->GetSharedMem()->dlssState;
+        state.PublishFGState(GetCurrentProcessId(), dlssFGApiActive.load(std::memory_order_acquire),
+                             GetDLSSFGMultiplier());
+    }
 }
 
 void FGCompatibility::UpdateDLSSFGMultiplier(int multiplier, bool runtimeObservation) {
@@ -198,6 +209,7 @@ void FGCompatibility::UpdateDLSSFGMultiplier(int multiplier, bool runtimeObserva
             break;
         }
     }
+    PublishDLSSFGSharedState();
     const int normalizedMultiplier = static_cast<int>(effective);
     const int previousMultiplier = static_cast<int>(previous >> 8);
     if (previousMultiplier == normalizedMultiplier) {

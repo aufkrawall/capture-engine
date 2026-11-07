@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Unified DLSS FG factor and state publication:** DLSS frame generation state and multiplier updates to shared memory are now managed coherently by `FGCompatibility` rather than unsynchronized call sites across game and presenter threads, and `GetState` option queries no longer roll back an active viewport's higher explicit generation factor.
+
 - **Smooth Motion evidence selection and rate resets:** the interposer status now uses submission evidence only when an attached application submission source is active, avoids double-counting application presents when direct presents arrive, resets measured rates and multiplier on deactivation, and expires obsolete worker-run generation evidence when moving to single-thread presentation.
 
 - **In-game screenshots with FSR frame generation across graphics device views:** no-callback FSR screenshots with overlay inclusion now recognize different interface views of the same graphics device during overlay rendering and renderer caching, preventing failed captures and repeated GPU retry work.

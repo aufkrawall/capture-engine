@@ -380,6 +380,7 @@ private:
     std::atomic<bool> fsrFGAuthoritativeApiOff{false};
     void UpdateDLSSFGMultiplier(int multiplier, bool runtimeObservation);
     void ClearDLSSFGMultiplier();
+    void PublishDLSSFGSharedState();
     // Low byte: last request. High byte: effective factor. One CAS commits both so a poll cannot publish a stale
     // runtime observation after another thread evaluated a new factor, or clear that newer observation in two steps.
     std::atomic<uint32_t> dlssFGMultiplierState{0};

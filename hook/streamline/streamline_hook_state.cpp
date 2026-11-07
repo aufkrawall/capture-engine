@@ -221,27 +221,15 @@ void CacheCapabilityMax(uint32_t viewportKey,  uint32_t capabilityMax) {
 }
 
 
-void ApplyCombinedDLSSFGState(bool active,  int multiplier) {
-
-
+void ApplyCombinedDLSSFGState(bool active, int multiplier) {
     if (active) {
         const int effectiveMultiplier = std::clamp(multiplier, 2, 4);
         g_FGCompat.SetDLSSFGMultiplier(effectiveMultiplier);
         g_FGCompat.SetDLSSFGActive(true);
-
-        if (g_IPC && g_IPC->GetSharedMem()) {
-            g_IPC->GetSharedMem()->dlssState.PublishFGState(
-                GetCurrentProcessId(), true, g_FGCompat.GetDLSSFGMultiplier());
-        }
     } else {
         g_FGCompat.SetDLSSFGActive(false);
         g_FGCompat.SetDLSSFGMultiplier(0);
-
-        if (g_IPC && g_IPC->GetSharedMem()) {
-            g_IPC->GetSharedMem()->dlssState.PublishFGState(GetCurrentProcessId(), false, 0);
-        }
     }
-
 }
 
 
@@ -652,11 +640,19 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
         ce::streamline_runtime_policy::ResolvePublishedDLSSFGMultiplier(
             active, multiplier, configuredMultiplier, capabilityMax);
 
+    const bool sourceWasGetState = source && strcmp(source, "GetState") == 0;
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
         if (active) {
+            int effectivePublished = publishedMultiplier;
+            const auto it = streamline_hook_g_ViewportStates.find(viewportKey);
+            if (sourceWasGetState && it != streamline_hook_g_ViewportStates.end() && it->second.active &&
+                it->second.multiplier > effectivePublished && configuredMultiplier <= 0) {
+                // Do not allow a GetState poll with default multiplier to roll back an explicit higher factor
+                effectivePublished = it->second.multiplier;
+            }
             streamline_hook_g_ViewportStates[viewportKey] = {
-                true, publishedMultiplier, generatedFrames, capabilityMax};
+                true, effectivePublished, generatedFrames, capabilityMax};
         } else if (clearAllViewportStatesForDisable) {
             clearedActiveViewportCount = streamline_hook_g_ViewportStates.size();
             streamline_hook_g_ViewportStates.clear();
