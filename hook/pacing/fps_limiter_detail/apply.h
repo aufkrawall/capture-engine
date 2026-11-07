@@ -464,9 +464,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                         nativeDriverTargetFps);
                 externalNativeLoggedSuccess_ = true;
             }
-            LARGE_INTEGER retQpc;
-            retQpc.QuadPart = ReadClock();
-            lastApplyReturnQpc = retQpc.QuadPart;
+            lastApplyReturnQpc = ReadClock();
             return;
         }
         // Do not leave an older persistent driver interval active while the
@@ -596,9 +594,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                             reflexPostPresentSkipSleep_ ? 1 : 0);
                         reflexPostPresentArmedLogged_ = true;
                     }
-                    LARGE_INTEGER retQpc;
-                    retQpc.QuadPart = ReadClock();
-                    lastApplyReturnQpc = retQpc.QuadPart;
+                    lastApplyReturnQpc = ReadClock();
                     return;
                 }
                 const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
@@ -644,9 +640,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                         cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
                         effectiveTargetFps, ceOwnedSleepOk ? 1 : 0);
                 }
-                LARGE_INTEGER retQpc;
-                retQpc.QuadPart = ReadClock();
-                lastApplyReturnQpc = retQpc.QuadPart;
+                lastApplyReturnQpc = ReadClock();
                 return;
             }
 
