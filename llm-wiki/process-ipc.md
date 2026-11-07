@@ -200,8 +200,16 @@ An early stop before engine creation seeds the private host state directly.
 `RecordingMemoryTest` and `MediaEngineHandleTest` cover old publication completion,
 stale snapshot refresh, late writes, early abort, invalid handles, and detach while
 another thread holds the codec lock, without sleeps or elapsed-time assertions.
-This fixes the observed AAC stop-lock coupling, not cancellation of arbitrary GPU
-or inject ingest work. Root cause and codec repair:
+`MediaEngine_GetLastFrameEncodeTimeUs`/`FenceWaitUs` read instance-owned atomics
+without `apiMutex`: the inject thread samples them every perf interval and the stop
+path joins that thread (unbounded) before detaching, so the old locked getters
+coupled inject-capture stops to any stalled codec call. Covered by
+`MediaEngineHandleTest.CaptureThreadTimingGettersDoNotWaitForTheCodecLock`;
+`RecordingMemoryTest.DetachWaitsForAnInFlightPublicationAndCopiesItsWrite`
+observes the barrier through an injected lock, so it fails deterministically
+without it. Remaining coupling: device-work exports (`CreateSharedCaptureTextures`,
+`ReleaseEncoderTextures`) on the inject/main threads still serialize with codec
+calls; removing that needs a lock split, not a timeout. Root cause and codec repair:
 [multi-audio-capture.md](multi-audio-capture.md#native-aac-nmr-retry-hang-and-repair-2026-11-07).
 
 ## Open Questions / Stale-risk

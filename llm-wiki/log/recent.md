@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-11-07 - AAC repair review follow-up: least-disruptive ladder, silent fallback, lock-free timings
+
+- Review of 105bb6a5..013ec8d2 found: inject-capture stops still joined a thread that
+  samples encode timings under `apiMutex`; the 32-pass `AVERROR_BUG` left the frame in
+  the AAC queue (later PTS one frame early, `frame_num` not advanced); PNS moved out of
+  the side estimate changed ordinary frames; the barrier test could pass without it.
+- Patch 0007 reworked: per-mode caps as each path already solved (CBR reservoir keeps
+  its plain hard cap), PNS back in the side estimate, ladder current-window re-fit ->
+  reopened range -> band removal, feasible-end log bisection up to lambda 1e18, outer
+  NMR loop with >=10% shrink, coefficient restore and a silent legal frame after 32.
+- Timing exports read instance-owned atomics; `MediaEngine_SetLogCallback` re-asserts
+  the libav sink; `BasicRecordingMemory<Barrier>` lets the test observe the barrier.
+- Evidence: 53 focused tests pass. Near-cap 288 kbps mono CBR: 8 metered re-fits, no
+  reopen/removal; unreachable strict bound: decodable all-zero frames. Mutation (repair
+  off, error return) failed all three runtime tests with `AVERROR_BUG`. Residual:
+  texture setup exports still serialize with codec calls (see process-ipc.md).
+
 ### 2026-11-07 - Bounded AAC legality repair and codec-independent recording-state detach
 
 - Session `20261106_223450`, build `0.1.7441`, r0005: encoding stopped near 306.4 s;

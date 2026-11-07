@@ -464,8 +464,6 @@ public:
     bool TakeInjectSourceReadToken(uint64_t* sequence);
     bool FinishInjectSourceReads(uint32_t timeoutMs);
     int mixLogCounter = 0;
-    int64_t GetLastVideoEncodeTimeUs() const;
-    int64_t GetLastFrameFenceWaitUs() const;
     ce::media::MuxFlowSnapshotV1 GetMuxFlowSnapshot() const;
     bool CanRepeatLastFrame();
     void ResetRepeatFrameCache();

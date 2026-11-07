@@ -36,6 +36,12 @@ public:
     // Stable for the handle lifetime, including before Init and during codec work.
     ce::RecordingMemory recordingMemory;
 
+    // Last video encode and fence-wait durations, published by the encoder. Capture
+    // threads sample them without apiMutex: a codec call stalled under that lock must
+    // not block a capture thread that the stop path joins before acknowledging.
+    std::atomic<int64_t> lastVideoEncodeUs{0};
+    std::atomic<int64_t> lastVideoFenceWaitUs{0};
+
     // Serializes engine lifetime/codec operations. Recording-memory retarget is independent.
     std::recursive_mutex apiMutex;
 

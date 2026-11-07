@@ -88,6 +88,32 @@ TEST(MediaEngineHandleTest, SharedStateRetargetDoesNotWaitForTheCodecLock) {
     EXPECT_FALSE(MediaEngine_DetachSharedMem(handle, live.get(), detached.get()));
 }
 
+TEST(MediaEngineHandleTest, CaptureThreadTimingGettersDoNotWaitForTheCodecLock) {
+    const MediaEngineHandle handle = CreatePipeline();
+    {
+        MediaEngineLease lease(handle);
+        ASSERT_TRUE(lease);
+        lease->lastVideoEncodeUs.store(1234);
+        lease->lastVideoFenceWaitUs.store(56);
+        // A codec call stalled under apiMutex must not block the capture thread
+        // that the stop path joins before acknowledging. No timing assumption:
+        // the reader must return while this lock is still held.
+        std::lock_guard codecCall(lease->apiMutex);
+        int64_t encodeUs = 0;
+        int64_t fenceUs = 0;
+        std::thread captureThread([&] {
+            encodeUs = MediaEngine_GetLastFrameEncodeTimeUs(handle);
+            fenceUs = MediaEngine_GetLastFrameFenceWaitUs(handle);
+        });
+        captureThread.join();
+        EXPECT_EQ(encodeUs, 1234);
+        EXPECT_EQ(fenceUs, 56);
+    }
+    MediaEngine_Destroy(handle);
+    EXPECT_EQ(MediaEngine_GetLastFrameEncodeTimeUs(handle), 0);
+    EXPECT_EQ(MediaEngine_GetLastFrameFenceWaitUs(handle), 0);
+}
+
 TEST(MediaEngineHandleTest, MeteredAacRepairDiagnosticsSurviveTheGlobalLibavSampler) {
     LineSink sink;
     const MediaEngineHandle handle = CreatePipeline(LineSink::Append, &sink);

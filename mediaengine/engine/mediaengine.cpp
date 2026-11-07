@@ -393,16 +393,11 @@ MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(MediaEngineHandle e
     return instance.engine->CreateSharedCaptureTextures(width, height, format, sharedMem);
 }
 
+// Lock-free on purpose: the inject and WGC capture threads sample these for their perf
+// lines, and the stop path joins the inject thread before acknowledging the stop.
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs(MediaEngineHandle engine) {
     MediaEngineLease lease(engine);
-    if (!lease)
-        return 0;
-    MediaEngineInstance& instance = *lease;
-    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
-    if (instance.engine) {
-        return instance.engine->GetLastVideoEncodeTimeUs();
-    }
-    return 0;
+    return lease ? lease->lastVideoEncodeUs.load(std::memory_order_relaxed) : 0;
 }
 
 MEDIAENGINE_API void MediaEngine_SetSharedMem(MediaEngineHandle engine, void* pSharedMem, void* pShmem) {
@@ -434,14 +429,7 @@ MEDIAENGINE_API bool MediaEngine_DetachSharedMem(MediaEngineHandle engine, const
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs(MediaEngineHandle engine) {
     MediaEngineLease lease(engine);
-    if (!lease)
-        return 0;
-    MediaEngineInstance& instance = *lease;
-    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
-    if (instance.engine) {
-        return instance.engine->GetLastFrameFenceWaitUs();
-    }
-    return 0;
+    return lease ? lease->lastVideoFenceWaitUs.load(std::memory_order_relaxed) : 0;
 }
 
 MEDIAENGINE_API bool MediaEngine_GetMuxFlowSnapshotV1(MediaEngineHandle engine,

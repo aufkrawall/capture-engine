@@ -54,28 +54,8 @@ void MediaEngine::CommitVideoElapsedUs(ce::media::timing::SourceClock source, ce
 }
 
 
-int64_t MediaEngine::GetLastVideoEncodeTimeUs() const {
-
-
-        if (videoEnc)
-            return videoEnc->GetLastFrameEncodeTimeUs();
-        return 0;
-
-}
-
-
 ce::media::MuxFlowSnapshotV1 MediaEngine::GetMuxFlowSnapshot() const {
     return videoEnc ? videoEnc->GetMuxFlowSnapshot() : ce::media::MuxFlowSnapshotV1{};
-}
-
-
-int64_t MediaEngine::GetLastFrameFenceWaitUs() const {
-
-
-        if (videoEnc)
-            return videoEnc->GetLastFrameFenceWaitUs();
-        return 0;
-
 }
 
 

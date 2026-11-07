@@ -194,7 +194,8 @@ VideoEncoder::VideoEncoder(MediaEngineInstance& owner)
       height(0),
       cachedSourcePid(0),
       pSharedMem(owner.recordingMemory),
-      lastEncodeTimeUs(0),
+      lastEncodeTimeUs(owner.lastVideoEncodeUs),
+      lastFenceWaitUs(owner.lastVideoFenceWaitUs),
       fenceEvent(nullptr),
       videoDevice(nullptr),
       videoContext(nullptr),
@@ -221,6 +222,9 @@ VideoEncoder::~VideoEncoder() {
     } catch (...) {
         DLL_Log("[VideoEncoder] Suppressed exception during destruction");
     }
+    // The instance outlives this encoder; no encoder means no last frame.
+    lastEncodeTimeUs.store(0, std::memory_order_relaxed);
+    lastFenceWaitUs.store(0, std::memory_order_relaxed);
 }
 
 int64_t VideoEncoder::GetExpectedFinalDurationUs() const {

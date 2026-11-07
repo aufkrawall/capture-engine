@@ -484,8 +484,9 @@ private:
     // Frame counting and logging state (was static, now members for proper reset)
     int encodeFrameCounter = 0;         // Frames encoded in current recording
     int64_t lastAssignedVideoPts = -1;  // Last input frame PTS assigned to encoder
-    int64_t lastEncodeTimeUs = 0;       // Duration of last frame encoding (pure encode time)
-    int64_t lastFenceWaitUs = 0;        // Duration of last fence wait
+    // Instance-owned so capture threads read them without the codec lock.
+    std::atomic<int64_t>& lastEncodeTimeUs;  // Duration of last frame encoding (pure encode time)
+    std::atomic<int64_t>& lastFenceWaitUs;   // Duration of last fence wait
     std::unordered_map<int64_t, int64_t> encoderSubmitQpcByPts;
     uint64_t encoderSendAccumUs = 0;
     uint64_t encoderSendCalls = 0;
