@@ -235,9 +235,15 @@ requests a replacement after old swapchain leases and GPU copies drain.
 `ValidateEncoderKmtOffer` also withdraws a mismatched offer before asynchronous
 adoption drains any relay leases. The offer carries the allocation's own LUID.
 The Vulkan producer owns the fence and commits a compatible pool after its timeline
-is ready. Failed imports leave the layer-owned route running until the next request
-from a swapchain or host transition. `CaptureBaseShmTest` covers withdrawal
-and acceptance of the replacement. A detached route keeps late exports private.
+is ready. A failed import withdraws the offer and keeps the layer-owned route running; the
+request flag stays up so media republishes the kept set and `CaptureFrame` looks again after
+`kEncoderKmtImportRetryFrames` (60) capture frames, at most `kEncoderKmtImportAttempts` (4)
+failures per swapchain (`ce::EncoderKmtImportRetry`, `inject_transport_snapshot.h`). The last
+failure clears the flag, so media stops advertising; a new swapchain or the host republish
+(`RepublishCaptureTransportForHost`) resets the budget. Until 2026-11-07 the failure branch cleared
+the flag at once, which made its own 60-frame retry unreachable (the flag was no longer
+re-asserted per frame). `CaptureBaseShmTest` covers withdrawal
+and acceptance of the replacement and the bounded retry policy. A detached route keeps late exports private.
 Failures leave no partial publication and are
 metered (`[EncoderTextures] Export failed at <stage>`).
 Covered by `EncoderTextureExportTest` (WARP publication, re-request, resize, format and

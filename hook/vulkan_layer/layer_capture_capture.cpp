@@ -89,7 +89,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     bool encoderAdoptionRequested = false;
     if (allowDxvkEncoderTextures && mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
         mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
-        state.captureFrameCounter >= state.nextEncoderImportRetryFrame) {
+        state.encoderImport.Due(state.captureFrameCounter)) {
         const uint32_t format = VkFormatToDXGI(static_cast<VkFormat>(state.captureFormat));
         const auto offer = ce::ValidateEncoderKmtOffer(*mem, state.captureWidth, state.captureHeight, format,
                                                        state.luidKey);
@@ -120,7 +120,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                 std::unique_lock<std::mutex> texLock(layer_capture_g_InteropMutex, std::try_to_lock);
                 if (!texLock.owns_lock()) {
                     DestroySharedTextureEntryResources(encoderEntry, disp);
-                    state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
+                    state.encoderImport.Defer(state.captureFrameCounter);
                     return false;
                 }
                 if (!mem->encoderTextures.kmtReady.load(std::memory_order_acquire) ||
@@ -149,10 +149,16 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                     state.ipcFenceHandle, static_cast<unsigned long long>(adoptionCount));
             }
         } else {
-            state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
-            mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
+            // Withdrawing the offer makes media republish the kept set, so a later attempt finds it again. The
+            // request stays up for the bounded retries; only the last failure stops asking.
+            const bool giveUp = state.encoderImport.NoteFailure(state.captureFrameCounter) ==
+                                ce::EncoderKmtImportFailure::GiveUp;
+            if (giveUp)
+                mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
             mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
-            LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer");
+            LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer (failure %u/%u, %s)",
+                     state.encoderImport.failures, ce::kEncoderKmtImportAttempts,
+                     giveUp ? "giving up, using interop copy" : "retrying");
         }
     }
 

@@ -169,6 +169,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // For DXVK, we'll try encoder-created KMT textures first (imported into Vulkan)
     SharedTextureEntry* sharedTextures = nullptr;
     SharedTextureEntry encoderEntry;
+    ce::EncoderKmtImportRetry encoderImport;
     HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
     auto cleanupCandidate = ce::make_scope_guard([&] {
         if (!encoderEntry.vkImages.empty())
@@ -217,9 +218,15 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                                          NormalizeVkFormat((VkFormat)format), mem, &encoderEntry, kmtHandles)) {
                 sharedTextures = &encoderEntry;
             } else {
-                mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
+                // The capture hot path retries (bounded) once media republishes the withdrawn offer.
+                const bool giveUp = encoderImport.NoteFailure(0) == ce::EncoderKmtImportFailure::GiveUp;
+                if (giveUp)
+                    mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested, false);
                 mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
-                LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer and falling back to interop");
+                LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer and falling back "
+                         "to interop (failure %u/%u, %s)",
+                         encoderImport.failures, ce::kEncoderKmtImportAttempts,
+                         giveUp ? "giving up" : "retrying");
             }
         }
     }
@@ -243,6 +250,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     VulkanCaptureState state = {};
+    state.encoderImport = encoderImport;
     state.device = device;
     state.swapchain = swapchain;
     state.luidKey = luidKey;
@@ -548,6 +556,7 @@ ce::vulkan_capture_transport::HostRepublish RepublishCaptureTransportForHost(VkD
     // just like a game-owned generation.
     SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
     sharedMemory->useEncoderTextures.store(false, std::memory_order_release);
+    state->encoderImport = {};  // a new host recording gets a fresh import budget
     sharedMemory->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagEncoderKmtRequested,
                                                state->interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
     const bool relayFence =

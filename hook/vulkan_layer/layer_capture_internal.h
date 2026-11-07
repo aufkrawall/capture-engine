@@ -28,6 +28,8 @@ struct VulkanCaptureState;
 
 #include "common/platform/secure_dll_loading.h"
 
+#include "common/ipc/inject_transport_snapshot.h"
+
 #include "common/ipc/shared_defs.h"
 
 #include "hook/runtime/hook_common.h"
@@ -179,7 +181,7 @@ struct VulkanCaptureState {
     ID3D11Fence* d3d11IpcFence = nullptr;
     HANDLE ipcFenceHandle = nullptr;
 
-    uint64_t nextEncoderImportRetryFrame = 0;
+    ce::EncoderKmtImportRetry encoderImport;
     VulkanCaptureInteropMode interopMode = VulkanCaptureInteropMode::kNative;
 };
 

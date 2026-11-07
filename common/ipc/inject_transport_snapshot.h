@@ -66,6 +66,30 @@ inline EncoderKmtOffer ValidateEncoderKmtOffer(SharedMemoryLayout& sharedMem, ui
     return EncoderKmtOffer::Withdrawn;
 }
 
+// A producer that asks media for encoder textures imports them once they are advertised. An import can fail for a
+// moment (the allocation is still being published, a device is busy), so a failure withdraws the offer and asks
+// again a little later; media republishes the kept set on the next pass. It is bounded: after
+// kEncoderKmtImportAttempts failures in a row the producer stops asking, uses its own copy route for this swapchain
+// and media stops advertising. A new swapchain or recording starts a fresh budget.
+inline constexpr uint32_t kEncoderKmtImportAttempts = 4;
+inline constexpr uint64_t kEncoderKmtImportRetryFrames = 60;
+
+enum class EncoderKmtImportFailure { Retry, GiveUp };
+
+struct EncoderKmtImportRetry {
+    uint32_t failures = 0;
+    uint64_t nextFrame = 0;
+
+    bool Due(uint64_t frame) const { return frame >= nextFrame; }
+    // Contention that is not an import failure: look again later without spending an attempt.
+    void Defer(uint64_t frame) { nextFrame = frame + kEncoderKmtImportRetryFrames; }
+    EncoderKmtImportFailure NoteFailure(uint64_t frame) {
+        ++failures;
+        Defer(frame);
+        return failures < kEncoderKmtImportAttempts ? EncoderKmtImportFailure::Retry : EncoderKmtImportFailure::GiveUp;
+    }
+};
+
 // Switches media to the encoder textures a producer has just adopted. Publish
 // the producer's fence before the flag, so every frame finds its timeline.
 // The caller begins the transport generation first.

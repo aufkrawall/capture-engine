@@ -250,6 +250,43 @@ TEST(CaptureBaseShmTest, LateStaleEncoderTextureOfferIsWithdrawnBeforeAdoption) 
     EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, adapterKey), ce::EncoderKmtOffer::Matches);
 }
 
+// A failed encoder-texture import must come back (media republishes the withdrawn offer, the producer looks again a
+// second later) instead of falling back for the rest of the swapchain, and it must stop after a bounded number of
+// failures so a permanent import error cannot republish and log forever.
+TEST(CaptureBaseShmTest, EncoderTextureImportRetriesAreSpacedByFramesAndBounded) {
+    ce::EncoderKmtImportRetry retry;
+    EXPECT_TRUE(retry.Due(0));
+    for (uint32_t attempt = 1; attempt < ce::kEncoderKmtImportAttempts; ++attempt) {
+        const uint64_t frame = 100u * attempt;
+        EXPECT_EQ(retry.NoteFailure(frame), ce::EncoderKmtImportFailure::Retry);
+        EXPECT_EQ(retry.failures, attempt);
+        EXPECT_FALSE(retry.Due(frame + ce::kEncoderKmtImportRetryFrames - 1));
+        EXPECT_TRUE(retry.Due(frame + ce::kEncoderKmtImportRetryFrames));
+    }
+    EXPECT_EQ(retry.NoteFailure(1000), ce::EncoderKmtImportFailure::GiveUp);
+    EXPECT_EQ(retry.failures, ce::kEncoderKmtImportAttempts);
+}
+
+TEST(CaptureBaseShmTest, DeferredEncoderTextureImportDoesNotSpendAnAttempt) {
+    ce::EncoderKmtImportRetry retry;
+    for (uint64_t frame = 0; frame < 200; ++frame)
+        retry.Defer(frame);
+    EXPECT_EQ(retry.failures, 0u);
+    EXPECT_FALSE(retry.Due(199 + ce::kEncoderKmtImportRetryFrames - 1));
+    EXPECT_TRUE(retry.Due(199 + ce::kEncoderKmtImportRetryFrames));
+    EXPECT_EQ(retry.NoteFailure(300), ce::EncoderKmtImportFailure::Retry);
+}
+
+TEST(CaptureBaseShmTest, NewHostRecordingGetsAFreshEncoderTextureImportBudget) {
+    ce::EncoderKmtImportRetry retry;
+    for (uint32_t i = 0; i < ce::kEncoderKmtImportAttempts; ++i)
+        retry.NoteFailure(i);
+    ASSERT_EQ(retry.failures, ce::kEncoderKmtImportAttempts);
+    retry = {};
+    EXPECT_TRUE(retry.Due(0));
+    EXPECT_EQ(retry.NoteFailure(0), ce::EncoderKmtImportFailure::Retry);
+}
+
 TEST(CaptureBaseShmTest, SharedPixelGeometryBelongsToTheLeasedSlot) {
     ShmemBuffer pixels;
     pixels.max_width = 64;
