@@ -215,7 +215,7 @@ TEST(FlowScreenshot, AQueueReachedThroughADeviceViewBuildsTheReadbackFromThatVie
     ExpectNoDebugLayerErrors();
 }
 
-TEST(FlowScreenshot, NoCallbackFSRServesTheRequest) {
+void NoCallbackFSRScreenshot(bool queueDeviceView) {
     FlowGame game(CurrentTestName());
     GameOptions options;
     options.swapchain = SwapchainKind::kFidelityFX;
@@ -224,9 +224,23 @@ TEST(FlowScreenshot, NoCallbackFSRServesTheRequest) {
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(80)) << game.Error();
-    ExpectACapturedFrame(TakeScreenshot(game, 1), 1, game);
+    SetOverlayInScreenshots(game, true);
+    ScreenshotResult result;
+    if (queueDeviceView) {
+        const auto queue = game.RetainGameQueue();
+        ComPtr<ID3D12Device> device;
+        ASSERT_EQ(queue->GetDevice(IID_PPV_ARGS(&device)), S_OK);
+        DeviceViewAnswers view(queue.Get(), device.Get());
+        result = TakeScreenshot(game, 1);
+    } else {
+        result = TakeScreenshot(game, 1);
+    }
+    ExpectACapturedFrame(result, 1, game);
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
 }
+
+TEST(FlowScreenshot, NoCallbackFSRServesTheRequest) { NoCallbackFSRScreenshot(false); }
+TEST(FlowScreenshot, NoCallbackFSRServesTheRequestThroughAQueueDeviceView) { NoCallbackFSRScreenshot(true); }
 
 }  // namespace

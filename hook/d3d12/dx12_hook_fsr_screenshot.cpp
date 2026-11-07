@@ -451,12 +451,6 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
         LogCaptureFailure("composite close", requestId, E_FAIL);
         return CaptureOutcome::kFailed;
     }
-    if (!SubmitNativeFSROwnerQueueOverlayCommandList(queue.Get(), list.Get())) {
-        LogCaptureFailure("composite submit", requestId, E_FAIL);
-        return CaptureOutcome::kFailed;
-    }
-    submitted = true;
-
     if (includeOverlay) {
         ce::dx12_ffx_suspend_overlay::RenderRequest overlay{};
         overlay.proxySwapChain = proxy;
@@ -467,16 +461,24 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
         overlay.renderOverlay = true;
         overlay.applyPostProcess = false;
         overlay.routeName = "fsr-screenshot";
-        overlay.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
+        overlay.precedingCommandList = list.Get();
+        overlay.submitPreparedCommandLists = &SubmitNativeFSROwnerQueueOverlayCommandLists;
         overlay.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
         overlay.hdr = hdr;
         overlay.reservedSlot = true;
-        if (!ce::dx12_ffx_suspend_overlay::Render(overlay)) {
-            // The reserved slot is still owned by a previous capture, or the renderer refused this one. Nothing waits
-            // here: the composite already submitted is retired above and the request stays pending for a later Present.
+        const auto outcome = ce::dx12_ffx_suspend_overlay::RenderWithOutcome(overlay);
+        if (outcome == ce::dx12_ffx_suspend_overlay::RenderOutcome::kBusy) {
             return CaptureOutcome::kRetryLater;
         }
+        if (outcome == ce::dx12_ffx_suspend_overlay::RenderOutcome::kFailed) {
+            LogCaptureFailure("overlay composite submit", requestId, E_FAIL);
+            return CaptureOutcome::kFailed;
+        }
+    } else if (!SubmitNativeFSROwnerQueueOverlayCommandList(queue.Get(), list.Get())) {
+        LogCaptureFailure("composite submit", requestId, E_FAIL);
+        return CaptureOutcome::kFailed;
     }
+    submitted = true;
 
     const auto encoding = DXGIShared::ResolveSwapChainPresentationEncoding(proxy, backBufferDesc.Format);
     const bool queued = SaveDX12TextureAsScreenshotRaw(device.Get(), queue.Get(), target.Get(), shm, requestId,

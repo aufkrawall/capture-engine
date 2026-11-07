@@ -33,6 +33,9 @@ struct RenderRequest {
     // Both prepared lists still join the same existing runtime ECL batch.
     SubmitPreparedCommandListsCallback submitPreparedCommandLists = nullptr;
     bool separatePostProcess = false;
+    // For a screenshot, submit the already recorded composite only after the
+    // reserved overlay slot has been acquired and its list is ready.
+    ID3D12CommandList* precedingCommandList = nullptr;
     // Record a GPU completion marker at the tail of the overlay command list instead of adding a queue Signal.
     // The no-callback route appends that list to an existing foreign ECL batch; the app-callback topmost route
     // submits it normally below the foreign Present chain. Both share this renderer so callback routing cannot
@@ -54,6 +57,8 @@ struct RenderRequest {
 // target-compatible owner queue (the exact FFX queue or a validated real queue beneath its Streamline wrapper),
 // so queue order provides the handoff into Present without a CPU wait or foreign-queue access.
 bool Render(const RenderRequest& request);
+enum class RenderOutcome { kRendered, kBusy, kFailed };
+RenderOutcome RenderWithOutcome(const RenderRequest& request);
 
 // Latches true after at least one inline-marker submission for this swapchain key reaches its command-list tail
 // on the GPU. Later in-flight outputs do not erase that route proof; their allocator/upload slots are guarded

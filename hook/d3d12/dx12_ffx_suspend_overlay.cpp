@@ -4,7 +4,6 @@ namespace ce::dx12_ffx_suspend_overlay {
 namespace {
 using detail::RendererState;
 using detail::ResolveRtvFormat;
-using detail::SameComObject;
 using detail::ComPtr;
 
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
@@ -45,15 +44,19 @@ void RetireState(std::unique_ptr<RendererState>& state, const char* reason) {
 }  // namespace
 
 bool Render(const RenderRequest& request) {
+    return RenderWithOutcome(request) == RenderOutcome::kRendered;
+}
+
+RenderOutcome RenderWithOutcome(const RenderRequest& request) {
     if (g_ShuttingDown.load(std::memory_order_acquire) || !request.proxySwapChain || !request.presentationQueue ||
         (!request.submitCommandList && !request.submitPreparedCommandLists) ||
         (!request.inlineCompletionMarker && !request.signalFence)) {
-        return false;
+        return RenderOutcome::kFailed;
     }
 
     IDXGISwapChain3* swapChain3Raw = nullptr;
     if (FAILED(request.proxySwapChain->QueryInterface(IID_PPV_ARGS(&swapChain3Raw))) || !swapChain3Raw) {
-        return false;
+        return RenderOutcome::kFailed;
     }
     ComPtr<IDXGISwapChain3> swapChain3;
     swapChain3.Attach(swapChain3Raw);
@@ -72,22 +75,30 @@ bool Render(const RenderRequest& request) {
             HookLogImportant("DX12: FSR-suspend owner-queue overlay GetBuffer(%u) failed hr=0x%08X log=%d",
                              backBufferIndex, static_cast<unsigned>(bufferHr), logCount + 1);
         }
-        return false;
+        return RenderOutcome::kFailed;
     }
 
     const D3D12_RESOURCE_DESC desc = targetResource->GetDesc();
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0 ||
         desc.SampleDesc.Count != 1 || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) {
-        return false;
+        return RenderOutcome::kFailed;
     }
     const DXGI_FORMAT rtvFormat = ResolveRtvFormat(desc.Format);
 
     ComPtr<ID3D12Device> backBufferDevice;
     ComPtr<ID3D12Device> queueDevice;
+    std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+    if (g_ShuttingDown.load(std::memory_order_acquire)) {
+        return RenderOutcome::kFailed;
+    }
+    PruneRetiredStates();
+    auto& states = request.inlineCompletionMarker ? g_InlineProxyStates : g_ProxyStates;
+    auto& state = states[request.proxySwapChain];
     if (FAILED(targetResource->GetDevice(IID_PPV_ARGS(&backBufferDevice))) || !backBufferDevice ||
         FAILED(request.presentationQueue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !queueDevice ||
-        !(SameComObject(backBufferDevice.Get(), queueDevice.Get()) ||
-          ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(backBufferDevice.Get(), queueDevice.Get())))) {
+        (!(state && state->HasValidatedQueueDevice(backBufferDevice.Get(), queueDevice.Get())) &&
+         !ce::dx12_device_identity::IsOneDevice(
+             ce::dx12_device_identity::Compare(backBufferDevice.Get(), queueDevice.Get())))) {
         static std::atomic<int> s_deviceMismatchLogCount{0};
         const int logCount = s_deviceMismatchLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
@@ -97,7 +108,7 @@ bool Render(const RenderRequest& request) {
                 request.presentationQueue, queueDevice.Get(), targetResource.Get(), backBufferDevice.Get(),
                 logCount + 1);
         }
-        return false;
+        return RenderOutcome::kFailed;
     }
 
     D3D12_FEATURE_DATA_FORMAT_SUPPORT formatSupport = {};
@@ -117,16 +128,9 @@ bool Render(const RenderRequest& request) {
                 static_cast<int>(desc.Format), static_cast<int>(rtvFormat),
                 static_cast<unsigned>(formatSupport.Support1), logCount + 1);
         }
-        return false;
+        return RenderOutcome::kFailed;
     }
 
-    std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
-    if (g_ShuttingDown.load(std::memory_order_acquire)) {
-        return false;
-    }
-    PruneRetiredStates();
-    auto& states = request.inlineCompletionMarker ? g_InlineProxyStates : g_ProxyStates;
-    auto& state = states[request.proxySwapChain];
     if (state && !state->Matches(backBufferDevice.Get(), request.presentationQueue, rtvFormat,
                                  request.inlineCompletionMarker)) {
         RetireState(state, "device/queue/format change");
@@ -142,25 +146,28 @@ bool Render(const RenderRequest& request) {
     };
     if (!state) {
         if (!createState()) {
-            return false;
+            return RenderOutcome::kFailed;
         }
     } else {
         state->UpdateHdr(request.hdr);
     }
+    state->SetValidatedQueueDevice(backBufferDevice.Get(), queueDevice.Get());
 
     const auto result =
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
                       request.renderOverlay, request.applyPostProcess, request.routeName, request.submitCommandList,
                       request.signalFence, request.embeddedInExistingBatch, request.reservedSlot,
-                      request.submitPreparedCommandLists, request.separatePostProcess);
+                      request.submitPreparedCommandLists, request.separatePostProcess, request.precedingCommandList);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");
-        return true;
+        return RenderOutcome::kRendered;
     }
     if (result == RendererState::RenderResult::kFailed) {
         RetireState(state, "record/submit failure");
     }
-    return result == RendererState::RenderResult::kRendered;
+    if (result == RendererState::RenderResult::kBackBufferStillInFlight)
+        return RenderOutcome::kBusy;
+    return result == RendererState::RenderResult::kRendered ? RenderOutcome::kRendered : RenderOutcome::kFailed;
 }
 
 bool HasCompletedInlineRender(void* proxySwapChain) {

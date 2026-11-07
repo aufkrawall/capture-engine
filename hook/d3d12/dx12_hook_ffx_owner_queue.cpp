@@ -340,15 +340,21 @@ AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwap
     return {selectedQueue, route};
 }
 
-bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* commandList) {
+bool SubmitNativeFSROwnerQueueOverlayCommandLists(ID3D12CommandQueue* queue, ID3D12CommandList* preceding,
+                                                  ID3D12CommandList* commandList) {
     if (!queue || !commandList) {
         return false;
     }
-    ID3D12CommandList* lists[] = {commandList};
+    ID3D12CommandList* lists[] = {preceding ? preceding : commandList, commandList};
+    const UINT count = preceding ? 2u : 1u;
     ScopedCEOverlayECLSubmission ceOverlayECLGuard("ffx-owner-queue");
-    queue->ExecuteCommandLists(1, lists);
-    ce::sharpen::NotifyRuntimePostProcessSubmitted(queue, 1, lists);
+    queue->ExecuteCommandLists(count, lists);
+    ce::sharpen::NotifyRuntimePostProcessSubmitted(queue, count, lists);
     return true;
+}
+
+bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* commandList) {
+    return SubmitNativeFSROwnerQueueOverlayCommandLists(queue, nullptr, commandList);
 }
 
 HRESULT SignalNativeFSROwnerQueueOverlayFence(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {

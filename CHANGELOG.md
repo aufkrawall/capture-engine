@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Screenshots with FSR frame generation:** overlay-inclusive captures accept a compatible owner-queue device view. When the reserved overlay slot is busy, the request waits for another Present before submitting the composite.
+
 - **AAC retries and interrupted output:** a rejected AAC quantization pass restores the encoder's rate-control history. Reconnecting to output storage keeps the spool writer open until replay succeeds. Recovery retains corrupt spools and salvages a partial final record only after a crash.
 
 - **Stopping or restarting an active recording:** media workers and the encoder now hand off one shared-state snapshot, so a finishing session cannot leave late updates in the next session. D3D9 shared-memory uploads use the dimensions and pitch of the actual queued pixel slot.

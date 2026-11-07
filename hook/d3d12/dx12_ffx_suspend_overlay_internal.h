@@ -65,16 +65,6 @@ inline void Transition(ID3D12GraphicsCommandList* commandList, ID3D12Resource* r
     commandList->ResourceBarrier(1, &barrier);
 }
 
-inline bool SameComObject(IUnknown* left, IUnknown* right) {
-    if (!left || !right) {
-        return false;
-    }
-    ComPtr<IUnknown> leftIdentity;
-    ComPtr<IUnknown> rightIdentity;
-    return SUCCEEDED(left->QueryInterface(IID_PPV_ARGS(&leftIdentity))) &&
-           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) && leftIdentity.Get() == rightIdentity.Get();
-}
-
 struct FrameSlot {
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commandList;
@@ -206,10 +196,20 @@ public:
 
     bool Matches(ID3D12Device* candidateDevice, ID3D12CommandQueue* candidateQueue, DXGI_FORMAT candidateFormat,
                  bool candidateInlineCompletionMarker) const {
-        return (SameComObject(device.Get(), candidateDevice) ||
-                ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(device.Get(), candidateDevice))) &&
-               queue.Get() == candidateQueue &&
-               format == candidateFormat && inlineCompletionMarker == candidateInlineCompletionMarker;
+        return queue.Get() == candidateQueue && format == candidateFormat &&
+               inlineCompletionMarker == candidateInlineCompletionMarker &&
+               (device.Get() == candidateDevice || validatedTargetDevice_.Get() == candidateDevice ||
+                ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(device.Get(), candidateDevice)));
+    }
+
+    bool HasValidatedQueueDevice(ID3D12Device* targetDevice, ID3D12Device* queueDevice) const {
+        return validatedTargetDevice_.Get() == targetDevice && validatedQueueDevice_.Get() == queueDevice;
+    }
+    void SetValidatedQueueDevice(ID3D12Device* targetDevice, ID3D12Device* queueDevice) {
+        if (!HasValidatedQueueDevice(targetDevice, queueDevice)) {
+            validatedTargetDevice_ = targetDevice;
+            validatedQueueDevice_ = queueDevice;
+        }
     }
 
     void UpdateHdr(bool newHdr) {
@@ -270,7 +270,8 @@ public:
                         bool clearTransparent, bool renderOverlay, bool applyPostProcess, const char* routeName,
                         SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence,
                         bool embeddedInExistingBatch, bool reservedSlot,
-                        SubmitPreparedCommandListsCallback submitPreparedCommandLists, bool separatePostProcess) {
+                        SubmitPreparedCommandListsCallback submitPreparedCommandLists, bool separatePostProcess,
+                        ID3D12CommandList* precedingCommandList) {
         if (!targetResource || (!submitCommandList && !submitPreparedCommandLists) ||
             (!inlineCompletionMarker && !signalFence) || !DeviceHealthy()) {
             return RenderResult::kFailed;
@@ -444,9 +445,9 @@ public:
             return RenderResult::kFailed;
         }
         slot.inFlightTarget = targetResource;
+        ID3D12CommandList* preceding = separatePostProcess && postProcessRecorded ? postProcessList : precedingCommandList;
         const bool submitted = submitPreparedCommandLists
-            ? submitPreparedCommandLists(queue.Get(), separatePostProcess && postProcessRecorded ? postProcessList : nullptr,
-                                         slot.commandList.Get())
+            ? submitPreparedCommandLists(queue.Get(), preceding, slot.commandList.Get())
             : submitCommandList(queue.Get(), slot.commandList.Get());
         if (!submitted) {
             slot.inFlightTarget.Reset();
@@ -537,6 +538,8 @@ private:
     // live renderer. Pin the exact key so its raw map identity cannot dangle or be ABA-reused between route flips.
     ComPtr<IDXGISwapChain> proxyLifetime;
     ComPtr<ID3D12Device> device;
+    ComPtr<ID3D12Device> validatedTargetDevice_;
+    ComPtr<ID3D12Device> validatedQueueDevice_;
     ComPtr<ID3D12CommandQueue> queue;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool hdr = false;

@@ -133,6 +133,8 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason);
 AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy, ID3D12Resource* target);
 bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* commandList);
+bool SubmitNativeFSROwnerQueueOverlayCommandLists(ID3D12CommandQueue* queue, ID3D12CommandList* preceding,
+                                                  ID3D12CommandList* commandList);
 HRESULT SignalNativeFSROwnerQueueOverlayFence(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value);
 bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const char* routeName);
 bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* presentedSwapChain,
