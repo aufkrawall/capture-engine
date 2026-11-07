@@ -53,7 +53,7 @@ ID3D11Device* EncoderTextureExport::DeviceFor(const EncoderTextureRequest& reque
     }
 
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    D3D_FEATURE_LEVEL level = {};
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
     ComGuard<ID3D11Device> base;
     *hr = D3D11CreateDevice(adapter.get(), adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr,
                             D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
