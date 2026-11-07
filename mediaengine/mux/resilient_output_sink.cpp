@@ -138,7 +138,8 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
         return result;
     }
 
-    HANDLE spool = CreateFileW(spoolPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    HANDLE spool = CreateFileW(spoolPath.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (spool == INVALID_HANDLE_VALUE) {
         const DWORD err = GetLastError();
@@ -234,11 +235,31 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
         if (!ReadExact(spool, &record, sizeof(record), &headerBytesRead)) {
             if (headerBytesRead == 0)
                 break;
-            break;  // unfinalized tail record
+            if (header.finalized) {
+                result.outcome = SpoolReplayOutcome::kCorruptSpool;
+                result.detail = "unexpected eof reading record header in finalized spool";
+                return result;
+            }
+            break;  // unfinalized tail record in crash spool
         }
         spoolCursor += sizeof(record);
         if (record.magic != kSpoolRecordMagic || spoolCursor + record.payloadBytes > spoolFileSize) {
+            if (header.finalized) {
+                result.outcome = SpoolReplayOutcome::kCorruptSpool;
+                result.detail = "corrupt record magic or payload length in finalized spool";
+                return result;
+            }
             break;  // truncated tail record in unfinalized crash spool
+        }
+        constexpr uint64_t kMaxFileOffset = static_cast<uint64_t>(std::numeric_limits<LONGLONG>::max());
+        if (record.targetOffset > kMaxFileOffset ||
+            record.targetOffset + record.payloadBytes > kMaxFileOffset) {
+            if (header.finalized) {
+                result.outcome = SpoolReplayOutcome::kCorruptSpool;
+                result.detail = "record offset out of signed 64-bit range";
+                return result;
+            }
+            break;  // corrupt unfinalized tail
         }
         if (!SeekHandle(target, record.targetOffset)) {
             result.outcome = SpoolReplayOutcome::kTargetUnreachable;
@@ -357,7 +378,8 @@ bool CanReplaySpoolWithoutExistingTarget(const std::filesystem::path& stagingPat
     const std::filesystem::path spoolPath = SpoolPathForStaging(stagingPath, spoolDirectory);
     if (spoolPath.empty())
         return false;
-    HANDLE spool = CreateFileW(spoolPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    HANDLE spool = CreateFileW(spoolPath.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (spool == INVALID_HANDLE_VALUE)
         return false;
@@ -688,13 +710,15 @@ void ResilientOutputSink::TryReplayAndResumeDirect() {
 
     WriteSpoolHeader(false);
     FlushFileBuffers(spoolHandle_);
-    CloseHandle(spoolHandle_);
-    spoolHandle_ = INVALID_HANDLE_VALUE;
 
     HANDLE resumedTarget = INVALID_HANDLE_VALUE;
     const SpoolReplayResult replay = ReplaySpoolInternal(stagingPath_, spoolPath_, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                                          nullptr, options_.onRefreshDeadline, &resumedTarget, position_);
     if (replay.outcome == SpoolReplayOutcome::kReplayed) {
+        CloseHandle(spoolHandle_);
+        spoolHandle_ = INVALID_HANDLE_VALUE;
+        DeleteFileW(spoolPath_.c_str());
+
         targetHandle_ = resumedTarget;
         targetPosition_ = position_;
         confirmedTargetSize_ = logicalSize_;
@@ -708,10 +732,7 @@ void ResilientOutputSink::TryReplayAndResumeDirect() {
         return;
     }
 
-    spoolHandle_ = CreateFileW(spoolPath_.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (spoolHandle_ != INVALID_HANDLE_VALUE)
-        SeekHandle(spoolHandle_, 0, FILE_END);
+    SeekHandle(spoolHandle_, 0, FILE_END);
 }
 
 void ResilientOutputSink::CloseHandles() noexcept {

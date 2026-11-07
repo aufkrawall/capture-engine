@@ -190,4 +190,32 @@ TEST_F(ResilientOutputSinkTest, FailedLiveReplayKeepsTheSpoolWritableUntilStorag
     EXPECT_EQ(TargetBytes(), "first-still-offline-queued-resumed-direct");
 }
 
+TEST_F(ResilientOutputSinkTest, ReplayRejectsMalformedRecordOffsetBeyondSignedMax) {
+    const std::filesystem::path spoolPath = ce::mux::SpoolPathForStaging(staging_, options_.spoolDirectory);
+    std::filesystem::create_directories(spoolPath.parent_path());
+    std::ofstream out(spoolPath, std::ios::binary);
+    struct Header {
+        uint32_t magic = 0x4C505343u;
+        uint32_t version = 1u;
+        uint64_t baseFileSize = 0;
+        uint64_t logicalFileSize = 100;
+        uint32_t finalized = 1;
+        uint32_t reserved = 0;
+    } hdr;
+    out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+    struct Record {
+        uint32_t magic = 0x524C5053u;
+        uint32_t payloadBytes = 10;
+        uint64_t targetOffset = 0xFFFFFFFFFFFFFFFEull;
+    } rec;
+    out.write(reinterpret_cast<const char*>(&rec), sizeof(rec));
+    char payload[10] = "123456789";
+    out.write(payload, sizeof(payload));
+    out.close();
+
+    UnblockTarget();
+    const ce::mux::SpoolReplayResult result = ce::mux::ReplaySpoolForStaging(staging_, options_.spoolDirectory);
+    EXPECT_EQ(result.outcome, ce::mux::SpoolReplayOutcome::kCorruptSpool);
+}
+
 }  // namespace

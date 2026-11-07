@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Resilient recording output spool handle safety and range validation:** the output spool writer handle is now preserved across failed live reconnect probes without closing and reopening, eliminating write errors during temporary network share stalls. Replay validates signed file offset ranges to prevent integer overflow and distinguishes unfinalized crash tails from corrupt finalized data.
+
 - **Demand-driven encoder texture export and VRAM accounting:** media now allocates the KMT export texture pool only when requested by a zero-copy producer (such as DXVK) rather than eagerly on all non-screengrab recordings, and D3D9 shared-memory capture uses its own encoder upload surface. Exported textures and opened alias views are explicitly accounted and deduplicated in GPU memory diagnostics, and repeated export requests cannot overwrite an adopted producer timeline fence.
 
 - **Vulkan zero-copy capture transport robustness:** same-geometry swapchain recreations now clean up superseded cache entries to prevent leaks and mismatched relay bindings. The layer activates direct encoder texture mode only after creating and publishing its timeline fence, validates adapter LUID consistency on KMT offers, and withdraws broken offers on import failure so fallback capture can continue.
