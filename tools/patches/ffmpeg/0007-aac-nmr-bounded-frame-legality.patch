@@ -51,10 +51,19 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
  #include "aactab.h"
  #include "aacenctab.h"
 +#include "aacenc_nmr_budget.h"
- 
+
  /* differential scalefactor coding cost, clamped to the legal delta range */
  #define NMR_SFBITS(d) ff_aac_scalefactor_bits[av_clip((d) + SCALE_DIFF_ZERO, 0, 2*SCALE_MAX_DIFF)]
-@@ -723,6 +724,67 @@
+@@ -669,6 +670,8 @@
+      * against the channel's real output to keep the budget honest. Only the
+      * surviving active bands are coded: bands shed for legality are not. */
+     s->nmr->counted[t->cur_ch] = nmr_slot_bits(t, nb, NMR_STEP);
++    for (int b = 0; b < t->nbnd; b++)
++        s->nmr->counted[t->cur_ch] += t->is_pns[b] ? NMR_PNS_BITS : 0;
+
+     /* SCALE_MAX_DIFF condition:
+      * re-clamp, codebook fixup, drop uncodeable, set global gain
+@@ -723,6 +726,108 @@
              }
          }
      }
@@ -65,6 +74,7 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +    NMRSlot *const *slots;
 +    int count;
 +    float lambda;
++    int cap;
 +} NMRBudgetContext;
 +
 +static int nmr_budget_bits(void *opaque)
@@ -83,8 +93,46 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +static void nmr_budget_coarsen(void *opaque)
 +{
 +    NMRBudgetContext *c = opaque;
-+    c->lambda = FFMAX(c->lambda, 1e4f);
-+    nmr_eval_slots(c->s, c->slots, c->count, NMR_STEP, c->lambda);
++    AACEncContext *s = c->s;
++    const int coarse_step = NMR_COARSE > 0 ? NMR_COARSE : 8;
++    int noise_bits = 0;
++    /* A fine grid centered on the preceding solve may contain no legal
++     * allocation, regardless of lambda. Re-open the complete coarse range
++     * first, then refine around that feasible operating point. */
++    for (int pass = 0; pass < 2; pass++) {
++        const int step = pass ? NMR_STEP : coarse_step;
++        for (int k = 0; k < c->count; k++) {
++            NMRSlot *t = c->slots[k];
++            s->aacdsp.abs_pow34(s->scoefs, t->sce->coeffs, 1024);
++            ff_quantize_band_cost_cache_init(s);
++            for (int b_ = 0; b_ < t->nact; b_++) {
++                int b = t->act[b_], bi = t->bidx[b];
++                int center = t->blo[b] + t->chosen[b] * coarse_step;
++                int floor = av_clip(t->minsf[bi], 0, SCALE_MAX_POS);
++                int lo = pass ? av_clip(center - coarse_step, floor, SCALE_MAX_POS) : floor;
++                int maxn = pass ? FFMIN(NMR_NCAND, 2*coarse_step + 1) : NMR_NCAND;
++                float invthr = 1.f / FFMAX(t->thr[bi], 1e-9f);
++                int nc = nmr_band_curve(s, t->sce, t->bw[b], t->bg[b], t->bst[b],
++                                        lo, step, maxn, invthr, t->maxvals[bi],
++                                        s->nmr->nd[t->si][b], s->nmr->nb[t->si][b]);
++                if (!nc) {
++                    s->nmr->nd[t->si][b][0] = 0.f;
++                    s->nmr->nb[t->si][b][0] = 0;
++                }
++                if (t->tnsg[bi] > 1.f)
++                    for (int o = 0; o < nc; o++)
++                        s->nmr->nd[t->si][b][o] *= t->tnsg[bi];
++                t->blo[b] = lo;
++                t->bnc[b] = FFMAX(1, nc);
++            }
++            if (!pass)
++                for (int b = 0; b < t->nbnd; b++)
++                    noise_bits += t->is_pns[b] ? NMR_PNS_BITS : 0;
++        }
++        c->lambda = nmr_solve_slots(s, c->slots, c->count, step,
++                                    FFMAX(c->cap - noise_bits, 0),
++                                    1e-9f, 1e4f, NMR_ITERS);
++    }
 +}
 +
 +static int nmr_budget_remove_highest(void *opaque)
@@ -97,13 +145,15 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +        /* Keep each spectral chain's anchor. */
 +        for (int i = 1; i < t->nact; i++) {
 +            int b = t->act[i];
-+            if (t->bg[b] > highest) {
-+                chosen = t; chosen_band = b; chosen_active = i; highest = t->bg[b];
++            int frequency = (t->bst[b] - t->bw[b]*128) * t->sce->ics.num_windows;
++            if (frequency > highest) {
++                chosen = t; chosen_band = b; chosen_active = i; highest = frequency;
 +            }
 +        }
 +        for (int b = 0; b < t->nbnd; b++) {
-+            if (t->is_pns[b] && t->bg[b] > highest) {
-+                chosen = t; chosen_band = b; chosen_active = -1; highest = t->bg[b];
++            int frequency = (t->bst[b] - t->bw[b]*128) * t->sce->ics.num_windows;
++            if (t->is_pns[b] && frequency > highest) {
++                chosen = t; chosen_band = b; chosen_active = -1; highest = frequency;
 +            }
 +        }
 +    }
@@ -120,9 +170,9 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +    nmr_eval_slots(c->s, c->slots, c->count, NMR_STEP, c->lambda);
 +    return 1;
  }
- 
+
  /* Solve one element group (a solo channel, or a CPE pair pooled under one
-@@ -1085,41 +1147,6 @@
+@@ -1085,41 +1190,6 @@
                      tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
              }
          }
@@ -162,9 +212,9 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 -            }
 -        }
      }
- 
+
      if (rc_global) {
-@@ -1328,6 +1355,30 @@
+@@ -1328,6 +1398,31 @@
              else
                  nmr_solve_slots(s, sl, nsl, NMR_STEP, destbits - pns_total * NMR_PNS_BITS,
                                  1e-9f, 1e4f, NMR_ITERS);
@@ -178,12 +228,13 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +    {
 +        const float reference = FFMAX(lam_ref, FLT_EPSILON);
 +        int cap = av_clip((int)(5800.f * FFMIN(1.f, lambda / reference)), 256, 5800) * chans;
-+        NMRBudgetContext budget = { s, sl, nsl, lam };
++        NMRBudgetContext budget = { s, sl, nsl, lam, 0 };
 +        const AACNMRBudgetOps ops = { &budget, nmr_budget_bits,
 +                                      nmr_budget_coarsen, nmr_budget_remove_highest };
 +        AACNMRBudgetResult result;
 +        if (s->nmr->side_inited)
 +            cap = FFMAX(cap - (int)(FFMAX(s->nmr->side_ema, 0.f) * chans / s->channels), 256);
++        budget.cap = cap;
 +        result = ff_aac_nmr_fit_budget(&ops, cap, 128 * nsl);
 +        if (result.coarsened) {
 +            unsigned event = ++s->nmr->legality_events;
@@ -194,18 +245,18 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +                       s->options.rc, (long long)avctx->frame_num, result.bits, cap, result.removed, event);
          }
      }
- 
+
 diff --git a/libavcodec/aacenc.h b/libavcodec/aacenc.h
 --- a/libavcodec/aacenc.h
 +++ b/libavcodec/aacenc.h
-@@ -207,6 +207,7 @@
- } NMRSlot;
- 
- typedef struct AACNMRCurves {
+@@ -263,6 +263,7 @@
+     float   abr_alloc_ema;             ///< EMA of psy bit demand (fill shaping)
+     int     abr_longs;                 ///< long frames seen during bootstrap
+     int64_t abr_frame_num;             ///< once-per-frame servo guard
 +    unsigned legality_events;                    ///< metered allocation-repair diagnostics
-     float nd[2][128][NMR_NCAND];                 ///< dist / threshold per candidate, per pair slot
-     int   nb[2][128][NMR_NCAND];                 ///< spectral bits per candidate, per pair slot
-     NMRSlot slot[2];                             ///< pair slots (solo solves use slot 0)
+ } AACNMRCurves;
+
+ typedef struct AACPCEInfo {
 diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 --- a/libavcodec/aacenc.c
 +++ b/libavcodec/aacenc.c
@@ -231,5 +282,14 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 +            return AVERROR_BUG;
 +        }
          init_put_bits(&s->pb, avpkt->data, avpkt->size);
- 
+
          if ((avctx->frame_num & 0xFF)==1 && !(avctx->flags & AV_CODEC_FLAG_BITEXACT))
+@@ -1662,7 +1672,7 @@
+             break;
+         }
+     } while (1);
+-    if (avctx->flags & AV_CODEC_FLAG_QSCALE)
++    if ((avctx->flags & AV_CODEC_FLAG_QSCALE) || s->options.coder == AAC_CODER_NMR)
+         s->lambda = avctx->global_quality > 0 ? avctx->global_quality : 120;
+
+     /* tool-usage stats over the final per-band decisions of this frame */

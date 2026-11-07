@@ -146,12 +146,18 @@ Repairs native AAC NMR frame-budget enforcement after CBR/ABR/VBR spending,
 slew and PNS decisions. CBR previously retried a railed candidate grid without
 the VBR path's highest-band fallback. The outer encoder could retry forever
 at its lambda floor (recording session `20261106_223450`). One final shared
-repair now measures PNS and spectral bits, coarsens only when required, then
-removes highest bands while preserving each spectral chain's anchor. Work is
+repair now measures PNS and spectral bits, reopens the complete coarse range
+and refines around its feasible solution, then removes highest-frequency bands
+only if still required, preserving each spectral chain's anchor. Frequency is
+normalized across long/short windows. PNS is counted explicitly so the residual
+side-information estimate does not charge it again. Work is
 bounded by the finite band count, with no wall-clock timeout or sample drop.
 Repair events are logged at powers of two. A separate 32-pass NMR encoder
 guard refuses an unrepresentable frame instead of emitting an illegal packet
 or consuming a core forever.
+Successful NMR frames reset the outer retry lambda so one overflow does not
+permanently reduce every following CBR frame's budget. The repair counter is at
+the end of the private state, preserving alignment of existing candidate arrays.
 
 `tests/test_aac_nmr_budget.cpp` exercises the actual private C policy with
 injected allocations, including an edge repair that initially increases cost
@@ -159,6 +165,9 @@ and an allocator that never lowers it. `AudioMuxIntegrationTest` checks dense
 320 kbps AAC transitions, continued output, decoded content and exact track
 endpoints through Matroska and MP4. Hosts using prebuilt FFmpeg explicitly
 skip the private policy test; they still run the public encoding/mux tests.
+`AacNmrRuntimeTest` checks CBR, strict CBR, ABR and high-quality VBR with mono/
+stereo audio at 48/96 kHz: legal packet sizes, continuous sample PTS, codec drain
+and priming-aware sample totals.
 
 ## Applying Patches
 

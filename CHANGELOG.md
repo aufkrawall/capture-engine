@@ -28,7 +28,7 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **AAC recordings hanging with high CPU and never finishing:** repaired the native AAC allocator's final frame-budget enforcement across CBR, ABR, and VBR. Oversized allocations now coarsen and remove only the highest remaining bands with bounded work, preserving sample counts and timestamps; an additional codec retry guard reports an unrecoverable internal failure instead of spinning indefinitely.
+- **AAC recordings hanging with high CPU and never finishing:** repaired the native AAC allocator's final frame-budget enforcement across CBR, ABR, and VBR. Oversized allocations first reopen the full quantization range, then remove only the highest remaining bands if needed, preserving sample counts and timestamps. Successful recovery resets temporary retry pressure for the next frame; an additional codec retry guard reports an unrecoverable internal failure instead of spinning indefinitely.
 
 - **Accented and non-ASCII recording profile names:** profile labels are now converted from the Windows section-name code page to UTF-8 before building recording filenames, preventing replacement characters in names such as `Pokémon` on non-UTF-8 Windows locales.
 
