@@ -145,29 +145,46 @@ verified against both sides of the metadata issue before removing the guard.
 Repairs native AAC NMR frame-budget enforcement after CBR/ABR/VBR spending,
 slew and PNS decisions. CBR previously retried a railed candidate grid without
 the VBR path's highest-band fallback. The outer encoder could retry forever
-at its lambda floor (recording session `20261106_223450`). One final shared
-repair now measures PNS and spectral bits, reopens the complete coarse range
-and refines around its feasible solution, then removes highest-frequency bands
-only if still required, preserving each spectral chain's anchor. Frequency is
-normalized across long/short windows. PNS is counted explicitly so the residual
-side-information estimate does not charge it again. Work is
-bounded by the finite band count, with no wall-clock timeout or sample drop.
-Repair events are logged at powers of two. A separate 32-pass NMR encoder
-guard refuses an unrepresentable frame instead of emitting an illegal packet
-or consuming a core forever.
-Successful NMR frames reset the outer retry lambda so one overflow does not
-permanently reduce every following CBR frame's budget. The repair counter is at
-the end of the private state, preserving alignment of existing candidate arrays.
+at its lambda floor (recording session `20261106_223450`).
+
+One final shared repair (`aacenc_nmr_budget.h` owns its order) runs only when
+the trellis-counted bits exceed the cap the mode already solved against: CBR's
+reservoir path keeps its plain hard cap and leaves side information to the
+outer check; VBR/ABR and plain bisection subtract the side estimate as before.
+PNS signalling stays in the side estimate, exactly as upstream accounts it, so
+frames that fit keep every decision. The repair moves only as far as needed:
+re-fit the current candidate window, then reopen the complete coarse range and
+refine one coarse step around its pick, then remove highest-frequency bands,
+keeping each spectral chain's anchor. Re-fits bisect lambda in log space up to
+1e18, past the solver's usual 1e4 rail, where every band's distortion term is
+negligible against one bit, so the grid's minimum cost is reachable before any
+band is removed; the bisection keeps the last lambda proven to fit, not its
+final midpoint. Work is bounded by the finite band count. Repair events are
+logged at powers of two, separately for lossless re-fits and band removals.
+
+The outer NMR loop enforces only the hard bound (decoder buffer, or the strict
+per-frame rate). Each retry shrinks lambda, and with it every legality cap, by
+at least 10%, and restores in-place stereo/TNS coefficients (upstream's strict
+retry did not). After 32 passes the frame is written silent: always legal, and
+its packet keeps its samples and timestamp, so no track loses length or sync.
+Returning an error instead would leave the frame queued and shift every later
+packet's PTS by one frame. Successful NMR frames reset the outer lambda so one
+overflow does not permanently reduce later budgets. New counters sit at the end
+of the private state, preserving alignment of existing candidate arrays.
 
 `tests/test_aac_nmr_budget.cpp` exercises the actual private C policy with
-injected allocations, including an edge repair that initially increases cost
-and an allocator that never lowers it. `AudioMuxIntegrationTest` checks dense
-320 kbps AAC transitions, continued output, decoded content and exact track
-endpoints through Matroska and MP4. Hosts using prebuilt FFmpeg explicitly
-skip the private policy test; they still run the public encoding/mux tests.
-`AacNmrRuntimeTest` checks CBR, strict CBR, ABR and high-quality VBR with mono/
-stereo audio at 48/96 kHz: legal packet sizes, continuous sample PTS, codec drain
-and priming-aware sample totals.
+injected allocations: step order, an edge repair that initially increases cost,
+an allocator that never lowers it, and the retry/silence decision. Hosts using
+prebuilt FFmpeg explicitly skip it. `AacNmrRuntimeTest` drives the real codec:
+CBR, strict CBR, ABR and VBR with mono/stereo audio at 48/96 kHz; a near-cap
+288 kbps mono CBR run that must take the repair path; and an unreachable strict
+bound (upstream retries forever) that must end in decodable silent frames. Every
+run checks legal packet sizes, continuous sample PTS, priming-aware totals and
+that the AAC decoder accepts every frame; real content must never be silenced or
+lose bands. With the final repair disabled and the old error return restored,
+mono ABR at 160 kbps and the near-cap CBR run could not reach a legal frame within
+32 passes and all three runtime tests failed with `AVERROR_BUG`. `AudioMuxIntegrationTest` checks dense
+320 kbps AAC transitions and exact track endpoints through Matroska and MP4.
 
 ## Applying Patches
 

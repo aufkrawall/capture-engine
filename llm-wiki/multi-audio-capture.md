@@ -44,22 +44,33 @@ blocking also needs ownership-safe detachment, not simply ACK before detachment
 [AAC retry loop](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aacenc.c),
 [NMR allocation](https://github.com/FFmpeg/FFmpeg/blob/e196e57ca225a98654e482806fa714facd232b57/libavcodec/aaccoder_nmr.h).
 
-Patch `tools/patches/ffmpeg/0007-aac-nmr-bounded-frame-legality.patch` now supplies
-one final CBR/ABR/VBR budget repair after PNS: reopen the full coarse quantizer range,
-refine around its solution, then remove highest-frequency bands only if necessary,
-retaining spectral anchors. Normalize frequency across long/short windows. Count PNS
-explicitly in the spectral estimate so the side-information EMA does not charge it
-twice. Successful NMR frames restore the normal outer lambda; an exceptional retry
-must not permanently shrink subsequent CBR budgets. The shared C policy is tested through
-injected allocation effects, including a railed grid and non-decreasing costs.
-An independent 32-pass encoder guard reports an internal error if no legal frame
-can be produced. The original dump's one short-window channel requires 15,699
-spectral bits before scalefactor edges, already exceeding the stereo limit of 12,288.
-Targeted validation: 45 allocation/runtime-contract/mux/detach tests pass, including
-16 real encoder configurations (mono/stereo, 48/96 kHz, CBR/strict CBR/ABR/VBR) and
-dense 320 kbps AAC transitions decoded to exact common endpoints in MKV/MP4.
-Disabling repair fails four policy tests; restoration passes. `AAC NMR` diagnostics
-are metered inside the codec and bypass CE's additional generic libav sampler.
+Patch `tools/patches/ffmpeg/0007-aac-nmr-bounded-frame-legality.patch` supplies one
+final CBR/ABR/VBR budget repair after PNS, run only when trellis bits exceed the cap
+the mode already solved against (CBR reservoir: plain hard cap; VBR/ABR/bisection:
+minus the side estimate). PNS stays in the side estimate as upstream counts it, so
+frames within the cap keep every upstream decision (outer lambda now resets after an
+overflow frame instead of staying reduced). Repair ladder: re-fit the current
+window, reopen the full coarse range and refine, then remove highest-frequency bands
+keeping chain anchors. Re-fits bisect up to lambda 1e18 (lam^2 must stay finite in
+`nmr_solve`) and keep the last lambda proven to fit: the dump's frame railed at the
+solver's 1e4 rail with 15,699 spectral bits in one short-window channel because
+distortion still outweighed bits there, so coarser legal quantization was never
+reached. The outer NMR loop enforces only the hard bound (decoder buffer or strict
+rate), shrinks lambda by at least 10% per retry and restores in-place coefficients;
+after 32 passes it writes the frame silent. An error return was rejected: libavcodec
+skips `frame_num++` and `aac_encode_frame` leaves the frame in its `AudioFrameQueue`,
+so every later packet would be stamped one frame early while CE records a hole at the
+original position (about 21 ms of A/V offset for the rest of the track).
+Real-codec evidence (2026-11-07): `AacNmrRuntimeTest.NearCapCbrTakesTheLegalityRepairAndStaysLegal`
+(288 kbps mono CBR, 160 frames of gated noise) logged 8 metered re-fits (128-255
+events), no reopen, no removal. `UnreachableStrictBoundEndsInSilentFramesInsteadOfAHang`
+(an upstream infinite loop) produces decodable all-zero frames. Every runtime case
+decodes its stream; the 16 standard configurations need no silence or removal.
+Mutation: disabling the final repair and restoring the error return made mono ABR
+160 kbps and the near-cap CBR run miss a legal frame within 32 passes, so synthetic
+content does reach the non-converging state; the reopen and removal steps are only
+covered by the injected-policy tests. `AAC NMR` diagnostics bypass CE's generic libav sampler, and
+`MediaEngine_SetLogCallback` re-asserts CE's process-global libav sink.
 The original waveform plus its complete encoder history has not been replayed.
 The unpublished MKV retained AV1 video and two AAC tracks; recovery/content validation
 is separate from proving the hang. Do not delete staging output or claim the missing

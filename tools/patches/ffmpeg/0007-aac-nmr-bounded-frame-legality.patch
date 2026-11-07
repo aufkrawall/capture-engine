@@ -2,24 +2,32 @@ diff --git a/libavcodec/aacenc_nmr_budget.h b/libavcodec/aacenc_nmr_budget.h
 new file mode 100644
 --- /dev/null
 +++ b/libavcodec/aacenc_nmr_budget.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,82 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later
 + * Copyright (c) 2026 aufkrawall
-+ * Bounded AAC allocation repair. Callbacks own the codec's candidate/band state.
++ * Bounded AAC NMR legality policy. Callbacks own the codec's candidate/band
++ * state; this header owns the order of the repair steps and the outer-loop
++ * decision, so both can be tested without a codec.
 + */
 +#ifndef AVCODEC_AACENC_NMR_BUDGET_H
 +#define AVCODEC_AACENC_NMR_BUDGET_H
 +
 +typedef struct AACNMRBudgetOps {
 +    void *context;
-+    int (*measure)(void *context);
-+    void (*coarsen)(void *context);
-+    int (*remove_highest)(void *context);
++    int  (*measure)(void *context);
++    /* Re-fit on the current candidate grid: the least disruptive repair. */
++    void (*fit_current)(void *context);
++    /* Re-fit on the reopened full quantizer range, up to its minimum cost. */
++    void (*reopen)(void *context);
++    /* Remove one coded band; 0 when nothing removable is left. */
++    int  (*remove_highest)(void *context);
 +} AACNMRBudgetOps;
 +
 +typedef struct AACNMRBudgetResult {
++    int initial_bits;
 +    int bits;
-+    int coarsened;
++    int refit;
++    int reopened;
 +    int removed;
 +} AACNMRBudgetResult;
 +
@@ -28,12 +36,18 @@ new file mode 100644
 +static inline AACNMRBudgetResult ff_aac_nmr_fit_budget(const AACNMRBudgetOps *ops,
 +                                                       int budget, int max_removals)
 +{
-+    AACNMRBudgetResult result = { ops->measure(ops->context), 0, 0 };
++    AACNMRBudgetResult result = { 0 };
++    result.initial_bits = result.bits = ops->measure(ops->context);
 +    if (result.bits <= budget)
 +        return result;
-+    ops->coarsen(ops->context);
-+    result.coarsened = 1;
++    ops->fit_current(ops->context);
++    result.refit = 1;
 +    result.bits = ops->measure(ops->context);
++    if (result.bits > budget) {
++        ops->reopen(ops->context);
++        result.reopened = 1;
++        result.bits = ops->measure(ops->context);
++    }
 +    while (result.bits > budget && result.removed < max_removals) {
 +        if (!ops->remove_highest(ops->context))
 +            break;
@@ -41,6 +55,34 @@ new file mode 100644
 +        result.bits = ops->measure(ops->context);
 +    }
 +    return result;
++}
++
++/* Encode passes per frame before the terminal fallback. Each retry shrinks
++ * every legality cap by at least 10%, so a handful of passes always suffice
++ * unless the codec state is broken. */
++#define AAC_NMR_MAX_PASSES 32
++
++enum AACNMRFrameAction {
++    AAC_NMR_FRAME_ACCEPT,
++    AAC_NMR_FRAME_RETRY,
++    AAC_NMR_FRAME_SILENCE,
++};
++
++/* Outer-loop decision after an encode pass. bits_max is the frame's hard
++ * bound (decoder buffer, or the strict per-frame rate). passes counts the
++ * completed passes of this frame. A retry scales lambda by *lambda_scale; a
++ * silent frame is always legal and keeps the frame's samples and timestamp. */
++static inline enum AACNMRFrameAction ff_aac_nmr_frame_action(int frame_bits, int bits_max,
++                                                             int passes, float *lambda_scale)
++{
++    float scale;
++    if (frame_bits <= bits_max)
++        return AAC_NMR_FRAME_ACCEPT;
++    if (passes >= AAC_NMR_MAX_PASSES)
++        return AAC_NMR_FRAME_SILENCE;
++    scale = bits_max > 0 ? (float)bits_max / (float)frame_bits : 0.0f;
++    *lambda_scale = scale < 0.9f ? scale : 0.9f;
++    return AAC_NMR_FRAME_RETRY;
 +}
 +#endif
 diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
@@ -54,19 +96,35 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 
  /* differential scalefactor coding cost, clamped to the legal delta range */
  #define NMR_SFBITS(d) ff_aac_scalefactor_bits[av_clip((d) + SCALE_DIFF_ZERO, 0, 2*SCALE_MAX_DIFF)]
-@@ -669,6 +670,8 @@
-      * against the channel's real output to keep the budget honest. Only the
-      * surviving active bands are coded: bands shed for legality are not. */
-     s->nmr->counted[t->cur_ch] = nmr_slot_bits(t, nb, NMR_STEP);
-+    for (int b = 0; b < t->nbnd; b++)
-+        s->nmr->counted[t->cur_ch] += t->is_pns[b] ? NMR_PNS_BITS : 0;
-
-     /* SCALE_MAX_DIFF condition:
-      * re-clamp, codebook fixup, drop uncodeable, set global gain
-@@ -723,6 +726,108 @@
+@@ -723,6 +724,130 @@
              }
          }
      }
++}
++
++/* Repair lambdas reach far past the solver's usual 1e4 rail: there every
++ * band's distortion term is negligible against one bit, so the grid's
++ * minimum-cost allocation is reachable. lam^2 must stay finite in nmr_solve. */
++#define NMR_LAM_REPAIR_MAX 1e18f
++
++/* Bisect lambda in log space so the pooled bits fit cap. Unlike
++ * nmr_solve_slots, return a lambda proven to fit (the last midpoint may not)
++ * and leave chosen[] at it; return the rail when nothing on this grid fits. */
++static float nmr_fit_slots(AACEncContext *s, NMRSlot *const *sl, int nsl, int step,
++                           int cap, float lo, float hi)
++{
++    lo = FFMAX(lo, 1e-9f);
++    if (nmr_eval_slots(s, sl, nsl, step, hi) > cap || lo >= hi)
++        return hi;
++    for (int it = 0; it < NMR_ITERS; it++) {
++        const float mid = expf(0.5f * (logf(lo) + logf(hi)));
++        if (nmr_eval_slots(s, sl, nsl, step, mid) > cap)
++            lo = mid;
++        else
++            hi = mid;
++    }
++    nmr_eval_slots(s, sl, nsl, step, hi);
++    return hi;
 +}
 +
 +typedef struct NMRBudgetContext {
@@ -77,28 +135,34 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +    int cap;
 +} NMRBudgetContext;
 +
++/* Trellis-counted bits only, like the rest of the coder: PNS signalling and
++ * section data ride in the measured side-information estimate. */
 +static int nmr_budget_bits(void *opaque)
 +{
 +    NMRBudgetContext *c = opaque;
 +    int bits = 0;
-+    for (int k = 0; k < c->count; k++) {
-+        NMRSlot *t = c->slots[k];
-+        bits += nmr_slot_bits(t, c->s->nmr->nb[t->si], NMR_STEP);
-+        for (int b = 0; b < t->nbnd; b++)
-+            bits += t->is_pns[b] ? NMR_PNS_BITS : 0;
-+    }
++    for (int k = 0; k < c->count; k++)
++        bits += nmr_slot_bits(c->slots[k], c->s->nmr->nb[c->slots[k]->si], NMR_STEP);
 +    return bits;
 +}
 +
-+static void nmr_budget_coarsen(void *opaque)
++/* Least disruptive: keep the solve's own candidate window and only move
++ * lambda as far as the cap requires. */
++static void nmr_budget_fit_current(void *opaque)
++{
++    NMRBudgetContext *c = opaque;
++    c->lambda = nmr_fit_slots(c->s, c->slots, c->count, NMR_STEP, c->cap,
++                              c->lambda, NMR_LAM_REPAIR_MAX);
++}
++
++/* The fine window around the preceding solve may hold no legal allocation at
++ * any lambda. Reopen the complete coarse range, fit it, then refine one
++ * coarse step around that pick and fit again. */
++static void nmr_budget_reopen(void *opaque)
 +{
 +    NMRBudgetContext *c = opaque;
 +    AACEncContext *s = c->s;
 +    const int coarse_step = NMR_COARSE > 0 ? NMR_COARSE : 8;
-+    int noise_bits = 0;
-+    /* A fine grid centered on the preceding solve may contain no legal
-+     * allocation, regardless of lambda. Re-open the complete coarse range
-+     * first, then refine around that feasible operating point. */
 +    for (int pass = 0; pass < 2; pass++) {
 +        const int step = pass ? NMR_STEP : coarse_step;
 +        for (int k = 0; k < c->count; k++) {
@@ -125,54 +189,45 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +                t->blo[b] = lo;
 +                t->bnc[b] = FFMAX(1, nc);
 +            }
-+            if (!pass)
-+                for (int b = 0; b < t->nbnd; b++)
-+                    noise_bits += t->is_pns[b] ? NMR_PNS_BITS : 0;
 +        }
-+        c->lambda = nmr_solve_slots(s, c->slots, c->count, step,
-+                                    FFMAX(c->cap - noise_bits, 0),
-+                                    1e-9f, 1e4f, NMR_ITERS);
++        c->lambda = nmr_fit_slots(s, c->slots, c->count, step, c->cap,
++                                  1e-9f, NMR_LAM_REPAIR_MAX);
 +    }
 +}
 +
++/* Last resort, reached only when even the reopened grid's minimum cost does
++ * not fit: drop the highest-frequency coded band, keeping each chain anchor. */
 +static int nmr_budget_remove_highest(void *opaque)
 +{
 +    NMRBudgetContext *c = opaque;
 +    NMRSlot *chosen = NULL;
-+    int chosen_band = -1, chosen_active = -1, highest = -1;
++    int chosen_active = -1, highest = -1;
 +    for (int k = 0; k < c->count; k++) {
 +        NMRSlot *t = c->slots[k];
-+        /* Keep each spectral chain's anchor. */
 +        for (int i = 1; i < t->nact; i++) {
 +            int b = t->act[i];
 +            int frequency = (t->bst[b] - t->bw[b]*128) * t->sce->ics.num_windows;
 +            if (frequency > highest) {
-+                chosen = t; chosen_band = b; chosen_active = i; highest = frequency;
-+            }
-+        }
-+        for (int b = 0; b < t->nbnd; b++) {
-+            int frequency = (t->bst[b] - t->bw[b]*128) * t->sce->ics.num_windows;
-+            if (t->is_pns[b] && frequency > highest) {
-+                chosen = t; chosen_band = b; chosen_active = -1; highest = frequency;
++                chosen = t; chosen_active = i; highest = frequency;
 +            }
 +        }
 +    }
 +    if (!chosen)
 +        return 0;
-+    if (chosen_active >= 0) {
++    {
++        const int b = chosen->act[chosen_active];
 +        memmove(&chosen->act[chosen_active], &chosen->act[chosen_active + 1],
 +                (chosen->nact - chosen_active - 1) * sizeof(chosen->act[0]));
 +        chosen->nact--;
++        for (int w = 0; w < chosen->sce->ics.group_len[chosen->bw[b]]; w++)
++            chosen->sce->zeroes[(chosen->bw[b] + w)*16 + chosen->bg[b]] = 1;
 +    }
-+    chosen->is_pns[chosen_band] = 0;
-+    for (int w = 0; w < chosen->sce->ics.group_len[chosen->bw[chosen_band]]; w++)
-+        chosen->sce->zeroes[(chosen->bw[chosen_band] + w)*16 + chosen->bg[chosen_band]] = 1;
 +    nmr_eval_slots(c->s, c->slots, c->count, NMR_STEP, c->lambda);
 +    return 1;
  }
 
  /* Solve one element group (a solo channel, or a CPE pair pooled under one
-@@ -1085,41 +1190,6 @@
+@@ -1085,41 +1210,6 @@
                      tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
              }
          }
@@ -214,7 +269,7 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
      }
 
      if (rc_global) {
-@@ -1328,6 +1398,31 @@
+@@ -1328,6 +1418,39 @@
              else
                  nmr_solve_slots(s, sl, nsl, NMR_STEP, destbits - pns_total * NMR_PNS_BITS,
                                  1e-9f, 1e4f, NMR_ITERS);
@@ -224,67 +279,177 @@ diff --git a/libavcodec/aaccoder_nmr.h b/libavcodec/aaccoder_nmr.h
 +    /* Decoder legality is shared by CBR/ABR/VBR, and must run AFTER spend
 +     * floors, slew clamps and PNS re-solves. A bounded lambda search can rail
 +     * without fitting; repeating that same search in aac_encode_frame never
-+     * fixes it. Coarsen once, then consume highest bands with bounded work. */
++     * fixes it. Each mode keeps the cap it already solved against (the CBR
++     * reservoir path leaves side information to the outer check), so frames
++     * that fit keep every decision. The repair moves only as far as needed:
++     * current window, reopened range, then bounded band removal. */
 +    {
 +        const float reference = FFMAX(lam_ref, FLT_EPSILON);
 +        int cap = av_clip((int)(5800.f * FFMIN(1.f, lambda / reference)), 256, 5800) * chans;
 +        NMRBudgetContext budget = { s, sl, nsl, lam, 0 };
-+        const AACNMRBudgetOps ops = { &budget, nmr_budget_bits,
-+                                      nmr_budget_coarsen, nmr_budget_remove_highest };
++        const AACNMRBudgetOps ops = { &budget, nmr_budget_bits, nmr_budget_fit_current,
++                                      nmr_budget_reopen, nmr_budget_remove_highest };
 +        AACNMRBudgetResult result;
-+        if (s->nmr->side_inited)
++        if (!rc_global && s->nmr->side_inited)
 +            cap = FFMAX(cap - (int)(FFMAX(s->nmr->side_ema, 0.f) * chans / s->channels), 256);
 +        budget.cap = cap;
 +        result = ff_aac_nmr_fit_budget(&ops, cap, 128 * nsl);
-+        if (result.coarsened) {
-+            unsigned event = ++s->nmr->legality_events;
-+            lam = budget.lambda;
++        if (result.refit) {
++            /* metered per class: a first band removal is reported even after
++             * many benign re-fits */
++            const int lossy = result.removed > 0 || result.bits > cap;
++            unsigned event = lossy ? ++s->nmr->removal_events : ++s->nmr->legality_events;
 +            if (!(event & (event - 1)))
 +                av_log(avctx, AV_LOG_WARNING,
-+                       "AAC NMR budget repair: mode=%d frame=%lld bits=%d cap=%d removed=%d events=%u\n",
-+                       s->options.rc, (long long)avctx->frame_num, result.bits, cap, result.removed, event);
++                       "AAC NMR budget repair: mode=%d frame=%lld bits=%d->%d cap=%d "
++                       "reopened=%d removed=%d %s=%u\n",
++                       s->options.rc, (long long)avctx->frame_num, result.initial_bits,
++                       result.bits, cap, result.reopened, result.removed,
++                       lossy ? "removal_events" : "refit_events", event);
          }
      }
 
 diff --git a/libavcodec/aacenc.h b/libavcodec/aacenc.h
 --- a/libavcodec/aacenc.h
 +++ b/libavcodec/aacenc.h
-@@ -263,6 +263,7 @@
+@@ -263,6 +263,9 @@
      float   abr_alloc_ema;             ///< EMA of psy bit demand (fill shaping)
      int     abr_longs;                 ///< long frames seen during bootstrap
      int64_t abr_frame_num;             ///< once-per-frame servo guard
-+    unsigned legality_events;                    ///< metered allocation-repair diagnostics
++    unsigned legality_events;                    ///< metered lossless budget re-fits
++    unsigned removal_events;                     ///< metered repairs that removed bands
++    unsigned silent_frames;                      ///< metered terminal silent frames
  } AACNMRCurves;
 
  typedef struct AACPCEInfo {
 diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 --- a/libavcodec/aacenc.c
 +++ b/libavcodec/aacenc.c
-@@ -1293,6 +1293,7 @@
+@@ -51,6 +51,7 @@
+ #include "aacenc.h"
+ #include "aacenctab.h"
+ #include "aacenc_utils.h"
++#include "aacenc_nmr_budget.h"
+
+ #include "psymodel.h"
+
+@@ -1283,6 +1284,33 @@
+     }
+ }
+
++/* Undo in-place stereo/TNS processing before another encode pass. */
++static void restore_mdct_coeffs(AACEncContext *s)
++{
++    for (int i = 0; i < s->chan_map[0]; i++) {
++        const int chans = s->chan_map[i + 1] == TYPE_CPE ? 2 : 1;
++        for (int ch = 0; ch < chans; ch++)
++            memcpy(s->cpe[i].ch[ch].coeffs, s->cpe[i].ch[ch].pcoeffs,
++                   sizeof(s->cpe[i].ch[ch].coeffs));
++    }
++}
++
++/* An element with every band zero and no coding tools: the same bitstream a
++ * digitally silent input produces, legal at any rate. */
++static void nmr_silence_element(ChannelElement *cpe, int chans)
++{
++    cpe->common_window = 0;
++    cpe->ms_mode = 0;
++    cpe->is_mode = 0;
++    for (int ch = 0; ch < chans; ch++) {
++        SingleChannelElement *sce = &cpe->ch[ch];
++        memset(sce->zeroes, 1, sizeof(sce->zeroes));
++        memset(sce->band_type, 0, sizeof(sce->band_type));
++        sce->sf_idx[0] = av_clip(sce->sf_idx[0], 0, 255);
++    }
++    adjust_frame_information(cpe, chans);
++}
++
+ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
+                             const AVFrame *frame, int *got_packet_ptr)
+ {
+@@ -1293,6 +1321,7 @@
      IndividualChannelStream *ics;
      int i, its, ch, w, chans, tag, start_ch, ret, frame_bits;
      int target_bits, rate_bits, too_many_bits, too_few_bits;
-+    int nmr_attempts = 0;
++    int nmr_passes = 0, nmr_silent = 0;
      int ms_mode = 0, is_mode = 0, tns_mode = 0, pred_mode = 0;
      int chan_el_counter[4];
      FFPsyWindowInfo windows[AAC_MAX_CHANNELS];
-@@ -1426,6 +1427,15 @@
-         return ret;
-     frame_bits = its = 0;
-     do {
-+        /* Allocation repair should converge in a handful of passes. Preserve
-+         * a terminal error for corrupt/unrepresentable state rather than spin
-+         * forever or emit a packet that exceeds the decoder buffer. */
-+        if (s->options.coder == AAC_CODER_NMR && ++nmr_attempts > 32) {
-+            av_log(avctx, AV_LOG_ERROR,
-+                   "AAC NMR failed to produce a legal frame: bits=%d limit=%d lambda=%g attempts=%d\n",
-+                   frame_bits, 6144 * s->channels - 3, s->lambda, nmr_attempts - 1);
-+            return AVERROR_BUG;
-+        }
-         init_put_bits(&s->pb, avpkt->data, avpkt->size);
+@@ -1452,6 +1481,17 @@
+                     if (sce->band_type[w] > RESERVED_BT)
+                         sce->band_type[w] = 0;
+             }
++            if (nmr_silent) {
++                nmr_silence_element(cpe, chans);
++                if (chans == 2)
++                    put_bits(&s->pb, 1, 0); /* no common window */
++                for (ch = 0; ch < chans; ch++) {
++                    s->cur_channel = start_ch + ch;
++                    encode_individual_channel(avctx, s, &cpe->ch[ch], 0);
++                }
++                start_ch += chans;
++                continue;
++            }
+             s->psy.bitres.alloc = -1;
+             s->psy.bitres.bits = s->last_frame_pb_count / s->channels;
+             s->psy.model->analyze(&s->psy, start_ch, coeffs, wi);
+@@ -1569,6 +1609,41 @@
+             start_ch += chans;
+         }
 
-         if ((avctx->frame_num & 0xFF)==1 && !(avctx->flags & AV_CODEC_FLAG_BITEXACT))
-@@ -1662,7 +1672,7 @@
++        if (s->options.coder == AAC_CODER_NMR) {
++            /* The NMR coder rate-controls itself; the outer loop only enforces
++             * the hard bound: the decoder buffer, or the strict per-frame
++             * rate. A retry shrinks lambda, and with it every legality cap,
++             * by at least 10%. If that ever fails to converge, the frame is
++             * sent silent: always legal, and the packet keeps its samples and
++             * timestamp, so every track keeps its length and sync. */
++            int bits_max = 6144 * s->channels - 4;
++            float scale = 0.9f;
++            enum AACNMRFrameAction action;
++            frame_bits = put_bits_count(&s->pb);
++            if (nmr_silent)
++                break;
++            if (!(avctx->flags & AV_CODEC_FLAG_QSCALE) && avctx->bit_rate_tolerance == 0)
++                bits_max = FFMIN(bits_max, (int)(avctx->bit_rate * 1024 / avctx->sample_rate));
++            action = ff_aac_nmr_frame_action(frame_bits, bits_max, ++nmr_passes, &scale);
++            if (action == AAC_NMR_FRAME_ACCEPT)
++                break;
++            restore_mdct_coeffs(s);
++            if (action == AAC_NMR_FRAME_RETRY) {
++                s->lambda = FFMAX(s->lambda * scale, FLT_EPSILON);
++                its++;
++                continue;
++            }
++            nmr_silent = 1;
++            memset(s->nmr->counted, 0, sizeof(s->nmr->counted)); /* no side estimate */
++            if (!(++s->nmr->silent_frames & (s->nmr->silent_frames - 1)))
++                av_log(avctx, AV_LOG_ERROR,
++                       "AAC NMR emitted a silent frame: bits=%d bound=%d passes=%d "
++                       "frame=%lld silent_frames=%u\n",
++                       frame_bits, bits_max, nmr_passes, (long long)avctx->frame_num,
++                       s->nmr->silent_frames);
++            continue;
++        }
++
+         if (avctx->flags & AV_CODEC_FLAG_QSCALE) {
+             /* When using a constant Q-scale, don't mess with lambda, unless
+              * the frame does not fit the decoder buffer: retry coarser (the
+@@ -1588,13 +1663,6 @@
+         }
+
+         frame_bits = put_bits_count(&s->pb);
+-
+-        /* The NMR coder rate-controls itself (global-lambda reservoir servo):
+-         * per-frame bits intentionally float around the nominal rate, so skip
+-         * the lambda rate loop and only intervene on a hard overflow. */
+-        if (s->options.coder == AAC_CODER_NMR && avctx->bit_rate_tolerance != 0 &&
+-            frame_bits < 6144 * s->channels - 3)
+-            break;
+
+         /* rate control stuff
+          * allow between the nominal bitrate, and what psy's bit reservoir says to target
+@@ -1662,7 +1730,7 @@
              break;
          }
      } while (1);
