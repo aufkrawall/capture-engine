@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Native AAC state isolation across legality retries:** the encoder now snapshots its persistent rate-control and psychoacoustic history before the per-frame encode loop and rewinds that history when retrying an oversized frame at reduced lambda, preventing temporary retry passes from corrupting long-term slew and hysteresis state.
+
 - **Resilient recording output spool handle safety and range validation:** the output spool writer handle is now preserved across failed live reconnect probes without closing and reopening, eliminating write errors during temporary network share stalls. Replay validates signed file offset ranges to prevent integer overflow and distinguishes unfinalized crash tails from corrupt finalized data.
 
 - **Demand-driven encoder texture export and VRAM accounting:** media now allocates the KMT export texture pool only when requested by a zero-copy producer (such as DXVK) rather than eagerly on all non-screengrab recordings, and D3D9 shared-memory capture uses its own encoder upload surface. Exported textures and opened alias views are explicitly accounted and deduplicated in GPU memory diagnostics, and repeated export requests cannot overwrite an adopted producer timeline fence.

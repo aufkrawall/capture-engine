@@ -377,7 +377,13 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
      int ms_mode = 0, is_mode = 0, tns_mode = 0, pred_mode = 0;
      int chan_el_counter[4];
      FFPsyWindowInfo windows[AAC_MAX_CHANNELS];
-@@ -1429,7 +1460,9 @@
+@@ -1425,10 +1456,15 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
+     if ((ret = ff_alloc_packet(avctx, avpkt, 8192 * s->channels)) < 0)
+         return ret;
+     frame_bits = its = 0;
++    AACNMRCurves nmr_backup;
++    if (s->options.coder == AAC_CODER_NMR)
++        nmr_backup = *s->nmr;
      do {
          init_put_bits(&s->pb, avpkt->data, avpkt->size);
 
@@ -406,7 +412,7 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
              s->psy.bitres.alloc = -1;
              s->psy.bitres.bits = s->last_frame_pb_count / s->channels;
              s->psy.model->analyze(&s->psy, start_ch, coeffs, wi);
-@@ -1569,6 +1613,44 @@
+@@ -1569,6 +1616,51 @@
              start_ch += chans;
          }
 
@@ -439,6 +445,13 @@ diff --git a/libavcodec/aacenc.c b/libavcodec/aacenc.c
 +                break;
 +            restore_mdct_coeffs(s);
 +            if (action == AAC_NMR_FRAME_RETRY) {
++                const unsigned saved_legality = s->nmr->legality_events;
++                const unsigned saved_removal = s->nmr->removal_events;
++                const unsigned saved_silent = s->nmr->silent_frames;
++                *s->nmr = nmr_backup;
++                s->nmr->legality_events = saved_legality;
++                s->nmr->removal_events = saved_removal;
++                s->nmr->silent_frames = saved_silent;
 +                s->lambda = FFMAX(s->lambda * scale, FLT_EPSILON);
 +                its++;
 +                continue;
