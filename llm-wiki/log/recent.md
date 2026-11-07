@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-11-07 - Review of the day's commits: encoder import retry, smaller findings
+
+- Read ~20 of 45 commits (diffs only). `ce3357a4` removed the per-frame
+  `EncoderKmtRequested` re-assert, so the failure branch (flag cleared, `kmtReady` withdrawn)
+  made its own `+60` retry unreachable: one transient import failure meant copy route until
+  the next resize. Now `ce::EncoderKmtImportRetry` bounds it (4 failures, 60 frames apart,
+  flag cleared on the last, budget reset by new swapchain/host republish). Not run on a DXVK
+  game; policy tests only.
+- Checked and fine: Detach lock order (media route then engine route, neither takes
+  `apiMutex`), interposer trackers guarded by `admissionMutex_`/`cadenceMutex_`,
+  `fgApiTransitionLock` has no re-entrant path, `pcoeffs` is the pristine MDCT copy
+  (FFmpeg's own retry loop restores it the same way).
+- Strict-CBR NMR AAC is a per-frame ceiling, not a target: dense gated-noise content
+  measured 60-93% of the bound (mean packet bits / `bit_rate*1024/rate`). The runtime test
+  now fails below 50% so a retry loop that over-shrinks lambda cannot starve the stream.
+- Left alone on purpose: `603ae6bd` gates the startup-handoff Present record on
+  `presentBypass != nullptr` (diagnostics only, the guarded-invoke signature was restored
+  deliberately); `ReadGeometry`'s ready flag is only a first-write acquire, rewrites are
+  ordered by the frame-ring lease (documented in `frame_ring.h`).
+
 ### 2026-11-07 - Review of AAC packet-size accounting
 
 - Strict NMR AAC checked the budget before the end marker and alignment. The

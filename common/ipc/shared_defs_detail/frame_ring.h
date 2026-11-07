@@ -145,7 +145,10 @@ struct ShmemBuffer {
         return false;
     }
 
-    // The frame-ring lease pins the slot while its geometry and pixels are read.
+    // The frame-ring lease pins the slot while its geometry and pixels are read, from the inject thread's
+    // frame capture until the encoder's source read completes, so both readers see one geometry. Nothing
+    // clears slotReady: its acquire pairs with mark_ready's release and orders a slot's first geometry
+    // and pixels; every later rewrite of the slot is ordered by the lease, not by this flag.
     Geometry ReadGeometry(int slot, size_t mappedBytes) const {
         if (!check_ready(slot))
             return {};

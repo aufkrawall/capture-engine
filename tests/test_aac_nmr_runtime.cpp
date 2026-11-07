@@ -78,6 +78,7 @@ struct EncodeConfig {
 struct EncodeResult {
     int packets = 0;
     int maxPacketBits = 0;
+    int64_t totalPacketBits = 0;
     int64_t packetSamples = 0;
     int64_t packetEnd = 0;
     int initialPadding = 0;
@@ -182,6 +183,7 @@ void Encode(const EncodeConfig& config, EncodeResult& result) {
             const int packetBits = packet->size * 8;
             EXPECT_LE(packetBits, 6144 * config.channels);
             result.maxPacketBits = std::max(result.maxPacketBits, packetBits);
+            result.totalPacketBits += packetBits;
             EXPECT_EQ(packet->duration, samplesPerFrame);
             if (result.packets != 0)
                 EXPECT_EQ(packet->pts, result.packetEnd);
@@ -226,8 +228,13 @@ TEST(AacNmrRuntimeTest, RateModesKeepLegalPacketsAndContinuousSampleTimeAcrossSh
                     return;
                 ExpectCompleteTimeline(config, result);
                 EXPECT_GT(result.decodedPeak, 0.0f);
-                if (mode == 3)
+                if (mode == 3) {
                     EXPECT_LE(result.maxPacketBits, config.bitRate * 1024 / rate);
+                    // The bound is a ceiling, not a target, but the retry loop must not starve the stream: this
+                    // content (half gated noise, half near-silence) measured 60-93% of the bound.
+                    EXPECT_GE(result.totalPacketBits / result.packets, config.bitRate * 1024 / rate / 2)
+                        << "strict CBR starved far below its per-frame bound";
+                }
                 // Real content must always be repaired, never silenced.
                 EXPECT_EQ(AacDiagnostics::Count("AAC NMR emitted a silent frame"), 0);
                 EXPECT_EQ(AacDiagnostics::Count("removal_events="), 0);
