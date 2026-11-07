@@ -116,8 +116,9 @@ float Composer::WrappedHeight(float width, const char* text, Size size) const {
         return 0.0f;
     if (W(text, size) <= width)
         return Pitch(size);
-    return Pitch(size) * WrapLines(text, width, [&](const char* part) { return W(part, size); },
-                                  [](const char*, int) {});
+    const int lines = WrapLines(text, width, [&](const char* part) { return W(part, size); },
+                                [](const char*, int) {});
+    return Pitch(size) * static_cast<float>(lines);
 }
 
 float Composer::WrappedText(float x, float top, float width, const char* text, Size size, Tone tone) {
@@ -130,9 +131,9 @@ float Composer::WrappedText(float x, float top, float width, const char* text, S
     }
     const int lines = WrapLines(text, width, [&](const char* part) { return W(part, size); },
                                 [&](const char* part, int line) {
-                                    Text(x, Baseline(top + line * pitch, pitch, size), part, size, tone);
+                                    Text(x, Baseline(top + static_cast<float>(line) * pitch, pitch, size), part, size, tone);
                                 });
-    return top + lines * pitch;
+    return top + static_cast<float>(lines) * pitch;
 }
 
 float Composer::Pitch(Size size) const {

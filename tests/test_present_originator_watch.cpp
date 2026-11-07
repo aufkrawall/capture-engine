@@ -182,6 +182,8 @@ TEST(SwapchainProbeMemoTest, AProbeAsksTheKernelOnlyAboutWhatItHasNotProvedYet) 
     void* tableB[2] = {};
     void** swapchainA = tableA;
     void** swapchainB = tableA;
+    const void* const addressA = static_cast<const void*>(&swapchainA);
+    const void* const addressB = static_cast<const void*>(&swapchainB);
     int asked = 0;
     bool readable = true;
     const auto isReadable = [&](const void*, size_t) {
@@ -190,27 +192,28 @@ TEST(SwapchainProbeMemoTest, AProbeAsksTheKernelOnlyAboutWhatItHasNotProvedYet) 
     };
     ce::present_probe::SwapchainProbeMemo memo;
 
-    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableA), memo, isReadable), tableA);
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(addressA, sizeof(tableA), memo, isReadable), tableA);
     EXPECT_EQ(asked, 2) << "the first sight asks about the object and its table";
-    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableA), memo, isReadable), tableA);
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(addressA, sizeof(tableA), memo, isReadable), tableA);
     EXPECT_EQ(asked, 2) << "every Present after that asks nothing";
 
     swapchainA = tableB;
-    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableB), memo, isReadable), tableB);
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(addressA, sizeof(tableB), memo, isReadable), tableB);
     EXPECT_EQ(asked, 3) << "a new table at the same address is proved";
 
     asked = 0;
-    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainB, sizeof(tableA), memo, isReadable), tableA);
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(addressB, sizeof(tableA), memo, isReadable), tableA);
     EXPECT_EQ(asked, 2) << "another object starts over";
 
     ce::present_probe::SwapchainProbeMemo unreadable;
     readable = false;
-    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&swapchainA, sizeof(tableB), unreadable, isReadable), nullptr);
-    EXPECT_FALSE(unreadable.HoldsObject(&swapchainA)) << "nothing unproved is remembered";
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(addressA, sizeof(tableB), unreadable, isReadable), nullptr);
+    EXPECT_FALSE(unreadable.HoldsObject(addressA)) << "nothing unproved is remembered";
     EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(nullptr, sizeof(tableB), unreadable, isReadable), nullptr);
     void** noTable = nullptr;
     readable = true;
-    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(&noTable, sizeof(tableB), unreadable, isReadable), nullptr);
+    EXPECT_EQ(ce::present_probe::ProbeSwapchainTable(static_cast<const void*>(&noTable), sizeof(tableB), unreadable,
+                                                  isReadable), nullptr);
 }
 
 }  // namespace

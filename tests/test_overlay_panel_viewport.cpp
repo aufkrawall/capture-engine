@@ -106,7 +106,7 @@ TEST(OverlayViewportTest, NarrowLayoutsKeepEveryValueAtItsRasterizedFontSize) {
                 SCOPED_TRACE(scale);
                 SCOPED_TRACE(limit);
                 Inputs in = ViewportInputs();
-                in.unit = renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize / 14.0f;
+                in.unit = static_cast<float>(renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize) / 14.0f;
                 in.maxWidth = limit;
                 Scene scene;
                 Build(layout, in, measure, scene);
@@ -139,7 +139,7 @@ TEST(OverlayViewportTest, ReviewReproductionFitsSixHundredPixelsAtTwoHundredPerc
     in.recording.kind = RecordingKind::NotRecording;
     in.recording.text = "NOT RECORDING";
     in.recording.warning = "";
-    in.unit = renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize / 14.0f;
+    in.unit = static_cast<float>(renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize) / 14.0f;
     in.maxWidth = 600;  // 640 px viewport, default 10 px padding at 200% on both sides.
     Scene scene;
     Build(Layout::Hero, in, measure, scene);

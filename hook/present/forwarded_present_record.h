@@ -32,6 +32,8 @@ public:
     ForwardedPresentRecord(const ForwardedPresentRecord&) = delete;
     ForwardedPresentRecord& operator=(const ForwardedPresentRecord&) = delete;
 
+    // row_ is engaged on every constructor path and reset only by our destructor.
+    // NOLINTBEGIN(bugprone-unchecked-optional-access)
     // fps_limit_wait_us: the limiter's pre-present wait.
     template <typename Wait>
     void TimeLimiter(Wait&& wait) {
@@ -60,6 +62,7 @@ public:
             }
         }
     }
+    // NOLINTEND(bugprone-unchecked-optional-access)
     template <typename DownCall>
     HRESULT Forward(DownCall&& downCall) {
         BeginDownCall();

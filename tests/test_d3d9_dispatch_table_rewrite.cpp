@@ -123,13 +123,22 @@ protected:
         d3d_.Attach(Direct3DCreate9(D3D_SDK_VERSION));
         if (!d3d_)
             GTEST_SKIP() << "Direct3D 9 is not available";
-        D3DPRESENT_PARAMETERS params = {};
-        params.Windowed = TRUE;
-        params.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        params.BackBufferFormat = D3DFMT_UNKNOWN;
-        params.BackBufferWidth = 64;
-        params.BackBufferHeight = 64;
-        params.hDeviceWindow = window_;
+        D3DPRESENT_PARAMETERS params = {
+            .BackBufferWidth = 64,
+            .BackBufferHeight = 64,
+            .BackBufferFormat = D3DFMT_UNKNOWN,
+            .BackBufferCount = 0,
+            .MultiSampleType = D3DMULTISAMPLE_NONE,
+            .MultiSampleQuality = 0,
+            .SwapEffect = D3DSWAPEFFECT_DISCARD,
+            .hDeviceWindow = window_,
+            .Windowed = TRUE,
+            .EnableAutoDepthStencil = FALSE,
+            .AutoDepthStencilFormat = D3DFMT_UNKNOWN,
+            .Flags = 0,
+            .FullScreen_RefreshRateInHz = 0,
+            .PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT,
+        };
         const HRESULT hr =
             d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window_, CreationFlags(), &params, &device_);
         if (FAILED(hr))
@@ -157,7 +166,7 @@ protected:
 
     void Write(size_t slot, void* value) {
         DWORD protection = 0;
-        ASSERT_TRUE(VirtualProtect(&table_[slot], sizeof(void*), PAGE_READWRITE, &protection));
+        ASSERT_TRUE(VirtualProtect(static_cast<void*>(&table_[slot]), sizeof(void*), PAGE_READWRITE, &protection));
         table_[slot] = value;
     }
 

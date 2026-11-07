@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -83,8 +84,8 @@ TEST(OverlayShapeBatchingTest, ShapesAndTextShareOneCommandThatSamplesTheWhiteBl
 
     // Where that UV lands: opaque white, whichever neighbor a linear filter picks.
     const CustomOverlay::FontAtlas& atlas = *renderer.GetFont();
-    const int centerX = static_cast<int>(u * static_cast<float>(atlas.GetTextureWidth()) + 0.5f);
-    const int centerY = static_cast<int>(v * static_cast<float>(atlas.GetTextureHeight()) + 0.5f);
+    const int centerX = static_cast<int>(std::lround(u * static_cast<float>(atlas.GetTextureWidth())));
+    const int centerY = static_cast<int>(std::lround(v * static_cast<float>(atlas.GetTextureHeight())));
     for (int y = centerY - 1; y <= centerY; ++y) {
         for (int x = centerX - 1; x <= centerX; ++x) {
             const size_t index = (static_cast<size_t>(y) * static_cast<size_t>(atlas.GetTextureWidth()) +

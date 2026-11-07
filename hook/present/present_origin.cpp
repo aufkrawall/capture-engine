@@ -169,7 +169,7 @@ void WalkPresentOriginator(PresentOrigin* out, bool moduleSetObservable, uint64_
     for (USHORT batch = 0; batch < kBatches; ++batch) {
         void* stackFrames[kBatchFrames] = {};
         const USHORT frameCount =
-            CaptureStackBackTrace(static_cast<DWORD>(2 + batch * kBatchFrames), kBatchFrames, stackFrames, nullptr);
+            CaptureStackBackTrace(2u + static_cast<DWORD>(batch) * kBatchFrames, kBatchFrames, stackFrames, nullptr);
         for (USHORT i = 0; i < frameCount; ++i) {
             const FrameVerdict& frame = ClassifyWalkedFrame(stackFrames[i], moduleSetObservable, moduleSet);
             if (frame.kind == FrameKind::kNoImage || frame.kind == FrameKind::kCaptureEngine) {

@@ -17,7 +17,13 @@
 - All 45 focused allocation/encoder/mux/detach/loader tests pass. Public encoding checks
   cover 16 configurations and exact decoded MKV/MP4 endpoints. A deliberate repair
   bypass fails four allocation tests. Original full-history replay and game/hardware
-  validation remain open. Clean full verification/package gate is the closing check.
+  validation remain open.
+- Build 0.1.7443 passed the product verification and package gate on resume with 61
+  focused native cases and the full x64 sanitizer suite. The earlier unfiltered run
+  passed the native suite, Python self-tests and 208 WARP flow scenarios on the same
+  product sources. The closing changes completed two D3D9 test initializers. The
+  warning ratchet tightened and clang-format reported advisory issues. The 63-file
+  setup payload contains byte-identical copies of the built codec and media DLLs.
 - Dumps and staging MKV remain private and preserved. The stuck media/audio-worker
   tree was terminated with user authorization. Full root cause, test limits and anchors:
   [multi-audio-capture.md](../multi-audio-capture.md#native-aac-nmr-retry-hang-and-repair-2026-11-07),

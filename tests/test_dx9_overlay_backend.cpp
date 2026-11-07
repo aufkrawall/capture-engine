@@ -109,13 +109,22 @@ protected:
         d3d_.Attach(Direct3DCreate9(D3D_SDK_VERSION));
         if (!d3d_)
             GTEST_SKIP() << "Direct3D 9 is not available";
-        D3DPRESENT_PARAMETERS params = {};
-        params.Windowed = TRUE;
-        params.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        params.BackBufferFormat = D3DFMT_UNKNOWN;
-        params.BackBufferWidth = kSize;
-        params.BackBufferHeight = kSize;
-        params.hDeviceWindow = window_;
+        D3DPRESENT_PARAMETERS params = {
+            .BackBufferWidth = kSize,
+            .BackBufferHeight = kSize,
+            .BackBufferFormat = D3DFMT_UNKNOWN,
+            .BackBufferCount = 0,
+            .MultiSampleType = D3DMULTISAMPLE_NONE,
+            .MultiSampleQuality = 0,
+            .SwapEffect = D3DSWAPEFFECT_DISCARD,
+            .hDeviceWindow = window_,
+            .Windowed = TRUE,
+            .EnableAutoDepthStencil = FALSE,
+            .AutoDepthStencilFormat = D3DFMT_UNKNOWN,
+            .Flags = 0,
+            .FullScreen_RefreshRateInHz = 0,
+            .PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT,
+        };
         HRESULT hr = d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window_, CreationFlags(), &params,
                                         &device_);
         if (FAILED(hr))
@@ -255,7 +264,7 @@ protected:
     void* HookCreateQuerySlot(void* hook) {
         void** table = *reinterpret_cast<void***>(device_.Get());
         DWORD protection = 0;
-        EXPECT_TRUE(VirtualProtect(&table[kCreateQuerySlot], sizeof(void*), PAGE_READWRITE, &protection));
+        EXPECT_TRUE(VirtualProtect(static_cast<void*>(&table[kCreateQuerySlot]), sizeof(void*), PAGE_READWRITE, &protection));
         void* previous = table[kCreateQuerySlot];
         table[kCreateQuerySlot] = hook;
         return previous;
@@ -335,7 +344,7 @@ TEST_F(DX9OverlayBackendTest, NeverRewritesTheDevicesDispatchTable) {
 namespace {
 
 DWORD ReadPixel(IDirect3DDevice9* device, IDirect3DSurface9* target, UINT x, UINT y) {
-    D3DSURFACE_DESC desc = {};
+    D3DSURFACE_DESC desc = {D3DFMT_UNKNOWN, D3DRTYPE_SURFACE, 0, D3DPOOL_DEFAULT, D3DMULTISAMPLE_NONE, 0, 0, 0};
     EXPECT_EQ(target->GetDesc(&desc), D3D_OK);
     ComPtr<IDirect3DSurface9> readback;
     EXPECT_EQ(device->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &readback,

@@ -68,7 +68,7 @@ TEST(OverlayHardwareHistoryTest, MissingReadingsAndRecoveryKeepEveryLayoutInPlac
         ASSERT_TRUE(renderer.Initialize(&backend, scale));
         RendererMeasure measure(renderer);
         Inputs live = HardwareInputs();
-        live.unit = renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize / 14.0f;
+        live.unit = static_cast<float>(renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize) / 14.0f;
         HardwareHistory history;
         history.Apply(live);
         Inputs dropped = WithoutReadings(live);

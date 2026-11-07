@@ -241,7 +241,7 @@ void RunStartupOnlyApplicationStream(StartupOnlyApplicationStream& run, bool wit
             --report.count;
         }
         report.frames[report.count++] =
-            MakeNativeFrame(static_cast<uint64_t>(frame + 1), static_cast<uint64_t>(applicationPresentUs));
+            MakeNativeFrame(static_cast<uint64_t>(frame) + 1, static_cast<uint64_t>(applicationPresentUs));
         if (frame % 8 == 7)
             run.tracker.SubmitNativeReport(report);
     }

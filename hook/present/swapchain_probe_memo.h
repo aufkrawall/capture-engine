@@ -34,11 +34,11 @@ void** ProbeSwapchainTable(const void* swapchain, size_t tableBytes, SwapchainPr
         return nullptr;
     }
     void** const table = *static_cast<void** const*>(swapchain);
-    if (!memo.Holds(swapchain, table)) {
+    if (!memo.Holds(swapchain, static_cast<const void*>(table))) {
         if (!table || !isReadable(static_cast<const void*>(table), tableBytes)) {
             return nullptr;
         }
-        memo.Remember(swapchain, table);
+        memo.Remember(swapchain, static_cast<const void*>(table));
     }
     return table;
 }

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -63,8 +64,8 @@ TEST(CustomFontAtlasCache, TheWhiteBlockIsOpaqueAndNoGlyphComesNearIt) {
         ASSERT_TRUE(atlas.Initialize("Arial", 16, scale));
         const int width = atlas.GetTextureWidth();
         const int height = atlas.GetTextureHeight();
-        const int blockX = static_cast<int>(atlas.GetWhiteU() * static_cast<float>(width) + 0.5f);
-        const int blockY = static_cast<int>(atlas.GetWhiteV() * static_cast<float>(height) + 0.5f);
+        const int blockX = static_cast<int>(std::lround(atlas.GetWhiteU() * static_cast<float>(width)));
+        const int blockY = static_cast<int>(std::lround(atlas.GetWhiteV() * static_cast<float>(height)));
         EXPECT_EQ(blockX, 2);
         EXPECT_EQ(blockY, height - 2);
         for (int y = height - 4; y < height; ++y) {

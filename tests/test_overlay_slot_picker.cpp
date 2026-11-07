@@ -162,6 +162,8 @@ TEST(OverlaySlotPickerTest, AGpuAFrameBehindKeepsOnlyAFewSlotsInUse) {
 // Random routes and random GPU progress: Signal after every draw, no Signal at all, the GPU stalling or catching up.
 // Mutating IsFinished to accept any completed value fails this at once: a no-Signal slot reads as finished while busy.
 TEST(OverlaySlotPickerTest, ASlotReadAsFinishedIsNeverStillOnTheGpu) {
+    // Fixed seed keeps the test sequence reproducible.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed)
     std::mt19937 random(12345);
     for (int run = 0; run < 20; ++run) {
         OverlaySlotPicker picker;

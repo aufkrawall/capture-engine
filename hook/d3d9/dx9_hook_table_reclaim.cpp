@@ -29,7 +29,7 @@ void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason, bool u
     if (counts.restored == 0 && counts.leftAlone == 0)
         return;
 
-    D3DDEVICE_CREATION_PARAMETERS creation = {};
+    D3DDEVICE_CREATION_PARAMETERS creation = {0, D3DDEVTYPE_HAL, nullptr, 0};
     const bool multithreaded = SUCCEEDED(device->GetCreationParameters(&creation)) &&
                                (creation.BehaviorFlags & D3DCREATE_MULTITHREADED) != 0;
     // Calls may have passed the rewritten table unseen: on any device while CE

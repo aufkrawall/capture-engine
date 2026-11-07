@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include "vtable_hook_policy.h"
 
@@ -33,15 +34,39 @@ struct Counts {
     uint32_t leftAlone = 0;
 };
 
+struct Collection {
+    size_t count = 0;
+    bool truncated = false;
+};
+
+// Lookup returns the ownership of one slot (an empty value means unowned).
+// Collect in table order so a bounded batch always selects the same hooks.
+template <typename Lookup>
+Collection GatherOwnedSlots(void** first, size_t count, std::span<OwnedSlot> output, Lookup&& lookup) {
+    Collection result;
+    for (size_t i = 0; i < count; ++i) {
+        const OwnedSlot owned = lookup(first + i);
+        if (!owned.original)
+            continue;
+        if (result.count == output.size()) {
+            result.truncated = true;
+            break;
+        }
+        output[result.count++] = owned;
+    }
+    return result;
+}
+
 class SlotWriter {
 public:
     // Swaps `expected` for `value`; a table in a read-only image is unprotected
     // for the write. One query per memory region.
     bool Write(void** slot, void* expected, void* value) {
-        const auto address = reinterpret_cast<uintptr_t>(slot);
+        void* const slotAddress = static_cast<void*>(slot);
+        const auto address = reinterpret_cast<uintptr_t>(slotAddress);
         if (address < regionBegin_ || address + sizeof(void*) > regionEnd_) {
             MEMORY_BASIC_INFORMATION memory = {};
-            if (VirtualQuery(slot, &memory, sizeof(memory)) != sizeof(memory) || memory.State != MEM_COMMIT ||
+            if (VirtualQuery(slotAddress, &memory, sizeof(memory)) != sizeof(memory) || memory.State != MEM_COMMIT ||
                 (memory.Protect & PAGE_GUARD) != 0)
                 return false;
             const DWORD access = memory.Protect & 0xFFu;
@@ -50,12 +75,12 @@ public:
             writable_ = access == PAGE_READWRITE || access == PAGE_EXECUTE_READWRITE;
         }
         DWORD previous = 0;
-        if (!writable_ && !VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &previous))
+        if (!writable_ && !VirtualProtect(slotAddress, sizeof(void*), PAGE_READWRITE, &previous))
             return false;
         const void* replaced =
             InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), value, expected);
         if (!writable_)
-            VirtualProtect(slot, sizeof(void*), previous, &previous);
+            VirtualProtect(slotAddress, sizeof(void*), previous, &previous);
         return replaced == expected;
     }
 

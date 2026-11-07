@@ -37,6 +37,7 @@ TEST(InterposerOutputGroupsTest, AWorkersPairIsOneGroup) {
 TEST(InterposerOutputGroupsTest, TwoFramesInARowOnOneWorkerAreTwoGroups) {
     OutputGroupTracker groups;
     std::vector<uint32_t> indices;
+    indices.reserve(4);
     for (int output = 0; output < 4; ++output) {
         indices.push_back(groups.Next(11, 2));
     }
@@ -54,6 +55,7 @@ TEST(InterposerOutputGroupsTest, AThreadChangeOpensAGroupWhateverTheCountSays) {
 TEST(InterposerOutputGroupsTest, ADedicatedPresenterIsCounted) {
     OutputGroupTracker groups;
     std::vector<uint32_t> indices;
+    indices.reserve(6);
     for (int output = 0; output < 6; ++output) {
         indices.push_back(groups.Next(11, 3));
     }
@@ -301,7 +303,8 @@ TEST_F(FpsLimiterInterposerOutputApplyTest, AThreadChangeOpensAGroupOnItsSlot) {
     EXPECT_NEAR(nextOwnerRelease - ownerRelease, groupInterval, 1);
     int64_t follower = 0;
     second.Call([&] { follower = Output(); });
-    EXPECT_NEAR(follower - nextOwnerRelease, groupInterval / 2, 1);
+    const int64_t followerOffsetTicks = groupInterval / 2;
+    EXPECT_NEAR(follower - nextOwnerRelease, followerOffsetTicks, 1);
 }
 
 // DX12: the game thread owns the cadence and the outputs pass untouched, so the driver spaces them. They start pacing

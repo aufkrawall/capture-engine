@@ -344,24 +344,22 @@ ReclaimCounts ReclaimRewrittenSlots(void* pFirstEntry, size_t slotCount) {
     if (!pFirstEntry || slotCount == 0)
         return counts;
     auto* const first = static_cast<void**>(pFirstEntry);
-    auto* const end = first + slotCount;
     std::lock_guard<std::mutex> lock(g_VTableMutex);
-    // A D3D9 device table holds a dozen of CE's hooks; the scan is over every
-    // hook CE owns, so this runs where a rewrite is known to happen, not per call.
+    // A D3D9 device table holds a dozen of CE's hooks. Reclaim only the
+    // supplied table's slots where a rewrite is known to happen, not per call.
     ce::vtable_slot_reclaim::OwnedSlot owned[64];
-    size_t ownedCount = 0;
-    for (const auto& [slot, ownership] : g_HookOwnership) {
-        if (slot < first || slot >= end || !ownership.original)
-            continue;
-        if (ownedCount == std::size(owned)) {
-            HookLogImportant("VTableHook: ReclaimRewrittenSlots - more than %zu CE hooks in %p; the rest stay as they are",
-                             std::size(owned), pFirstEntry);
-            break;
-        }
-        owned[ownedCount++] = {slot, ownership.detour, ownership.original};
-    }
-    const ce::vtable_slot_reclaim::Counts reclaimed = ce::vtable_slot_reclaim::Reclaim(owned, ownedCount);
-    counts.owned = static_cast<uint32_t>(ownedCount);
+    const auto collection = ce::vtable_slot_reclaim::GatherOwnedSlots(first, slotCount, owned, [](void** slot) {
+        const auto found = g_HookOwnership.find(slot);
+        if (found == g_HookOwnership.end() || !found->second.original)
+            return ce::vtable_slot_reclaim::OwnedSlot{};
+        const auto& ownership = found->second;
+        return ce::vtable_slot_reclaim::OwnedSlot{slot, ownership.detour, ownership.original};
+    });
+    if (collection.truncated)
+        HookLogImportant("VTableHook: ReclaimRewrittenSlots - more than %zu CE hooks in %p; the rest stay as they are",
+                         std::size(owned), pFirstEntry);
+    const ce::vtable_slot_reclaim::Counts reclaimed = ce::vtable_slot_reclaim::Reclaim(owned, collection.count);
+    counts.owned = static_cast<uint32_t>(collection.count);
     counts.restored = reclaimed.restored;
     counts.leftAlone = reclaimed.leftAlone;
     return counts;

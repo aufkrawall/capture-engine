@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -145,7 +147,20 @@ TEST(OverlayPanelPreview, ThePanelsReachThePixels) {
     const char* fontName = std::getenv("CE_OVERLAY_PREVIEW_FONT");
     const char* scaleText = std::getenv("CE_OVERLAY_PREVIEW_SCALE");
     const char* widthText = std::getenv("CE_OVERLAY_PREVIEW_MAX_WIDTH");
-    const float dpiScale = scaleText ? static_cast<float>(std::atof(scaleText)) : 1.5f;
+    const auto readNumber = [](const char* text, float fallback) {
+        if (!text)
+            return fallback;
+        errno = 0;
+        char* end = nullptr;
+        const float value = std::strtof(text, &end);
+        if (end == text || *end != '\0' || errno != 0 || !std::isfinite(value)) {
+            ADD_FAILURE() << "Invalid overlay preview number";
+            return fallback;
+        }
+        return value;
+    };
+    const float dpiScale = readNumber(scaleText, 1.5f);
+    const float maxWidth = readNumber(widthText, 0.0f);
 
     const struct {
         Layout layout;
@@ -163,7 +178,7 @@ TEST(OverlayPanelPreview, ThePanelsReachThePixels) {
 
             Inputs in = PreviewInputs(state);
             in.unit = static_cast<float>(renderer.GetTextMetrics(CustomOverlay::TextSize::Base).pixelSize) / 14.0f;
-            in.maxWidth = widthText ? static_cast<float>(std::atof(widthText)) : 0.0f;
+            in.maxWidth = maxWidth;
             Scene scene;
             RendererMeasure measure(renderer);
             Build(layout.layout, in, measure, scene);

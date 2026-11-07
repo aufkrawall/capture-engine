@@ -14,14 +14,17 @@ namespace {
 using CustomOverlay::UploadSlotGeometry;
 
 constexpr size_t kVertices = 100;
-const std::vector<uint16_t> kIndices = {0, 1, 2, 0, 2, 3};
+const std::vector<uint16_t>& QuadIndices() {
+    static const std::vector<uint16_t> indices = {0, 1, 2, 0, 2, 3};
+    return indices;
+}
 
 }  // namespace
 
 TEST(UploadSlotGeometryTest, AFreshSlotGetsEverything) {
     UploadSlotGeometry geometry(4);
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     const auto plan = geometry.PlanSlot(0, kVertices);
     EXPECT_TRUE(plan.writeVertices);
     EXPECT_EQ(plan.firstVertex, 0u);
@@ -31,11 +34,11 @@ TEST(UploadSlotGeometryTest, AFreshSlotGetsEverything) {
 TEST(UploadSlotGeometryTest, ASlotWithTheCurrentRowsGetsOnlyTheGraph) {
     UploadSlotGeometry geometry(4);
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     geometry.MarkWritten(0);
 
     geometry.NoteTailFrame(40, 4);
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     const auto kept = geometry.PlanSlot(0, kVertices);
     EXPECT_TRUE(kept.writeVertices);
     EXPECT_EQ(kept.firstVertex, 40u);
@@ -50,10 +53,10 @@ TEST(UploadSlotGeometryTest, ASlotWithTheCurrentRowsGetsOnlyTheGraph) {
 TEST(UploadSlotGeometryTest, ACachedFrameWritesNothingToASlotThatHoldsIt) {
     UploadSlotGeometry geometry(4);
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     geometry.MarkWritten(0);
 
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     const auto same = geometry.PlanSlot(0, kVertices);
     EXPECT_FALSE(same.writeVertices);
     EXPECT_FALSE(same.writeIndices);
@@ -63,11 +66,11 @@ TEST(UploadSlotGeometryTest, ACachedFrameWritesNothingToASlotThatHoldsIt) {
 TEST(UploadSlotGeometryTest, NewRowsInvalidateWhatEverySlotKept) {
     UploadSlotGeometry geometry(4);
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     geometry.MarkWritten(0);
 
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     const auto plan = geometry.PlanSlot(0, kVertices);
     EXPECT_TRUE(plan.writeVertices);
     EXPECT_EQ(plan.firstVertex, 0u);
@@ -77,7 +80,7 @@ TEST(UploadSlotGeometryTest, NewRowsInvalidateWhatEverySlotKept) {
 TEST(UploadSlotGeometryTest, ReplacedMemoryHoldsNothing) {
     UploadSlotGeometry geometry(4);
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     geometry.MarkWritten(0);
     geometry.MarkWritten(1);
 
@@ -118,7 +121,7 @@ TEST(UploadSlotGeometryTest, AShorterGraphLineKeepsTheLongerListInTheBuffer) {
 TEST(UploadSlotGeometryTest, ATailAfterAnUnseenWholeFrameComparesItsWholeList) {
     UploadSlotGeometry geometry(4);
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
 
     const std::vector<uint16_t> newText = {9, 8, 7, 0, 2, 3};
     geometry.NoteWholeFrame();
@@ -143,7 +146,7 @@ TEST(UploadSlotGeometryTest, TheReportCountsTheSlotsThatDrewInItsWindow) {
     UploadSlotGeometry geometry(8);
     UploadSlotGeometry::Totals report;
     geometry.NoteWholeFrame();
-    geometry.IndicesToHold(kIndices);
+    geometry.IndicesToHold(QuadIndices());
     for (uint32_t frame = 0; frame < UploadSlotGeometry::kReportFrames - 1; ++frame) {
         geometry.MarkWritten(frame % 2);
         ASSERT_FALSE(geometry.NoteBytes(10, 2, 100, &report));
@@ -164,6 +167,8 @@ TEST(UploadSlotGeometryTest, EverySlotReadsAsTheCurrentFrameAfterItsPlanWhatever
     constexpr size_t kSlots = 16;
     constexpr size_t kMaxVertices = 400;
     constexpr size_t kMaxIndices = 600;
+    // Fixed seed keeps the test sequence reproducible.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed)
     std::mt19937 random(0xCE12);
     UploadSlotGeometry geometry(kSlots);
     std::vector<std::vector<uint32_t>> vertexMemory(kSlots, std::vector<uint32_t>(kMaxVertices, 0xDEADu));

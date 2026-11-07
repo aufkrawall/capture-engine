@@ -218,7 +218,7 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const u
     if (initialized || !device)
         return false;
 
-    D3DDEVICE_CREATION_PARAMETERS creation = {};
+    D3DDEVICE_CREATION_PARAMETERS creation = {0, D3DDEVTYPE_HAL, nullptr, 0};
     pureDevice = SUCCEEDED(device->GetCreationParameters(&creation)) &&
                  (creation.BehaviorFlags & D3DCREATE_PUREDEVICE) != 0;
     HookLogImportant("[Overlay] DX9 backend saves %s around its draw (pure=%d)",
