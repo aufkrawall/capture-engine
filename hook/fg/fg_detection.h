@@ -206,7 +206,7 @@ public:
     // These are called when FG is actually created/destroyed via the APIs
     // NOTE: These still work in dormant mode - they just report API state
     // =========================================================================
-    void SetDLSSFGActive(bool active);
+    void SetDLSSFGActive(bool active, int multiplier = 0, bool runtimeObservation = false);
     // The factor the game asks for through Streamline's options. It stands until the runtime's own evaluation is seen.
     void SetDLSSFGMultiplier(int multiplier);
     // The factor the runtime's evaluation consumed: what it generates, whatever the game keeps asking for (dynamic MFG
@@ -381,11 +381,11 @@ private:
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<bool> directFFXApiConfirmed{false};
     std::atomic<bool> fsrFGAuthoritativeApiOff{false};
+    void UpdateDLSSFGActive(bool active, int multiplier, bool runtimeObservation);
     void UpdateDLSSFGMultiplier(int multiplier, bool runtimeObservation);
-    void ClearDLSSFGMultiplier();
     void PublishDLSSFGSharedState();
-    // Low byte: last request. High byte: effective factor. One CAS commits both so a poll cannot publish a stale
-    // runtime observation after another thread evaluated a new factor, or clear that newer observation in two steps.
+    std::mutex fgApiTransitionLock;
+    // Low byte: last request. High byte: effective factor. Readers need no lock.
     std::atomic<uint32_t> dlssFGMultiplierState{0};
     // Dynamic multi-frame generation can vary the factor per frame, so the
     // transition log is metered rather than per-change; these carry the

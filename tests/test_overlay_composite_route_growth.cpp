@@ -178,8 +178,8 @@ TEST(OverlayCompositeRouteGrowthSourceTest, SharedDlssFactorMirrorIsNotGatedOnTh
 
     const size_t present = layer.find("VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR");
     ASSERT_NE(present, std::string::npos);
-    const size_t mirror = layer.find("g_FGCompat.SetDLSSFGMultiplier(std::clamp(sharedDLSSFGMultiplier", present);
-    const size_t limiterBlock = layer.find("if (!asyncPresentDetected) {", present);
+    const size_t mirror = layer.find("g_FGCompat.SetDLSSFGActive(true, std::clamp(sharedDLSSFGMultiplier", present);
+    const size_t limiterBlock = layer.find("PaceVulkanAtAcquire(asyncPresentDetected, pacingRuntime)", present);
     ASSERT_NE(mirror, std::string::npos);
     ASSERT_NE(limiterBlock, std::string::npos);
     // The overlay's FG label is made of this mirror, and `asyncPresentDetected`

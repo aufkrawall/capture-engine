@@ -520,25 +520,16 @@ SwapchainData* BeginAcquireBoundary(VkSwapchainKHR swapchain) {
         return nullptr;
     sd->lastAcquireThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     sd->lastAcquireTick.store(GetTickCount64(), std::memory_order_release);
-    if (sd->asyncPresentDetected.load(std::memory_order_acquire)) {
+    if (ce::interposer_output_pacing::PaceVulkanAtAcquire(sd->asyncPresentDetected.load(std::memory_order_acquire),
+                                                       g_FGCompat.GetRuntimeMode())) {
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
         // Async-present games acquire from a different thread than they
         // present on, so the present-time wait cannot throttle production;
-        // gate every acquire on the cadence grid instead. Under Smooth Motion,
-        // outputs are spaced at vkQueuePresentKHR while the acquire boundary paces
-        // input production.
-        const bool isSmoothMotion = g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
-        if (isSmoothMotion) {
-            g_SharedFpsLimiter.Apply(false, ce::fps_limiter_policy::PresentSite::kRuntimeInputPresent);
-        } else {
-            const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
-            ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
-            g_SharedFpsLimiter.Apply(false,
-                                     groupedAdmission
-                                         ? ce::interposer_output_pacing::ResolveVulkanFinalOutputSite(
-                                               g_FGCompat.GetRuntimeMode())
-                                         : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
-        }
+        // gate every acquire on the cadence grid instead.
+        const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
+        ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
+        g_SharedFpsLimiter.Apply(false, groupedAdmission ? ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary
+                                                        : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
     }
     return sd;
 }

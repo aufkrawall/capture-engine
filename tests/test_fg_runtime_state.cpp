@@ -279,6 +279,30 @@ TEST(FGRuntimeStateTest, DeactivatingDLSSFGForgetsTheRuntimesFactor) {
     EXPECT_EQ(fg.GetDLSSFGMultiplier(), 2);
 }
 
+TEST(FGRuntimeStateTest, ConcurrentApiTakeoversLeaveOneActiveOwner) {
+    FGCompatibility fg;
+    constexpr int kRounds = 2048;
+    std::barrier rendezvous(2);
+    std::thread fsr([&] {
+        for (int round = 0; round < kRounds; ++round) {
+            rendezvous.arrive_and_wait();
+            fg.SetFSRFGActive(true);
+            rendezvous.arrive_and_wait();
+        }
+    });
+    int invalidOwners = 0;
+    for (int round = 0; round < kRounds; ++round) {
+        fg.SetDLSSFGActive(true, 3);
+        rendezvous.arrive_and_wait();
+        fg.SetDLSSFGActive(true, 3);
+        rendezvous.arrive_and_wait();
+        const auto mode = fg.GetRuntimeMode();
+        invalidOwners += mode != RuntimeMode::kDLSSFG && mode != RuntimeMode::kFSRFG ? 1 : 0;
+    }
+    fsr.join();
+    EXPECT_EQ(invalidOwners, 0);
+}
+
 TEST(FGRuntimeStateTest, ConcurrentRepeatedRequestsCannotRepublishAnOlderRuntimeFactor) {
     FGCompatibility fg;
     fg.SetDLSSFGMultiplier(2);

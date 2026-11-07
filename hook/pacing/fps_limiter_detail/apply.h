@@ -602,6 +602,13 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                     return;
                 }
                 const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
+                if (interposerOutput) {
+                    // Reflex's base-frame sleep belongs to the game, while
+                    // this worker needs all the output slots of its group.
+                    NoteInterposerGroupCadence(cadence, fgMultiplier);
+                    lastActualWaitUs_ = cadence.actualWaitUs;
+                    return;
+                }
 
                 LARGE_INTEGER sleepStart;
                 LARGE_INTEGER sleepEnd;

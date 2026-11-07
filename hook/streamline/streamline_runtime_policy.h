@@ -350,12 +350,18 @@ inline int ResolveDLSSFGMultiplier(bool active, uint32_t requestedGeneratedFrame
 // than showing a misleading transient 2x status.
 inline int ResolvePublishedDLSSFGMultiplier(bool active, int runtimeMultiplier,
                                             int configuredMultiplier,
-                                            uint32_t capabilityMaxGeneratedFrames) {
+                                            uint32_t capabilityMaxGeneratedFrames,
+                                            int explicitViewportMultiplier = 0) {
     if (!active) {
         return 0;
     }
 
     int publishedMultiplier = std::clamp(runtimeMultiplier, 2, 4);
+    // A GetState call may pass a default-initialized options structure even
+    // while the last SetOptions request for this viewport is higher.
+    if (publishedMultiplier == 2 && explicitViewportMultiplier > 2) {
+        publishedMultiplier = explicitViewportMultiplier;
+    }
     if (configuredMultiplier >= 2 && configuredMultiplier <= 4) {
         publishedMultiplier = configuredMultiplier;
     }

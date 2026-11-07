@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <unordered_map>
 
 #include "hook/fg/fg_runtime_state.h"
 #include "hook/pacing/fps_limiter_policy.h"
@@ -25,45 +26,25 @@
 namespace ce::interposer_output_pacing {
 
 // Which output of its application frame a present is; 0 opens the frame's group. All of a frame's outputs come from one
-// worker, so a thread change opens a group whatever the count says, and a worker that got two frames in a row is split
-// by the multiplier (runs of 4 and 6 at 2x in the Trine 5 sessions). A dedicated presenter thread has only the count,
-// and its phase does not matter: all outputs of a capped frame sit on one equal grid.
+// worker. Each worker keeps its own ordinal, and two frames in a row on one worker are split by the multiplier
+// (runs of 4 and 6 at 2x in the Trine 5 sessions). A dedicated presenter thread has only the count, and its phase
+// does not matter: all outputs of a capped frame sit on one equal grid.
 class OutputGroupTracker {
 public:
     uint32_t Next(uint32_t threadId, int multiplier) {
         const uint32_t groupSize = multiplier > 1 ? static_cast<uint32_t>(multiplier) : 1u;
-        for (size_t i = 0; i < workerCount_; ++i) {
-            if (workers_[i].threadId == threadId) {
-                if (workers_[i].position >= groupSize) {
-                    workers_[i].position = 0;
-                }
-                return workers_[i].position++;
-            }
-        }
-        if (workerCount_ < kMaxWorkers) {
-            workers_[workerCount_] = {threadId, 1};
-            ++workerCount_;
-            return 0;
-        }
-        workers_[0] = {threadId, 1};
-        return 0;
+        auto& position = positions_[threadId];
+        const uint32_t index = position < groupSize ? position : 0;
+        position = index + 1 < groupSize ? index + 1 : 0;
+        return index;
     }
 
     void Reset() {
-        for (auto& entry : workers_) {
-            entry = {};
-        }
-        workerCount_ = 0;
+        positions_.clear();
     }
 
 private:
-    static constexpr size_t kMaxWorkers = 8;
-    struct Worker {
-        uint32_t threadId = 0;
-        uint32_t position = 0;
-    };
-    Worker workers_[kMaxWorkers] = {};
-    size_t workerCount_ = 0;
+    std::unordered_map<uint32_t, uint32_t> positions_;
 };
 
 // The slots of the current group's later outputs. Armed only by a first output that waited for its slot, which is what
@@ -98,59 +79,25 @@ private:
 class GroupScheduleTracker {
 public:
     void Arm(uint32_t threadId, int64_t deadlineTick, int64_t nextDeadlineTick, int multiplier) {
-        for (size_t i = 0; i < count_; ++i) {
-            if (schedules_[i].threadId == threadId) {
-                schedules_[i].schedule.Arm(deadlineTick, nextDeadlineTick, multiplier);
-                return;
-            }
-        }
-        if (count_ < kMaxWorkers) {
-            schedules_[count_].threadId = threadId;
-            schedules_[count_].schedule.Arm(deadlineTick, nextDeadlineTick, multiplier);
-            ++count_;
-            return;
-        }
-        schedules_[0].threadId = threadId;
-        schedules_[0].schedule.Arm(deadlineTick, nextDeadlineTick, multiplier);
+        schedules_[threadId].Arm(deadlineTick, nextDeadlineTick, multiplier);
     }
 
     void Clear() {
-        Reset();
+        schedules_.clear();
     }
 
     void Clear(uint32_t threadId) {
-        for (size_t i = 0; i < count_; ++i) {
-            if (schedules_[i].threadId == threadId) {
-                schedules_[i].schedule.Clear();
-                return;
-            }
-        }
+        if (const auto it = schedules_.find(threadId); it != schedules_.end())
+            it->second.Clear();
     }
 
     int64_t OutputDeadline(uint32_t threadId, uint32_t outputIndex) const {
-        for (size_t i = 0; i < count_; ++i) {
-            if (schedules_[i].threadId == threadId) {
-                return schedules_[i].schedule.OutputDeadline(outputIndex);
-            }
-        }
-        return 0;
-    }
-
-    void Reset() {
-        for (auto& entry : schedules_) {
-            entry = {};
-        }
-        count_ = 0;
+        const auto it = schedules_.find(threadId);
+        return it == schedules_.end() ? 0 : it->second.OutputDeadline(outputIndex);
     }
 
 private:
-    static constexpr size_t kMaxWorkers = 8;
-    struct Entry {
-        uint32_t threadId = 0;
-        GroupSchedule schedule;
-    };
-    Entry schedules_[kMaxWorkers] = {};
-    size_t count_ = 0;
+    std::unordered_map<uint32_t, GroupSchedule> schedules_;
 };
 
 // CE's swapchain wrapper is on the game thread, in front of the interposer: its site owns the cadence.
@@ -165,6 +112,12 @@ inline fps_limiter_policy::PresentSite ResolveVulkanFinalOutputSite(fg_runtime::
     return runtimeMode == fg_runtime::RuntimeMode::kNvidiaSmoothMotion
                ? fps_limiter_policy::PresentSite::kInterposerOutputPresent
                : fps_limiter_policy::PresentSite::kFinalOutputBoundary;
+}
+
+inline bool PaceVulkanAtAcquire(bool asyncPresent, fg_runtime::RuntimeMode runtimeMode) {
+    // Acquire is useful for ordinary async rendering. Under Smooth Motion it
+    // would take cadence ownership away from the interposer's actual outputs.
+    return asyncPresent && runtimeMode != fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
 }
 
 }  // namespace ce::interposer_output_pacing

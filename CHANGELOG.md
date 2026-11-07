@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Frame-generation status and pacing:** DLSS publishes its active state and factor together, and a default Streamline poll preserves the viewport's explicit factor. Interposer workers keep separate output deadlines. With Vulkan async present, Smooth Motion paces the actual outputs while ordinary rendering keeps acquire pacing.
+
 - **Screenshots with FSR frame generation:** overlay-inclusive captures accept a compatible owner-queue device view. When the reserved overlay slot is busy, the request waits for another Present before submitting the composite.
 
 - **AAC retries and interrupted output:** a rejected AAC quantization pass restores the encoder's rate-control history. Reconnecting to output storage keeps the spool writer open until replay succeeds. Recovery retains corrupt spools and salvages a partial final record only after a crash.

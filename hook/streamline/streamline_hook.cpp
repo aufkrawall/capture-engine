@@ -322,6 +322,7 @@ void OnAuthoritativeFFXTakeover() {
             runtimeState.active = false;
             runtimeState.multiplier = 0;
             runtimeState.generatedFrames = 0;
+            runtimeState.explicitMultiplier = 0;
         }
     }
 
@@ -399,7 +400,6 @@ void Shutdown() {
         streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
     }
     g_FGCompat.SetStreamlineFGSignal(false);
-    g_FGCompat.SetDLSSFGMultiplier(0);
     g_FGCompat.SetDLSSFGActive(false);
     g_FGCompat.SetStreamlineSupportPresent(false);
     DXGIShared::g_StreamlineFGRunning.store(false, std::memory_order_release);

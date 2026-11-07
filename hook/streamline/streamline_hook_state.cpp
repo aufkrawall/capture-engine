@@ -222,14 +222,7 @@ void CacheCapabilityMax(uint32_t viewportKey,  uint32_t capabilityMax) {
 
 
 void ApplyCombinedDLSSFGState(bool active, int multiplier) {
-    if (active) {
-        const int effectiveMultiplier = std::clamp(multiplier, 2, 4);
-        g_FGCompat.SetDLSSFGMultiplier(effectiveMultiplier);
-        g_FGCompat.SetDLSSFGActive(true);
-    } else {
-        g_FGCompat.SetDLSSFGActive(false);
-        g_FGCompat.SetDLSSFGMultiplier(0);
-    }
+    g_FGCompat.SetDLSSFGActive(active, active ? std::clamp(multiplier, 2, 4) : 0);
 }
 
 
@@ -630,29 +623,25 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
     bool stateChanged = false;
     bool anyActive = false;
     int combinedMultiplier = 0;
+    int publishedMultiplier = 0;
     size_t clearedActiveViewportCount = 0;
     // Under `dlss_fg_mode=dynamic` there is no configured multiplier to prefer
     // over the observed one: the runtime is the thing choosing the cadence.
     const GraphicsConfig& activeConfig = GetActiveGraphicsConfigCached();
     const int configuredMultiplier =
         ResolveEffectiveDLSSFGFactor(activeConfig.parsed.dlssFGFactor, activeConfig.parsed.fgMode);
-    const int publishedMultiplier =
-        ce::streamline_runtime_policy::ResolvePublishedDLSSFGMultiplier(
-            active, multiplier, configuredMultiplier, capabilityMax);
-
     const bool sourceWasGetState = source && strcmp(source, "GetState") == 0;
+    const bool explicitRequest = source && strcmp(source, "SetOptions") == 0;
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
         if (active) {
-            int effectivePublished = publishedMultiplier;
             const auto it = streamline_hook_g_ViewportStates.find(viewportKey);
-            if (sourceWasGetState && it != streamline_hook_g_ViewportStates.end() && it->second.active &&
-                it->second.multiplier > effectivePublished && configuredMultiplier <= 0) {
-                // Do not allow a GetState poll with default multiplier to roll back an explicit higher factor
-                effectivePublished = it->second.multiplier;
-            }
+            const int explicitMultiplier = explicitRequest ? multiplier
+                : it != streamline_hook_g_ViewportStates.end() ? it->second.explicitMultiplier : 0;
+            publishedMultiplier = ce::streamline_runtime_policy::ResolvePublishedDLSSFGMultiplier(
+                active, multiplier, configuredMultiplier, capabilityMax, sourceWasGetState ? explicitMultiplier : 0);
             streamline_hook_g_ViewportStates[viewportKey] = {
-                true, effectivePublished, generatedFrames, capabilityMax};
+                true, publishedMultiplier, generatedFrames, capabilityMax, explicitMultiplier};
         } else if (clearAllViewportStatesForDisable) {
             clearedActiveViewportCount = streamline_hook_g_ViewportStates.size();
             streamline_hook_g_ViewportStates.clear();
@@ -686,7 +675,7 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
         }
     }
 
-    const bool explicitSetOptionsEnableSignal = source && strcmp(source, "SetOptions") == 0 && active;
+    const bool explicitSetOptionsEnableSignal = explicitRequest && active;
     ApplyCombinedStreamlineRuntimeState(anyActive, combinedMultiplier, explicitSetOptionsEnableSignal, source);
 
     if (clearedActiveViewportCount > 0) {

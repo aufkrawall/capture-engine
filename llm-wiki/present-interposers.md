@@ -132,7 +132,8 @@ loaded and NOT engaged, and publishes as no frame generation rather than as a 1x
 3. **The game's own submissions** (`IsApplicationSourcedInterposerPresent`), only for a dedicated presenter in DX11.
    Zero draws since the last present proves a generated frame. The other direction proves nothing: a game still drawing
    while the interposer presents counts every present as its own, so this can only undercount the factor. It was the
-   only DX11 evidence until 2026-11-06.
+   only DX11 evidence until 2026-11-06. Submission windows keep their own counts. Direct application Presents take
+   precedence when available, and a worker change by itself supplies no 1:1 verdict.
 
 Why DX11 has no view (1) in Trine 5: `CWrapD3D11Device::QueryInterface(IDXGIDevice)` returns the real object, so
 `GetAdapter` and `GetParent` reach the real factory and the game's create never touches CE's wrapper. Returning
@@ -195,11 +196,15 @@ told the two apart was also a time threshold, so next-frame presents inside 2 ms
 140 cap) and the waited present could move to the other output of a pair. No lock contention on the workers in any of these
 sessions (`strict grid serialized` count 0), though `kInterposerOutputPresent` blocks on the cadence lock like any strict site.
 
-Group position is a thread change or the multiplier's count, never a clock. A detection flap cannot change the cadence
+Each worker keeps its own group position and armed output deadlines, using the multiplier's count and no clock-based
+grouping. Interleaved workers preserve one another's group state. A detection flap cannot change the cadence
 either: with no status yet each output owns a slot of the same output grid. Below the cap CE adds nothing, because a CE
 wait there could only disturb the driver's flat schedule (first row).
 
 Base-frame capture sync on this site keeps its target as the frame rate, with the later outputs spaced within that group.
+The explicit Reflex base-frame sleep stays on the application route. Interposer output workers arm the later output
+slots on the same local cadence grid. With Vulkan async present, Smooth Motion owns pacing at queue present, while
+ordinary async rendering keeps it at acquire.
 
 Diagnostics: `Apply: ACTIVE ... site=5` and `FPS Limiter: pacing the present interposer's outputs` for the output route;
 `DXGI limiter: the application's Present into the present interposer's proxy` for the input route;

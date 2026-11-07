@@ -110,7 +110,12 @@ bool FGCompatibility::IsFGActive() const {
     return ce::fg_runtime::IsRuntimeFGActive(GetRuntimeMode());
 }
 
-void FGCompatibility::SetDLSSFGActive(bool active) {
+void FGCompatibility::SetDLSSFGActive(bool active, int multiplier, bool runtimeObservation) {
+    std::lock_guard transitionLock(fgApiTransitionLock);
+    UpdateDLSSFGActive(active, multiplier, runtimeObservation);
+}
+
+void FGCompatibility::UpdateDLSSFGActive(bool active, int multiplier, bool runtimeObservation) {
     if (active) {
         // If heuristic FSR FG is active BUT the Streamline hook has NOT
         // signaled FG, suppress — the SL API call might be spurious.
@@ -141,12 +146,13 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
         }
     }
 
-    bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (!active) {
-        ClearDLSSFGMultiplier();
-    } else {
-        PublishDLSSFGSharedState();
+        dlssFGMultiplierState.store(0, std::memory_order_release);
+    } else if (multiplier >= 2) {
+        UpdateDLSSFGMultiplier(multiplier, runtimeObservation);
     }
+    const bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
+    PublishDLSSFGSharedState();
     if (wasActive != active) {
         // A new activation proves idleness afresh (IsDLSSGGenerationIdle).
         {
@@ -168,24 +174,23 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
 }
 
 void FGCompatibility::SetDLSSFGMultiplier(int multiplier) {
+    std::lock_guard lock(fgApiTransitionLock);
     UpdateDLSSFGMultiplier(multiplier, false);
+    PublishDLSSFGSharedState();
 }
 
 void FGCompatibility::NoteDLSSFGRuntimeMultiplier(int multiplier) {
+    std::lock_guard lock(fgApiTransitionLock);
     UpdateDLSSFGMultiplier(multiplier, true);
-}
-
-void FGCompatibility::ClearDLSSFGMultiplier() {
-    dlssFGMultiplierState.store(0, std::memory_order_release);
     PublishDLSSFGSharedState();
 }
 
 void FGCompatibility::PublishDLSSFGSharedState() {
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        auto& state = g_IPC->GetSharedMem()->dlssState;
-        state.PublishFGState(GetCurrentProcessId(), dlssFGApiActive.load(std::memory_order_acquire),
-                             GetDLSSFGMultiplier());
+#ifndef VK_LAYER_CE_OVERLAY
+    if (auto* layout = g_IPC ? g_IPC->GetSharedMem() : nullptr) {
+        layout->dlssState.PublishFGState(GetCurrentProcessId(), IsDLSSFGApiActive(), GetDLSSFGMultiplier());
     }
+#endif
 }
 
 void FGCompatibility::UpdateDLSSFGMultiplier(int multiplier, bool runtimeObservation) {
@@ -194,22 +199,14 @@ void FGCompatibility::UpdateDLSSFGMultiplier(int multiplier, bool runtimeObserva
     // way. A repeated one is the game's poll restating its option, which says nothing about the runtime: W3 asked for
     // 2x on the game thread at every poll while its evaluations ran 4x on the presenter thread (session
     // 20261106_195839: 3680 false factor flips in three minutes, every game frame still 4 outputs).
-    uint32_t previous = dlssFGMultiplierState.load(std::memory_order_acquire);
-    uint32_t effective = 0;
-    for (;;) {
-        const uint32_t previousRequest = previous & 0xffu;
-        const uint32_t previousEffective = previous >> 8;
-        const uint32_t request = runtimeObservation ? previousRequest : normalized;
-        effective = runtimeObservation || normalized == 0 || previousRequest != normalized || previousEffective < 2
-                        ? normalized
-                        : previousEffective;
-        const uint32_t next = request | (effective << 8);
-        if (dlssFGMultiplierState.compare_exchange_weak(previous, next, std::memory_order_acq_rel,
-                                                        std::memory_order_acquire)) {
-            break;
-        }
-    }
-    PublishDLSSFGSharedState();
+    const uint32_t previous = dlssFGMultiplierState.load(std::memory_order_relaxed);
+    const uint32_t previousRequest = previous & 0xffu;
+    const uint32_t previousEffective = previous >> 8;
+    const uint32_t request = runtimeObservation ? previousRequest : normalized;
+    const uint32_t effective =
+        runtimeObservation || normalized == 0 || previousRequest != normalized || previousEffective < 2
+            ? normalized : previousEffective;
+    dlssFGMultiplierState.store(request | (effective << 8), std::memory_order_release);
     const int normalizedMultiplier = static_cast<int>(effective);
     const int previousMultiplier = static_cast<int>(previous >> 8);
     if (previousMultiplier == normalizedMultiplier) {
@@ -249,6 +246,7 @@ void FGCompatibility::SetFSRFGMultiplier(int multiplier) {
 }
 
 void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
+    std::lock_guard transitionLock(fgApiTransitionLock);
     bool wasActive = heuristicFSRFGActive.exchange(active, std::memory_order_acq_rel);
     if (wasActive != active) {
         HookLog("FG: Heuristic FSR FG %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED",
@@ -259,8 +257,7 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
         // and the DLSS FG API state may toggle transiently during the switch.
         if (active && dlssFGApiActive.load(std::memory_order_acquire)) {
             HookLog("FG: Clearing DLSS FG API state — heuristic FSR FG takes priority");
-            dlssFGApiActive.store(false, std::memory_order_release);
-            ClearDLSSFGMultiplier();
+            UpdateDLSSFGActive(false, 0, false);
         }
 
         // Enable metrics computation when FG is confirmed active.  Dormant mode
@@ -277,6 +274,7 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
 }
 
 void FGCompatibility::SetFSRFGActive(bool active) {
+    std::lock_guard transitionLock(fgApiTransitionLock);
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (active) {
         // Both callers of the active form are FFX context creations, i.e. the
@@ -312,8 +310,7 @@ void FGCompatibility::SetFSRFGActive(bool active) {
 
         if (active && dlssFGApiActive.load(std::memory_order_acquire)) {
             HookLog("FG: Clearing DLSS FG API state - FSR FG API takes priority");
-            dlssFGApiActive.store(false, std::memory_order_release);
-            ClearDLSSFGMultiplier();
+            UpdateDLSSFGActive(false, 0, false);
         }
 
         if (active && heuristicFSRFGActive.load(std::memory_order_acquire)) {
@@ -331,6 +328,7 @@ void FGCompatibility::SetFSRFGActive(bool active) {
 }
 
 void FGCompatibility::MarkDirectFFXApiConfirmation() {
+    std::lock_guard transitionLock(fgApiTransitionLock);
     if (!fsrFGApiActive.load(std::memory_order_acquire)) {
         static std::atomic<int> s_skipLogCount{0};
         if (s_skipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {

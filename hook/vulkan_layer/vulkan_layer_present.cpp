@@ -164,11 +164,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             }
         }
         if (sharedDLSSFGActive) {
-            g_FGCompat.SetDLSSFGMultiplier(std::clamp(sharedDLSSFGMultiplier, 2, 4));
-            g_FGCompat.SetDLSSFGActive(true);
+            g_FGCompat.SetDLSSFGActive(true, std::clamp(sharedDLSSFGMultiplier, 2, 4));
         } else if (g_FGCompat.IsDLSSFGApiActive()) {
             g_FGCompat.SetDLSSFGActive(false);
-            g_FGCompat.SetDLSSFGMultiplier(0);
         }
     }
     const bool meteredFinalOutputAvailable =
@@ -190,8 +188,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // and actively bootstrapping a parallel DX9 hook is unsafe for translation
     // runtimes with global renderer state.
     EnterStage(CostStage::kContext);
-    const bool isSmoothMotion = g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
-    if (!asyncPresentDetected || isSmoothMotion) {
+    const auto pacingRuntime = g_FGCompat.GetRuntimeMode();
+    const bool paceAtPresent = !ce::interposer_output_pacing::PaceVulkanAtAcquire(asyncPresentDetected, pacingRuntime);
+    if (paceAtPresent) {
         CostScope limiterStage(CostStage::kLimiter);
         const bool nativeVulkanPresent = !IsDXVKD3D11WrapperLoaded();
         const int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
@@ -202,7 +201,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         g_SharedFpsLimiter.Apply(true,
                                  nativeVulkanPresent
                                      ? ce::interposer_output_pacing::ResolveVulkanFinalOutputSite(
-                                           g_FGCompat.GetRuntimeMode())
+                                            pacingRuntime)
                                      : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
         perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
     }
@@ -567,7 +566,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     NoteFlipMeteringPresentResult(sd, flipMetering, res);
     if (res != VK_SUCCESS && pPresentInfo && pPresentInfo->swapchainCount != 0 && pPresentInfo->pSwapchains)
         LogSwapchainInvalidationResult("vkQueuePresentKHR", res, pPresentInfo->pSwapchains[0]);
-    if (!asyncPresentDetected) {
+    if (paceAtPresent) {
         CostScope limiterStage(CostStage::kLimiter);
         if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
             g_SharedFpsLimiter.ApplyPostPresent();

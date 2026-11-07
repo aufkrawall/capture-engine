@@ -322,6 +322,7 @@ struct ViewportFGState {
     int multiplier = 0;
     uint32_t generatedFrames = 0;
     uint32_t capabilityMax = 0;
+    int explicitMultiplier = 0;
 
     bool operator==(const ViewportFGState& o) const {
         return active == o.active && multiplier == o.multiplier && generatedFrames == o.generatedFrames &&

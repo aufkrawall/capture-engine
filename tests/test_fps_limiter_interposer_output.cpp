@@ -71,6 +71,19 @@ TEST(InterposerOutputGroupsTest, InterleavedWorkersArmSeparateGroupSchedules) {
     EXPECT_EQ(schedules.OutputDeadline(22, 1), 200);
 }
 
+TEST(InterposerOutputGroupsTest, AdditionalWorkersDoNotEvictAnInFlightGroup) {
+    OutputGroupTracker groups;
+    GroupScheduleTracker schedules;
+    for (uint32_t worker = 1; worker <= 12; ++worker) {
+        EXPECT_EQ(groups.Next(worker, 2), 0u);
+        schedules.Arm(worker, worker * 100, worker * 100 + 100, 2);
+    }
+    for (uint32_t worker = 1; worker <= 12; ++worker) {
+        EXPECT_EQ(groups.Next(worker, 2), 1u);
+        EXPECT_EQ(schedules.OutputDeadline(worker, 1), worker * 100 + 50);
+    }
+}
+
 TEST(InterposerOutputGroupsTest, ADedicatedPresenterIsCounted) {
     OutputGroupTracker groups;
     std::vector<uint32_t> indices;
@@ -157,6 +170,9 @@ TEST(FpsLimiterInterposerOutputSiteTest, VulkanSelectsTheSiteForSmoothMotionOnly
     EXPECT_EQ(ResolveVulkanFinalOutputSite(RuntimeMode::kNvidiaSmoothMotion), kOutputSite);
     EXPECT_EQ(ResolveVulkanFinalOutputSite(RuntimeMode::kDLSSFG), PresentSite::kFinalOutputBoundary);
     EXPECT_EQ(ResolveVulkanFinalOutputSite(RuntimeMode::kOff), PresentSite::kFinalOutputBoundary);
+    EXPECT_FALSE(PaceVulkanAtAcquire(true, RuntimeMode::kNvidiaSmoothMotion));
+    EXPECT_TRUE(PaceVulkanAtAcquire(true, RuntimeMode::kOff));
+    EXPECT_FALSE(PaceVulkanAtAcquire(false, RuntimeMode::kOff));
 }
 
 // One of NvPresent's workers: runs Apply() when asked, on a thread that stays alive so its id stays its own.

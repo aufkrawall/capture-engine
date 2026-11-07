@@ -531,6 +531,10 @@ TEST(StreamlineRuntimePolicyTest, ConfiguredMfgFactorIsPublishedDuringHalfArmedS
     EXPECT_EQ(3, ResolvePublishedDLSSFGMultiplier(true, 2, 4, 2))
         << "known runtime capability still clamps the configured factor";
     EXPECT_EQ(3, ResolvePublishedDLSSFGMultiplier(true, 3, 0, 5));
+    EXPECT_EQ(4, ResolvePublishedDLSSFGMultiplier(true, 2, 0, 5, 4));
+    EXPECT_EQ(3, ResolvePublishedDLSSFGMultiplier(true, 3, 0, 5, 4));
+    EXPECT_EQ(3, ResolvePublishedDLSSFGMultiplier(true, 2, 0, 2, 4));
+    EXPECT_EQ(2, ResolvePublishedDLSSFGMultiplier(true, 2, 0, 5, 0));
 }
 
 TEST(StreamlineRuntimePolicyTest, ReflexWrappersCoalesceNestedNativeSleepPacing) {

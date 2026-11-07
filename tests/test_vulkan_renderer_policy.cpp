@@ -696,22 +696,28 @@ TEST(VulkanRendererPolicySourceTest, PresentGateConsultsScopedClaimNotModulePres
     EXPECT_EQ(dx11.find("GetModuleHandleW(L\"vulkan-1.dll\")"), std::string::npos);
 }
 
-TEST(VulkanRendererPolicySourceTest, LayerPublishesOwnedVulkanAndDlssState) {
+TEST(VulkanRendererPolicySourceTest, LayerClaimsVulkanAndReadsProcessOwnedDlssState) {
     namespace fs = std::filesystem;
     const fs::path root = fs::current_path();
     const std::string layerIpc =
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_ipc.cpp");
     const std::string layerPresent =
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
-    const std::string streamline =
-        ce::test_source::ReadFile(root / "hook" / "streamline" / "streamline_hook_state.cpp");
+    const std::string fgDetection =
+        ce::test_source::ReadFile(root / "hook" / "fg" / "fg_detection.cpp");
 
     EXPECT_NE(layerIpc.find("PublishVulkanLayerClaim(rendererPid, g_presentationClientPid)"), std::string::npos);
     EXPECT_NE(layerIpc.find("ReleaseVulkanLayerClaim(GetCurrentProcessId())"), std::string::npos);
     EXPECT_NE(layerPresent.find("ReadFGStateForProcess(GetCurrentProcessId(), vulkanClaim)"),
               std::string::npos);
     EXPECT_NE(layerPresent.find("DLSS FG publication ignored"), std::string::npos);
-    EXPECT_NE(streamline.find("PublishFGState(GetCurrentProcessId(), false, 0)"), std::string::npos);
+    const size_t publication = fgDetection.find("void FGCompatibility::PublishDLSSFGSharedState()");
+    ASSERT_NE(publication, std::string::npos);
+    const size_t layerGuard = fgDetection.find("#ifndef VK_LAYER_CE_OVERLAY", publication);
+    ASSERT_NE(layerGuard, std::string::npos);
+    const size_t write = fgDetection.find("layout->dlssState.PublishFGState(", layerGuard);
+    ASSERT_NE(write, std::string::npos);
+    EXPECT_LT(write, fgDetection.find("#endif", layerGuard));
 }
 
 TEST(VulkanRendererPolicySourceTest, DeviceLossStopsOverlayWorkAndSkipsIdleWait) {
