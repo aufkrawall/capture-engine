@@ -247,7 +247,12 @@ TEST(EncoderGpuStageProbeTest, SharedSubmitAccountsEveryPacketAndInFlightFrame) 
 
 TEST(EncoderGpuStageProbeTest, PartialWindowsAreLoggedBeforeEveryMonitorReset) {
     const auto root = std::filesystem::current_path() / "mediaengine" / "video";
-    for (const char* file : {"video_encoder_lifecycle.cpp", "video_encoder_configure.cpp"}) {
+    // Device teardown sites: CleanupResources; AdoptTextureDevice and the screen-grab switch.
+    const struct {
+        const char* file;
+        size_t sites;
+    } expected[] = {{"video_encoder_lifecycle.cpp", 1u}, {"video_encoder_configure.cpp", 2u}};
+    for (const auto& [file, sites] : expected) {
         const std::string source = ce::test_source::ReadLogicalSource(root / file);
         ASSERT_FALSE(source.empty()) << file;
         size_t resets = 0;
@@ -258,6 +263,6 @@ TEST(EncoderGpuStageProbeTest, PartialWindowsAreLoggedBeforeEveryMonitorReset) {
             ASSERT_NE(flush, std::string::npos) << file;
             EXPECT_LT(reset - flush, 80u) << file;
         }
-        EXPECT_GE(resets, 2u) << file;
+        EXPECT_GE(resets, sites) << file;
     }
 }
