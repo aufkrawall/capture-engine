@@ -30,6 +30,11 @@ int D3D9RuntimeKindNow() {
     return kind ? kind() : -1;
 }
 
+bool DxupModuleLoadedInHook(const char* dllName) {
+    const auto loaded = reinterpret_cast<bool (*)(const char*)>(GetProcAddress(FlowHook(), "CEFlow_IsDxupModuleLoaded"));
+    return loaded && loaded(dllName);
+}
+
 std::string Dx12OverlayLabel() {
     const auto label =
         reinterpret_cast<void (*)(char*, size_t)>(GetProcAddress(FlowHook(), "CEFlow_DX12OverlayApiLabel"));
@@ -71,7 +76,7 @@ TEST(FlowDX11OverlayApiLabel, LoadedDxupD3D11DoesNotOverrideTheRenderingBackend)
     {
         ce::flow::FlowGame game(ce::flow::CurrentTestName());
         ASSERT_EQ(GetModuleHandleW(L"d3d11.dll"), backend);
-        ASSERT_TRUE(ce::api_translator::IsDxupModuleLoaded("d3d11.dll"));
+        ASSERT_TRUE(DxupModuleLoadedInHook("d3d11.dll"));
         // DXUP keeps its DLL loaded when device creation falls back to Windows' D3D11.
         EXPECT_EQ(OverlayLabel(0), "DX11");
         EXPECT_EQ(OverlayLabel(1), "DX11.1");

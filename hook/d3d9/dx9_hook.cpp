@@ -145,6 +145,11 @@ bool IsNonSystemD3D9RuntimeLoaded() {
 extern "C" __declspec(dllexport) int CEFlow_D3D9RuntimeKind() {
     return static_cast<int>(ResolveD3D9RuntimeKind());
 }
+
+// The hook's own view of a DXUP module; the flow host process cannot link the hook's module-replacement code.
+extern "C" __declspec(dllexport) bool CEFlow_IsDxupModuleLoaded(const char* dllName) {
+    return ce::api_translator::IsDxupModuleLoaded(dllName);
+}
 #endif
 
 static bool GetD3D9PresentAddresses(void** ppPresent, void** ppPresentEx, void** ppSwapChainPresent) {
