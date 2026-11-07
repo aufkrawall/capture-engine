@@ -31,6 +31,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Vulkan zero-copy capture transport robustness:** same-geometry swapchain recreations now clean up superseded cache entries to prevent leaks and mismatched relay bindings. The layer activates direct encoder texture mode only after creating and publishing its timeline fence, validates adapter LUID consistency on KMT offers, and withdraws broken offers on import failure so fallback capture can continue.
+
 - **Shared-memory capture drain after recording stop:** detaching from the shared recording state now synchronizes across media workers under a publication barrier before stop acknowledgement, preventing late worker updates from landing on the live layout. Detached layouts preserve frame geometry and process identification, ensuring in-flight shared-memory frames drain and upload with valid dimensions.
 
 - **Strict AAC packet sizes:** the encoder counts the end marker and byte padding against the per-frame bitrate limit. If a frame needs the silence fallback, the packet uses only the required AAC syntax and preserves the original sample count and timestamp.

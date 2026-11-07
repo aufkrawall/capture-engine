@@ -91,7 +91,10 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
         mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
         state.captureFrameCounter >= state.nextEncoderImportRetryFrame) {
         const uint32_t format = VkFormatToDXGI(static_cast<VkFormat>(state.captureFormat));
-        const auto offer = ce::ValidateEncoderKmtOffer(*mem, state.captureWidth, state.captureHeight, format);
+        const int32_t currentLuidLow = static_cast<int32_t>(state.luidKey & 0xFFFFFFFFu);
+        const int32_t currentLuidHigh = static_cast<int32_t>(state.luidKey >> 32);
+        const auto offer = ce::ValidateEncoderKmtOffer(*mem, state.captureWidth, state.captureHeight, format,
+                                                       false, currentLuidLow, currentLuidHigh);
         encoderAdoptionRequested = offer == ce::EncoderKmtOffer::Matches;
         if (offer == ce::EncoderKmtOffer::Withdrawn) {
             LayerLog("Vulkan Layer: Withdrew stale encoder KMT offer; requesting %ux%u format=%u",
@@ -154,6 +157,9 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
             }
         } else {
             state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
+            mem->useEncoderTextures.store(false, std::memory_order_release);
+            mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+            LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer");
         }
     }
 

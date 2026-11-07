@@ -172,7 +172,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         mem->SetHeight(extent.height);
         mem->SetFormat(ourDxgiFormat);
         const auto offer = ce::ValidateEncoderKmtOffer(*mem, extent.width, extent.height, ourDxgiFormat,
-                                                       adapterChanged);
+                                                       adapterChanged, luidLow, luid.HighPart);
         if (offer == ce::EncoderKmtOffer::Withdrawn) {
             LayerLog("Vulkan Layer: Requesting encoder KMT textures for %ux%u format=%u adapter=%08x:%08x",
                      extent.width, extent.height, ourDxgiFormat, static_cast<unsigned>(luid.HighPart),
@@ -192,20 +192,33 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
             if (ImportEncoderKmtTextures(device, disp, luidKey, extent.width, extent.height,
                                          NormalizeVkFormat((VkFormat)format), mem, &encoderEntry, kmtHandles)) {
-                std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
-                layer_capture_g_TextureCache.push_back(std::move(encoderEntry));
-                sharedTextures = &layer_capture_g_TextureCache.back();
+                {
+                    std::lock_guard<std::mutex> texLock(layer_capture_g_InteropMutex);
+                    for (auto textureIt = layer_capture_g_TextureCache.begin(); textureIt != layer_capture_g_TextureCache.end();) {
+                        if (textureIt->vkDevice == device && textureIt->luidKey == luidKey &&
+                            textureIt->width == extent.width && textureIt->height == extent.height &&
+                            textureIt->vkFormat == NormalizeVkFormat((VkFormat)format)) {
+                            DestroySharedTextureEntryResources(*textureIt, disp);
+                            textureIt = layer_capture_g_TextureCache.erase(textureIt);
+                        } else {
+                            ++textureIt;
+                        }
+                    }
+                    layer_capture_g_TextureCache.push_back(std::move(encoderEntry));
+                    sharedTextures = &layer_capture_g_TextureCache.back();
+                }
 
                 // Publish encoder KMT handles to ring buffer
                 LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, extent.width, extent.height,
                                      VkFormatToDXGI(format));
-                // Tell encoder to use its own textures directly
-                mem->useEncoderTextures.store(true, std::memory_order_release);
+                // Wait to activate useEncoderTextures until the timeline fence is created and published below
                 usingEncoderTextures = true;
                 LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: imported %d encoder KMT textures into Vulkan",
                          ENCODER_TEXTURE_SLOT_COUNT);
             } else {
-                LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures, falling back to interop");
+                mem->useEncoderTextures.store(false, std::memory_order_release);
+                mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+                LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures; withdrew offer and falling back to interop");
             }
         }
 
@@ -452,7 +465,13 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // so it kept waiting on the retired fence and deferred every frame once
         // the new values passed the old fence's last one.
         LayerIPC_BeginTransportGeneration();
-        const bool encoderTextureSlot = ce::PublishInjectFenceHandle(*mem, (uint64_t)fenceToPublish);
+        bool encoderTextureSlot = false;
+        if (usingEncoderTextures) {
+            ce::AdoptEncoderTexturesWithFence(*mem, (uint64_t)fenceToPublish);
+            encoderTextureSlot = true;
+        } else {
+            encoderTextureSlot = ce::PublishInjectFenceHandle(*mem, (uint64_t)fenceToPublish);
+        }
         LayerLog(
             "Vulkan Layer: Published capture fence handle %p (slot=%s usingEncoderTextures=%d "
             "encoderTexturesReady=%d)",

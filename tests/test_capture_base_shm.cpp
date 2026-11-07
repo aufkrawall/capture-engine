@@ -245,6 +245,13 @@ TEST(CaptureBaseShmTest, LateStaleEncoderTextureOfferIsWithdrawnBeforeAdoption) 
     EXPECT_TRUE(shm.encoderTextures.kmtReady.load());
     EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, true), ce::EncoderKmtOffer::Withdrawn);
     EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
+
+    shm.SetLuidLowPart(0x1000);
+    shm.SetLuidHighPart(0x2000);
+    shm.encoderTextures.kmtReady.store(true);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, false, 0x1000, 0x2000), ce::EncoderKmtOffer::Matches);
+    EXPECT_EQ(ce::ValidateEncoderKmtOffer(shm, 1920, 1080, format, false, 0x9999, 0x2000), ce::EncoderKmtOffer::Withdrawn);
+    EXPECT_FALSE(shm.encoderTextures.kmtReady.load());
 }
 
 TEST(CaptureBaseShmTest, FencePublishFollowsEncoderTextureAdoption) {

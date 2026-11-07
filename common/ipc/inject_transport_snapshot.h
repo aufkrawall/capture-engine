@@ -53,11 +53,15 @@ enum class EncoderKmtOffer { Pending, Matches, Withdrawn };
 // An allocation for the previous swapchain can finish after the producer
 // publishes the new geometry. Withdraw that offer so media retries.
 inline EncoderKmtOffer ValidateEncoderKmtOffer(SharedMemoryLayout& sharedMem, uint32_t width, uint32_t height,
-                                               uint32_t format, bool adapterChanged = false) {
+                                               uint32_t format, bool adapterChanged = false,
+                                               int32_t luidLow = 0, int32_t luidHigh = 0) {
     auto& offer = sharedMem.encoderTextures;
     if (!offer.kmtReady.load(std::memory_order_acquire))
         return EncoderKmtOffer::Pending;
-    if (!adapterChanged && offer.GetWidth() == width && offer.GetHeight() == height && offer.GetFormat() == format)
+    const bool adapterMismatch = adapterChanged ||
+                                 ((luidLow != 0 || luidHigh != 0) &&
+                                  (sharedMem.GetLuidLowPart() != luidLow || sharedMem.GetLuidHighPart() != luidHigh));
+    if (!adapterMismatch && offer.GetWidth() == width && offer.GetHeight() == height && offer.GetFormat() == format)
         return EncoderKmtOffer::Matches;
 
     sharedMem.useEncoderTextures.store(false, std::memory_order_release);
