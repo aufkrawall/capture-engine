@@ -118,6 +118,17 @@ inline bool ReadDiagnosticArmMarker(const char* sessionDir, char* outTarget, siz
     }
 
     std::snprintf(markerPath, sizeof(markerPath), "%s\\%s", sessionDir, kDiagnosticArmAltMarkerFileName);
+    if (ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity)) {
+        return true;
+    }
+
+    // Also check parent directory (e.g. logs root where marker is prepared before a session starts)
+    std::snprintf(markerPath, sizeof(markerPath), "%s\\..\\%s", sessionDir, kDiagnosticArmMarkerFileName);
+    if (ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity)) {
+        return true;
+    }
+
+    std::snprintf(markerPath, sizeof(markerPath), "%s\\..\\%s", sessionDir, kDiagnosticArmAltMarkerFileName);
     return ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity);
 }
 
