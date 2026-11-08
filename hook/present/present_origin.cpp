@@ -198,13 +198,15 @@ const PresentOrigin& ResolvePresentOriginatorBelowForeignChain() {
     namespace address_cache = ce::overlay_compat::module_address_cache;
     const bool moduleSetObservable = address_cache::IsEnabled();
     const uint64_t moduleSet = moduleSetObservable ? address_cache::ModuleSetGeneration() : 0;
+    const uint64_t overlayIdentityGeneration =
+        ce::overlay_compat::IdentifiedOverlayPathRefreshSequence().load(std::memory_order_acquire);
     if (!t_memo.ShouldWalk(moduleSetObservable && ce::present_originator::PresentRuntimeModules().OnlyApplicationCanOriginate(),
-                           moduleSet)) {
+                           moduleSet, overlayIdentityGeneration)) {
         return t_origin;
     }
     ce::present_stage_cost::StageScope walkStage(ce::present_stage_cost::Stage::kOriginWalk);
     WalkPresentOriginator(&t_origin, moduleSetObservable, moduleSet);
-    t_memo.NoteWalked(moduleSet);
+    t_memo.NoteWalked(moduleSet, overlayIdentityGeneration);
     return t_origin;
 }
 

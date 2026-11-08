@@ -104,11 +104,13 @@ inline std::atomic<uint64_t>& IdentifiedOverlayPathRefreshSequence() {
     return sequence;
 }
 
+enum class OverlayPathIdentity : uint8_t { kGraphicsProxy, kUbisoft };
+
 template <typename CharT>
-inline uint64_t HashOverlayModulePathInsensitive(const CharT* path) {
+inline uint64_t HashOverlayModulePathInsensitive(const CharT* path, OverlayPathIdentity identity) {
     if (!path || !*path)
         return 0;
-    uint64_t hash = 1469598103934665603ull;
+    uint64_t hash = 1469598103934665603ull ^ static_cast<uint64_t>(identity);
     for (; *path; ++path) {
         hash ^= static_cast<uint64_t>(detail::ToLowerAscii(*path));
         hash *= 1099511628211ull;
@@ -117,8 +119,9 @@ inline uint64_t HashOverlayModulePathInsensitive(const CharT* path) {
 }
 
 template <typename CharT>
-inline bool IsIdentifiedThirdPartyOverlayModulePath(const CharT* path) {
-    const uint64_t hash = HashOverlayModulePathInsensitive(path);
+inline bool IsIdentifiedThirdPartyOverlayModulePath(
+    const CharT* path, OverlayPathIdentity identity = OverlayPathIdentity::kGraphicsProxy) {
+    const uint64_t hash = HashOverlayModulePathInsensitive(path, identity);
     if (!hash)
         return false;
     for (;;) {
@@ -149,8 +152,9 @@ inline void ResetIdentifiedThirdPartyOverlayModulePaths() {
 }
 
 template <typename CharT>
-inline bool PublishIdentifiedThirdPartyOverlayModulePathToBank(const CharT* path, uint32_t bank) {
-    const uint64_t hash = HashOverlayModulePathInsensitive(path);
+inline bool PublishIdentifiedThirdPartyOverlayModulePathToBank(
+    const CharT* path, uint32_t bank, OverlayPathIdentity identity = OverlayPathIdentity::kGraphicsProxy) {
+    const uint64_t hash = HashOverlayModulePathInsensitive(path, identity);
     if (!hash || bank > 1)
         return false;
     auto* hashes = IdentifiedOverlayPathHashBanks()[bank];
@@ -361,7 +365,8 @@ inline bool IsVerifiedUbisoftOverlayModulePath(const CharT* path) {
     if (!IsUbisoftOverlayCandidateBaseName(baseName)) {
         return false;
     }
-    return HasUbisoftLauncherPathSegment(path) || IsIdentifiedThirdPartyOverlayModulePath(path);
+    return HasUbisoftLauncherPathSegment(path) ||
+           IsIdentifiedThirdPartyOverlayModulePath(path, OverlayPathIdentity::kUbisoft);
 }
 
 inline bool IsThirdPartyOverlayModulePath(const char* path) {

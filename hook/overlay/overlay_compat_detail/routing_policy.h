@@ -18,7 +18,8 @@ namespace ce::overlay_compat {
 
 // Pure / loader-free: index of the tracked module whose base name case-insensitively equals
 // `baseName`, or -1. Directly unit-testable (no globals, no loader).
-inline int MatchKnownThirdPartyOverlayModuleIndex(const char* baseName) {
+template <typename CharT>
+inline int MatchKnownThirdPartyOverlayModuleIndex(const CharT* baseName) {
     if (!baseName || !*baseName) {
         return -1;
     }
@@ -28,6 +29,19 @@ inline int MatchKnownThirdPartyOverlayModuleIndex(const char* baseName) {
         }
     }
     return -1;
+}
+
+inline int MatchKnownThirdPartyOverlayModuleIndex(std::nullptr_t) {
+    return -1;
+}
+
+template <typename CharT>
+inline int MatchTrackedOverlayPath(const CharT* path) {
+    const CharT* baseName = ExtractModuleBaseName(path);
+    if (IsUbisoftOverlayCandidateBaseName(baseName) && !IsVerifiedUbisoftOverlayModulePath(path)) {
+        return -1;
+    }
+    return MatchKnownThirdPartyOverlayModuleIndex(baseName);
 }
 
 // Pure / loader-free: canonical list entry for `baseName`, or nullptr. This is the exact
@@ -50,17 +64,24 @@ inline std::atomic<bool>& TrackedOverlaySeeded() {
     return seeded;
 }
 
-// Index (into kTrackedOverlayModules) of the most recently loaded tracked overlay
-// module, recorded ONLY from real load notifications (LdrRegisterDllNotification /
-// LoadLibrary hooks). The seed walk and the identity-refresh enumeration see
-// modules in loader/enumeration order, not load order, so they must not touch
-// this. The last-load order decides which overlay owns a foreign Present entry
-// jump when two overlays both hook dxgi!Present (the later hooker displaces the
-// earlier one's entry jump, e.g. RTSS loading after Steam).
-inline std::atomic<int>& LastLoadedTrackedOverlayModuleIndex() {
-    static std::atomic<int> index{-1};
-    return index;
+// A notification reserves its place before off-thread identity verification.
+// The packed ticket publishes the order and module index together.
+inline std::atomic<uint64_t>& LastTrackedOverlayLoadTicket() {
+    static std::atomic<uint64_t> ticket{0};
+    return ticket;
 }
+
+inline std::atomic<uint64_t>& OverlayLoadOrderCounter() {
+    static std::atomic<uint64_t> counter{0};
+    return counter;
+}
+
+inline uint64_t ReserveOverlayLoadOrder() {
+    return OverlayLoadOrderCounter().fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+inline constexpr unsigned kOverlayLoadTicketIndexBits = 6;
+static_assert(kTrackedOverlayModuleCount < (1u << kOverlayLoadTicketIndexBits));
 
 // Walks the loader ONCE to seed modules already loaded before our hooks/notification
 // installed. Returns the seeded bitmask (for logging/diagnostics). Call once from HookThread;
@@ -71,9 +92,9 @@ inline uint32_t SeedThirdPartyOverlayModuleCacheFromLoader() {
         HMODULE hMod = GetModuleHandleA(kTrackedOverlayModules[i].name);
         if (hMod != nullptr) {
             if (IsUbisoftOverlayCandidateBaseName(kTrackedOverlayModules[i].name)) {
-                char modulePath[MAX_PATH] = {};
-                if (GetModuleFileNameA(hMod, modulePath, MAX_PATH) > 0 &&
-                    IsVerifiedUbisoftOverlayModulePath(modulePath)) {
+                wchar_t modulePath[MAX_PATH] = {};
+                const DWORD length = GetModuleFileNameW(hMod, modulePath, MAX_PATH);
+                if (length > 0 && length < MAX_PATH && IsVerifiedUbisoftOverlayModulePath(modulePath)) {
                     seeded |= (1u << i);
                 }
             } else {
@@ -149,39 +170,9 @@ inline bool IsThirdPartyOverlayLoaded() {
 
 // Off-hot-path. Record that `moduleNameOrPath` just loaded; sets its bit if it is a tracked
 // module. No loader calls. Returns the canonical match (for logging) or null.
-inline const char* NoteModuleLoadedForOverlayCache(const char* moduleNameOrPath) {
-    if (!moduleNameOrPath || !*moduleNameOrPath) {
-        return nullptr;
-    }
-    const char* baseName = detail::ExtractBaseName(moduleNameOrPath);
-    if (IsUbisoftOverlayCandidateBaseName(baseName)) {
-        if (!IsVerifiedUbisoftOverlayModulePath(moduleNameOrPath)) {
-            return nullptr;
-        }
-    }
-    const int idx = MatchKnownThirdPartyOverlayModuleIndex(baseName);
-    if (idx < 0) {
-        return nullptr;
-    }
-    TrackedOverlayLoadedBits().fetch_or(1u << idx, std::memory_order_acq_rel);
-    return kTrackedOverlayModules[idx].name;
-}
-
-inline const char* NoteModuleLoadedForOverlayCache(const wchar_t* moduleNameOrPath) {
-    if (!moduleNameOrPath || !*moduleNameOrPath) {
-        return nullptr;
-    }
-    const wchar_t* wideBase = ExtractModuleBaseName(moduleNameOrPath);
-    if (IsUbisoftOverlayCandidateBaseName(wideBase)) {
-        if (!IsVerifiedUbisoftOverlayModulePath(moduleNameOrPath)) {
-            return nullptr;
-        }
-    }
-    char narrowBase[128] = {};
-    for (size_t i = 0; wideBase[i] && i < sizeof(narrowBase) - 1; ++i) {
-        narrowBase[i] = (wideBase[i] > 0 && wideBase[i] < 128) ? static_cast<char>(wideBase[i]) : '?';
-    }
-    const int idx = MatchKnownThirdPartyOverlayModuleIndex(narrowBase);
+template <typename CharT>
+inline const char* NoteModuleLoadedForOverlayCache(const CharT* moduleNameOrPath) {
+    const int idx = MatchTrackedOverlayPath(moduleNameOrPath);
     if (idx < 0) {
         return nullptr;
     }
@@ -197,43 +188,38 @@ inline const char* NoteModuleLoadedForOverlayCache(const wchar_t* moduleNameOrPa
 // module - including the ones tracked only for a loader-free presence check
 // (sl.interposer.dll, libxess_fg.dll): they hook no Present entry, so loading after
 // RTSS must not make them the "last overlay" and hand RTSS's chain to Steam.
-inline const char* NoteModuleLoadedForOverlayCacheFromNotification(const char* moduleNameOrPath) {
-    const char* matched = NoteModuleLoadedForOverlayCache(moduleNameOrPath);
-    if (!matched) {
+template <typename CharT>
+inline const char* NoteModuleLoadedForOverlayCacheFromNotification(const CharT* moduleNameOrPath,
+                                                                    uint64_t observedOrder = 0) {
+    const int idx = MatchTrackedOverlayPath(moduleNameOrPath);
+    if (idx < 0) {
         return nullptr;
     }
-    const char* baseName = detail::ExtractBaseName(moduleNameOrPath);
-    const int idx = MatchKnownThirdPartyOverlayModuleIndex(baseName);
-    if (idx < 0 || !kTrackedOverlayModules[idx].overlay) {
+    TrackedOverlayLoadedBits().fetch_or(1u << idx, std::memory_order_acq_rel);
+    if (!kTrackedOverlayModules[idx].overlay) {
         return nullptr;
     }
-    LastLoadedTrackedOverlayModuleIndex().store(idx, std::memory_order_release);
-    return matched;
-}
-
-inline const char* NoteModuleLoadedForOverlayCacheFromNotification(const wchar_t* moduleNameOrPath) {
-    const char* matched = NoteModuleLoadedForOverlayCache(moduleNameOrPath);
-    if (!matched) {
-        return nullptr;
+    const uint64_t order = observedOrder ? observedOrder : ReserveOverlayLoadOrder();
+    const uint64_t ticket = (order << kOverlayLoadTicketIndexBits) | static_cast<uint64_t>(idx + 1);
+    auto& latest = LastTrackedOverlayLoadTicket();
+    uint64_t previous = latest.load(std::memory_order_relaxed);
+    while (ticket > previous &&
+           !latest.compare_exchange_weak(previous, ticket, std::memory_order_release, std::memory_order_relaxed)) {
     }
-    const wchar_t* wideBase = ExtractModuleBaseName(moduleNameOrPath);
-    char narrowBase[128] = {};
-    for (size_t i = 0; wideBase[i] && i < sizeof(narrowBase) - 1; ++i) {
-        narrowBase[i] = (wideBase[i] > 0 && wideBase[i] < 128) ? static_cast<char>(wideBase[i]) : '?';
-    }
-    const int idx = MatchKnownThirdPartyOverlayModuleIndex(narrowBase);
-    if (idx < 0 || !kTrackedOverlayModules[idx].overlay) {
-        return nullptr;
-    }
-    LastLoadedTrackedOverlayModuleIndex().store(idx, std::memory_order_release);
-    return matched;
+    return kTrackedOverlayModules[idx].name;
 }
 
 // Loader-free: canonical name of the most recently loaded tracked overlay module,
 // or null when no tracked overlay load was observed through the notification path.
 inline const char* GetLastLoadedTrackedOverlayModuleName() {
-    const int idx = LastLoadedTrackedOverlayModuleIndex().load(std::memory_order_acquire);
-    return idx >= 0 ? kTrackedOverlayModules[idx].name : nullptr;
+    constexpr uint64_t indexMask = (1u << kOverlayLoadTicketIndexBits) - 1;
+    const auto indexPlusOne = LastTrackedOverlayLoadTicket().load(std::memory_order_acquire) & indexMask;
+    if (!indexPlusOne) {
+        return nullptr;
+    }
+    const auto idx = indexPlusOne - 1;
+    return (TrackedOverlayLoadedBits().load(std::memory_order_acquire) & (1u << idx))
+               ? kTrackedOverlayModules[idx].name : nullptr;
 }
 
 inline bool IsUbisoftOverlayModuleName(const char* name) {
@@ -490,39 +476,9 @@ inline bool ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(bool entryPatchStil
 
 // Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No
 // loader calls. Returns the canonical match (for logging) or null.
-inline const char* NoteModuleUnloadedForOverlayCache(const char* moduleNameOrPath) {
-    if (!moduleNameOrPath || !*moduleNameOrPath) {
-        return nullptr;
-    }
-    const char* baseName = detail::ExtractBaseName(moduleNameOrPath);
-    if (IsUbisoftOverlayCandidateBaseName(baseName)) {
-        if (!IsVerifiedUbisoftOverlayModulePath(moduleNameOrPath)) {
-            return nullptr;
-        }
-    }
-    const int idx = MatchKnownThirdPartyOverlayModuleIndex(baseName);
-    if (idx < 0) {
-        return nullptr;
-    }
-    TrackedOverlayLoadedBits().fetch_and(~(1u << idx), std::memory_order_acq_rel);
-    return kTrackedOverlayModules[idx].name;
-}
-
-inline const char* NoteModuleUnloadedForOverlayCache(const wchar_t* moduleNameOrPath) {
-    if (!moduleNameOrPath || !*moduleNameOrPath) {
-        return nullptr;
-    }
-    const wchar_t* wideBase = ExtractModuleBaseName(moduleNameOrPath);
-    if (IsUbisoftOverlayCandidateBaseName(wideBase)) {
-        if (!IsVerifiedUbisoftOverlayModulePath(moduleNameOrPath)) {
-            return nullptr;
-        }
-    }
-    char narrowBase[128] = {};
-    for (size_t i = 0; wideBase[i] && i < sizeof(narrowBase) - 1; ++i) {
-        narrowBase[i] = (wideBase[i] > 0 && wideBase[i] < 128) ? static_cast<char>(wideBase[i]) : '?';
-    }
-    const int idx = MatchKnownThirdPartyOverlayModuleIndex(narrowBase);
+template <typename CharT>
+inline const char* NoteModuleUnloadedForOverlayCache(const CharT* moduleNameOrPath) {
+    const int idx = MatchTrackedOverlayPath(moduleNameOrPath);
     if (idx < 0) {
         return nullptr;
     }
@@ -545,7 +501,8 @@ inline void SetIdentifiedOverlayIdentityLoaded(const char* canonicalIdentity, bo
 inline void ResetThirdPartyOverlayModuleCacheForTesting() {
     TrackedOverlayLoadedBits().store(0, std::memory_order_release);
     TrackedOverlaySeeded().store(true, std::memory_order_release);
-    LastLoadedTrackedOverlayModuleIndex().store(-1, std::memory_order_release);
+    LastTrackedOverlayLoadTicket().store(0, std::memory_order_release);
+    OverlayLoadOrderCounter().store(0, std::memory_order_relaxed);
     ResetIdentifiedThirdPartyOverlayModulePaths();
 }
 

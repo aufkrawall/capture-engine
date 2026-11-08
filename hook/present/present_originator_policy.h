@@ -199,22 +199,24 @@ class OriginatorWalkMemo {
 public:
     static constexpr uint32_t kPresentsBetweenWalks = 256;
 
-    bool ShouldWalk(bool onlyApplicationCanOriginate, uint64_t moduleSetGeneration) {
+    bool ShouldWalk(bool onlyApplicationCanOriginate, uint64_t moduleSetGeneration, uint64_t overlayIdentityGeneration = 0) {
         if (!onlyApplicationCanOriginate || !walked_ || moduleSetGeneration != moduleSetGeneration_ ||
-            ++presentsSinceWalk_ >= kPresentsBetweenWalks) {
+            overlayIdentityGeneration != overlayIdentityGeneration_ || ++presentsSinceWalk_ >= kPresentsBetweenWalks) {
             return true;
         }
         return false;
     }
-    void NoteWalked(uint64_t moduleSetGeneration) {
+    void NoteWalked(uint64_t moduleSetGeneration, uint64_t overlayIdentityGeneration = 0) {
         walked_ = true;
         moduleSetGeneration_ = moduleSetGeneration;
+        overlayIdentityGeneration_ = overlayIdentityGeneration;
         presentsSinceWalk_ = 0;
     }
 
 private:
     bool walked_ = false;
     uint64_t moduleSetGeneration_ = 0;
+    uint64_t overlayIdentityGeneration_ = 0;
     uint32_t presentsSinceWalk_ = 0;
 };
 

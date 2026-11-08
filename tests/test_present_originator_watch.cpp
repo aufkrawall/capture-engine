@@ -90,6 +90,13 @@ TEST(OriginatorWalkMemoTest, WithoutARuntimeTheFirstWalkIsKeptUntilTheModuleSetC
     EXPECT_FALSE(memo.ShouldWalk(true, 8));
 }
 
+TEST(OriginatorWalkMemoTest, ANewIdentityBankEndsTheMemoWithoutAModuleLoad) {
+    OriginatorWalkMemo memo;
+    memo.NoteWalked(7, 2);
+    EXPECT_FALSE(memo.ShouldWalk(true, 7, 2));
+    EXPECT_TRUE(memo.ShouldWalk(true, 7, 4));
+}
+
 TEST(OriginatorWalkMemoTest, ARuntimeAppearingEndsTheMemoOnTheNextPresent) {
     OriginatorWalkMemo memo;
     EXPECT_TRUE(memo.ShouldWalk(true, 7));

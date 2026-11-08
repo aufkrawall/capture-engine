@@ -1,5 +1,6 @@
 #include "main_internal.h"
 #include "common/logging/log_meter.h"
+#include "common/platform/bounded_diagnostic_history.h"
 #include "common/platform/module_enumeration.h"
 #include "hook/ngx/flip_metering_bridge.h"
 #include "hook/present/present_origin.h"
@@ -9,11 +10,44 @@
 #include "runtime_override_paths.h"
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 
 static PVOID g_DllNotificationCookie = nullptr;
 static std::atomic<bool> g_DllNotificationsActive{false};
 static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
+
+namespace {
+
+struct UbisoftLoadObservation {
+  HMODULE module = nullptr;
+  uint64_t pathHash = 0;
+  uint64_t order = 0;
+};
+
+ce::BoundedDiagnosticHistory<UbisoftLoadObservation, 32> g_UbisoftLoadObservations;
+
+uint64_t ObserveUbisoftCandidateLoad(HMODULE module, const wchar_t* path) {
+  const uint64_t order = ce::overlay_compat::ReserveOverlayLoadOrder();
+  const auto hash = ce::overlay_compat::HashOverlayModulePathInsensitive(
+      path, ce::overlay_compat::OverlayPathIdentity::kUbisoft);
+  g_UbisoftLoadObservations.Append({module, hash, order});
+  return order;
+}
+
+uint64_t FindUbisoftCandidateLoadOrder(HMODULE module, const wchar_t* path) {
+  const auto hash = ce::overlay_compat::HashOverlayModulePathInsensitive(
+      path, ce::overlay_compat::OverlayPathIdentity::kUbisoft);
+  uint64_t order = 0;
+  g_UbisoftLoadObservations.VisitRecent([&](uint64_t, const UbisoftLoadObservation& observation) {
+    if (observation.module == module) {
+      order = hash && observation.pathHash == hash ? observation.order : 0;
+    }
+  });
+  return order;
+}
+
+}  // namespace
 static std::atomic<unsigned long long> g_CoalescedModuleLoadReturns{0};
 static std::atomic<unsigned long long> g_FallbackModuleLoadReturns{0};
 // Loader notifications that signaled the hook-thread wake event. A module-load storm
@@ -64,6 +98,15 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
   }
   base[n] = '\0';
 
+  // Only ambiguous basenames need a resolved path. Keep the short basename
+  // for ordinary notifications, including long paths.
+  const bool ubisoftCandidate = ce::overlay_compat::IsUbisoftOverlayCandidateBaseName(base);
+  wchar_t fullPath[MAX_PATH] = {};
+  if (ubisoftCandidate && data->FullDllName && data->FullDllName->Buffer && data->FullDllName->Length > 0 &&
+      data->FullDllName->Length < sizeof(fullPath)) {
+    std::memcpy(fullPath, data->FullDllName->Buffer, data->FullDllName->Length);
+  }
+
   if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
     // Before the module's DllMain when the loader has bound its imports by now; otherwise
     // queued for the post-load pass in NotifyHookModuleLoaded.
@@ -73,13 +116,10 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     // Real load notification: also record load order so a later overlay that
     // displaces another overlay's Present entry jump (e.g. RTSS after Steam)
     // can be identified as the chain owner.
-    wchar_t fullPath[MAX_PATH] = {};
-    if (data->FullDllName && data->FullDllName->Buffer && data->FullDllName->Length > 0) {
-      const size_t chars = std::min<size_t>(data->FullDllName->Length / sizeof(wchar_t), MAX_PATH - 1);
-      wcsncpy_s(fullPath, data->FullDllName->Buffer, chars);
-    }
+    const uint64_t candidateOrder = ubisoftCandidate
+        ? ObserveUbisoftCandidateLoad(static_cast<HMODULE>(data->DllBase), fullPath) : 0;
     const char *matched = fullPath[0]
-        ? ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(fullPath)
+        ? ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(fullPath, candidateOrder)
         : ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
@@ -164,11 +204,6 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     }
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
     UE5::NotifyModuleUnloaded(data->DllBase, data->SizeOfImage);
-    wchar_t fullPath[MAX_PATH] = {};
-    if (data->FullDllName && data->FullDllName->Buffer && data->FullDllName->Length > 0) {
-      const size_t chars = std::min<size_t>(data->FullDllName->Length / sizeof(wchar_t), MAX_PATH - 1);
-      wcsncpy_s(fullPath, data->FullDllName->Buffer, chars);
-    }
     const char *matched = fullPath[0]
         ? ce::overlay_compat::NoteModuleUnloadedForOverlayCache(fullPath)
         : ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
@@ -234,6 +269,7 @@ void RefreshThirdPartyOverlayIdentityCache() {
   struct IdentifiedPath {
     char narrow[MAX_PATH] = {};
     wchar_t wide[MAX_PATH] = {};
+    HMODULE retainedUbisoft = nullptr;
   } identifiedPaths[ce::overlay_compat::kIdentifiedOverlayPathSlotCount];
   size_t identifiedPathCount = 0;
   bool reshadeProxy = false;
@@ -244,15 +280,14 @@ void RefreshThirdPartyOverlayIdentityCache() {
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(module), &retained))
       continue;
     char path[MAX_PATH] = {};
-    if (GetModuleFileNameA(retained, path, MAX_PATH)) {
+    const DWORD length = GetModuleFileNameA(retained, path, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) {
       const char* baseName = ce::overlay_compat::detail::ExtractBaseName(path);
       const bool isUbisoftCandidate = ce::overlay_compat::IsUbisoftOverlayCandidateBaseName(baseName);
       const bool isUbisoft = isUbisoftCandidate &&
                              (ce::overlay_compat::HasUbisoftLauncherPathSegment(path) ||
                               ModuleVersionStringContains(retained, "Ubisoft"));
-      if (isUbisoft) {
-        ce::overlay_compat::NoteModuleLoadedForOverlayCache(path);
-      } else if (!isUbisoftCandidate) {
+      if (!isUbisoftCandidate) {
         ce::overlay_compat::NoteModuleLoadedForOverlayCache(path);
       }
       const bool proxyCandidate = ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName(baseName);
@@ -268,14 +303,25 @@ void RefreshThirdPartyOverlayIdentityCache() {
         if (identifiedPathCount < ce::overlay_compat::kIdentifiedOverlayPathSlotCount) {
           auto& identified = identifiedPaths[identifiedPathCount++];
           strncpy_s(identified.narrow, _countof(identified.narrow), path, _TRUNCATE);
-          GetModuleFileNameW(retained, identified.wide, MAX_PATH);
+          const DWORD wideLength = GetModuleFileNameW(retained, identified.wide, MAX_PATH);
+          if (wideLength >= MAX_PATH) {
+            identified.wide[0] = L'\0';
+          }
+          if (isUbisoft) {
+            // Publish the identity and its presence before releasing the loader
+            // reference. Otherwise an unload can clear the bit before it is set.
+            identified.retainedUbisoft = retained;
+            retained = nullptr;
+          }
         }
         reshadeProxy |= isReshade;
         specialKProxy |= isSpecialK;
         optiScalerProxy |= isOptiScaler;
       }
     }
-    FreeLibrary(retained);
+    if (retained) {
+      FreeLibrary(retained);
+    }
   }
 
   // Start the publication transaction only after every loader/file-version
@@ -283,9 +329,12 @@ void RefreshThirdPartyOverlayIdentityCache() {
   // atomic publication and cannot abandon the bank halfway through.
   const uint32_t identityBank = ce::overlay_compat::BeginIdentifiedThirdPartyOverlayModulePathRefresh();
   for (size_t i = 0; i < identifiedPathCount; ++i) {
-    ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePathToBank(identifiedPaths[i].narrow, identityBank);
-    if (identifiedPaths[i].wide[0]) {
-      ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePathToBank(identifiedPaths[i].wide, identityBank);
+    const auto& identified = identifiedPaths[i];
+    const auto identity = identified.retainedUbisoft ? ce::overlay_compat::OverlayPathIdentity::kUbisoft
+                                                     : ce::overlay_compat::OverlayPathIdentity::kGraphicsProxy;
+    ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePathToBank(identified.narrow, identityBank, identity);
+    if (identified.wide[0]) {
+      ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePathToBank(identified.wide, identityBank, identity);
     }
   }
 
@@ -293,13 +342,25 @@ void RefreshThirdPartyOverlayIdentityCache() {
   ce::overlay_compat::SetIdentifiedOverlayIdentityLoaded("CE.SpecialKProxyIdentity", specialKProxy);
   ce::overlay_compat::SetIdentifiedOverlayIdentityLoaded("CE.OptiScalerProxyIdentity", optiScalerProxy);
   ce::overlay_compat::CommitIdentifiedThirdPartyOverlayModulePathRefresh(identityBank);
+  bool ubisoft = false;
+  for (size_t i = 0; i < identifiedPathCount; ++i) {
+    const auto& identified = identifiedPaths[i];
+    if (identified.retainedUbisoft) {
+      const uint64_t observedOrder = FindUbisoftCandidateLoadOrder(identified.retainedUbisoft, identified.wide);
+      const char* matched = observedOrder
+          ? ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(identified.narrow, observedOrder)
+          : ce::overlay_compat::NoteModuleLoadedForOverlayCache(identified.narrow);
+      ubisoft |= matched != nullptr;
+      FreeLibrary(identified.retainedUbisoft);
+    }
+  }
 
   const uint32_t identityMask = (reshadeProxy ? 1u : 0u) | (specialKProxy ? 2u : 0u) |
-                                (optiScalerProxy ? 4u : 0u);
+                                (optiScalerProxy ? 4u : 0u) | (ubisoft ? 8u : 0u);
   static std::atomic<uint32_t> lastIdentityMask{UINT32_MAX};
   if (lastIdentityMask.exchange(identityMask, std::memory_order_acq_rel) != identityMask) {
-    HookLogImportant("Third-party overlay identities changed (ReShade=%d SpecialK=%d OptiScaler=%d)",
-                     reshadeProxy ? 1 : 0, specialKProxy ? 1 : 0, optiScalerProxy ? 1 : 0);
+    HookLogImportant("Third-party overlay identities changed (ReShade=%d SpecialK=%d OptiScaler=%d Ubisoft=%d)",
+                     reshadeProxy ? 1 : 0, specialKProxy ? 1 : 0, optiScalerProxy ? 1 : 0, ubisoft ? 1 : 0);
   }
 }
 
@@ -380,7 +441,19 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // d3d11.dll churn during the Alt+Tab mode switch) must NOT touch the detection state, so the
   // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
   // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
-  ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);
+  if (!g_DllNotificationsActive.load(std::memory_order_acquire) && moduleNameOrPath) {
+    if (ce::overlay_compat::IsUbisoftOverlayCandidateBaseName(
+            ce::overlay_compat::ExtractModuleBaseName(moduleNameOrPath))) {
+      wchar_t path[MAX_PATH] = {};
+      const DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
+      if (length > 0 && length < MAX_PATH) {
+        const uint64_t observedOrder = ObserveUbisoftCandidateLoad(module, path);
+        ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(path, observedOrder);
+      }
+    } else {
+      ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);
+    }
+  }
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);

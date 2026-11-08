@@ -142,6 +142,43 @@ TEST_F(OverlayModuleDetectionTest, BareAndUnrelatedUbisoftCandidatesCannotSetPre
     EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
 }
 
+TEST_F(OverlayModuleDetectionTest, UbisoftMetadataPublishesPresenceWithoutInventingLoadOrder) {
+    const char* candidate = "D:\\Custom Launcher\\overlay64.dll";
+    const wchar_t* candidateWide = L"d:\\custom launcher\\OVERLAY64.DLL";
+    ASSERT_TRUE(PublishIdentifiedThirdPartyOverlayModulePath(candidate));
+    EXPECT_FALSE(IsVerifiedUbisoftOverlayModulePath(candidate));
+    EXPECT_EQ(NoteModuleLoadedForOverlayCache(candidateWide), nullptr);
+
+    NoteModuleLoadedForOverlayCacheFromNotification("gameoverlayrenderer64.dll");
+    const uint64_t observedOrder = ReserveOverlayLoadOrder();
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification(candidateWide, observedOrder), nullptr);
+
+    const auto bank = BeginIdentifiedThirdPartyOverlayModulePathRefresh();
+    ASSERT_TRUE(PublishIdentifiedThirdPartyOverlayModulePathToBank(candidate, bank, OverlayPathIdentity::kUbisoft));
+    EXPECT_FALSE(IsVerifiedUbisoftOverlayModulePath(candidate));
+    CommitIdentifiedThirdPartyOverlayModulePathRefresh(bank);
+
+    EXPECT_TRUE(IsVerifiedUbisoftOverlayModulePath(candidateWide));
+    EXPECT_STREQ(NoteModuleLoadedForOverlayCacheFromNotification(candidate, observedOrder), "overlay64.dll");
+    EXPECT_STREQ(GetLastLoadedTrackedOverlayModuleName(), "overlay64.dll");
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+
+    NoteModuleLoadedForOverlayCacheFromNotification("gameoverlayrenderer64.dll");
+    EXPECT_STREQ(NoteModuleLoadedForOverlayCacheFromNotification(candidate, observedOrder), "overlay64.dll");
+    EXPECT_STREQ(GetLastLoadedTrackedOverlayModuleName(), "gameoverlayrenderer64.dll");
+}
+
+TEST_F(OverlayModuleDetectionTest, UnloadedUbisoftOverlayDoesNotOverrideSteamFallback) {
+    const wchar_t* ubisoft = L"D:\\Ubisoft Game Launcher\\overlay64.dll";
+    NoteModuleLoadedForOverlayCacheFromNotification("gameoverlayrenderer64.dll");
+    ASSERT_STREQ(NoteModuleLoadedForOverlayCacheFromNotification(ubisoft), "overlay64.dll");
+    ASSERT_STREQ(NoteModuleUnloadedForOverlayCache(ubisoft), "overlay64.dll");
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+    EXPECT_TRUE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+}
+
 TEST_F(OverlayModuleDetectionTest, IdentifiedProxyPathIsRecognizedWithoutMatchingItsGenericFilename) {
     const char* proxyPath = "C:\\Games\\Example\\dxgi.dll";
     EXPECT_FALSE(IsThirdPartyOverlayModulePath(proxyPath));

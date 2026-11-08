@@ -1,5 +1,10 @@
 # llm-wiki Log
 
+### 2026-11-08 - Ubisoft overlay identity publication review
+
+- The overlay identity bank distinguishes Ubisoft metadata from generic graphics-proxy evidence. The scan holds each verified Ubisoft module through bank publication and presence registration, then releases the loader reference.
+- Native notifications reserve the observed load order before metadata validation. A later verification can publish that order, and a newer Steam load still wins. Unload removes the departed overlay as contrary evidence. Present originator walks also invalidate when the identity bank changes.
+
 ### 2026-11-08 - FSR configure and queue ownership review
 
 - `Hooked_ffxConfigure` forwards explicit null callbacks on disable and retires the old delegate only after acceptance. A rejected packet keeps the accepted delegate. An effect-only destroy retires the callback and leaves the registered presentation queue available for the fallback route.
