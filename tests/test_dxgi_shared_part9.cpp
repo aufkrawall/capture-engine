@@ -599,6 +599,10 @@ TEST(DXGISharedTest, KeepsOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
         /*runtimeOwnedNativeFGPresentPath=*/true, /*overlayInit=*/true, /*syncInit=*/true, /*deviceRemoved=*/false));
 
     // Not an OFF edge -> not this path.
+    EXPECT_TRUE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, false, true, true, true, false,
+                                                                    /*ffxPresentCallbackBridgeActive=*/true));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, false, true, true, true, true,
+                                                                     /*ffxPresentCallbackBridgeActive=*/true));
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(false, true, true, true, true, true, false));
     // FSR not active (pure DLSS->off) -> the existing pure-Streamline / confirmed-PostSL bypasses own it.
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, false, true, true, true, true, false));

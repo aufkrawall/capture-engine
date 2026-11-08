@@ -700,17 +700,16 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingTreatsPlannerDLSSLikeStreamlineL
               SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
 }
 
-TEST(DXGISharedTest, ExplicitNativeFSROffRecoveryUsesOriginalQueueDespiteStaleSwapchainQueue) {
+TEST(DXGISharedTest, ExplicitNativeFSROffRoutesByLiveSwapchainOwnership) {
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, true, false, false, false, true),
-              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
-
-    // Without an original game queue, keep the existing conservative
-    // runtime-owned routing because there is no proven normal Present queue.
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, false, false, false, false, true),
               SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, false, true, false, false, false, true),
+              SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
 }
 
 TEST(DXGISharedTest, SuspendedNoCallbackNativeFSRKeepsFSRSwapchainQueueRouting) {

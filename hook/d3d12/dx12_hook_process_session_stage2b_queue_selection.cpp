@@ -157,21 +157,15 @@ gameQueue = nullptr;
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
-            // After FSR->DLSS->off, or an explicit native-FSR OFF/suspend while
-            // the stale FSR swapchain queue latch is still draining, prefer the
-            // known original Present queue over the most recent ECL queue. Talos
+            // After ownership returns to the game, prefer the known original
+            // Present queue over the most recent ECL queue. Talos
             // uses separate render/present DIRECT queues; falling back to
             // g_CommandQueue/primary picked the render queue and immediately hit
             // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
             const auto queueSource =
                 ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(dx12_hook_g_OriginalGameQueue != nullptr);
             if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
-                if (dx12_hook_g_FGRuntimeOwnsSwapchain && dx12_hook_g_SwapchainQueue &&
-                    dx12_hook_g_SwapchainQueue != dx12_hook_g_OriginalGameQueue) {
-                    gameQueue = dx12_hook_g_SwapchainQueue;
-                } else {
-                    gameQueue = dx12_hook_g_OriginalGameQueue;
-                }
+                gameQueue = dx12_hook_g_OriginalGameQueue;
                 const bool explicitNativeFSROffPending =
                     dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
                 static std::atomic<int> s_postFSRInactiveOrigRouteLogCount{0};

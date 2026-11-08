@@ -148,6 +148,7 @@ if (result.progressResolved && assumedSince != 0) {
 
 {
     std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    result.runtimeOwnsSwapchain = dx12_hook_g_FGRuntimeOwnsSwapchain;
     result.hasSwapchainQueue = dx12_hook_g_SwapchainQueue != nullptr;
     result.hasOriginalGameQueue = dx12_hook_g_OriginalGameQueue != nullptr;
     result.swapchainQueueMatchesOriginalGameQueue =
@@ -202,6 +203,9 @@ const bool bridgeExpected =
     dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire);
 const bool evaluateFFXCallbackFallback = ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(
     ffxPresentCallbackStalled, explicitNativeFSROffPending, bridgeExpected);
+if (!evaluateFFXCallbackFallback) {
+    return false;
+}
 UpdateFFXPresentCallbackFirstStallDetection(ffxPresentCallbackStalled);
 const bool progressResolvedOfficialFFXPresentPath =
     dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
@@ -215,8 +219,8 @@ const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
 const ULONGLONG stallDurationMs = GetFFXPresentCallbackStallDurationMs();
 const bool swapchainAndQueueSafe =
     progressProof.hasDevice && SUCCEEDED(progressProof.deviceHr) &&
-    (progressProof.swapchainQueueMatchesOriginalGameQueue || !dx12_hook_g_FGRuntimeOwnsSwapchain ||
-     dx12_hook_g_SwapchainQueue != nullptr);
+    (progressProof.hasSwapchainQueue ||
+     (!progressProof.runtimeOwnsSwapchain && progressProof.hasOriginalGameQueue));
 return ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     evaluateFFXCallbackFallback, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
     currentFFXPresentCallbackProof, progressProof.proof, stallDurationMs, explicitNativeFSROffPending,

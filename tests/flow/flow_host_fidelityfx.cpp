@@ -4,7 +4,9 @@
 // the UI resource registration while enabled (GameOptions::fsrUi) and ffxDispatch(PREPARE_V2). The present
 // callback copies the presented image into the swapchain buffer.
 
+#include <atomic>
 #include <cstring>
+#include <limits>
 #include <string>
 
 #include <ffx_api.h>
@@ -30,6 +32,8 @@ struct FidelityFXGame {
     ffxContext frameGenerationContext = nullptr;
     bool enabled = false;
     bool presentCallback = true;
+    bool keepProviderConfigureForNextFrame = false;
+    std::atomic<unsigned> presentCallbackCalls{0};
     uint64_t frameId = 1;
     // GameOptions::fsrUi (two with FSRUiBuffering::kGameAlternates); read-only for AMD, like a game's HUD texture
     ComPtr<ID3D12Resource> ui[2];
@@ -89,7 +93,8 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12
     list->ResourceBarrier(1, &barrier);
 }
 
-ffxReturnCode_t GamePresentCallback(ffxCallbackDescFrameGenerationPresent* params, void*) {
+ffxReturnCode_t GamePresentCallback(ffxCallbackDescFrameGenerationPresent* params, void* userContext) {
+    static_cast<FidelityFXGame*>(userContext)->presentCallbackCalls.fetch_add(1, std::memory_order_relaxed);
     auto* list = static_cast<ID3D12GraphicsCommandList*>(params->commandList);
     auto* source = static_cast<ID3D12Resource*>(params->currentBackBuffer.resource);
     auto* output = static_cast<ID3D12Resource*>(params->outputSwapChainBuffer.resource);
@@ -135,6 +140,7 @@ void ConfigureFrameGeneration(FidelityFXGame& ffx, IDXGISwapChain3* swapchain) {
     configure.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
     configure.swapChain = swapchain;
     configure.presentCallback = ffx.presentCallback ? GamePresentCallback : nullptr;
+    configure.presentCallbackUserContext = &ffx;
     configure.frameGenerationCallback = GameFrameGenerationCallback;
     configure.frameGenerationCallbackUserContext = &ffx;
     configure.frameGenerationEnabled = ffx.enabled;
@@ -291,10 +297,18 @@ bool FlowGame::RecreateFSREffectContext() {
 bool FlowGame::SendRejectedFSRConfigure() {
     if (!fidelityfx_ || !fidelityfx_->frameGenerationContext || !fidelityfx_->configure)
         return false;
-    ffxConfigureDescHeader invalidHeader{};
-    invalidHeader.type = static_cast<ffxStructType_t>(0xFFFF0000);
-    const auto result = fidelityfx_->configure(&fidelityfx_->frameGenerationContext, &invalidHeader);
-    return result != FFX_API_RETURN_OK;
+    ffxConfigureDescFrameGeneration configure{};
+    configure.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+    configure.swapChain = swapchain_.Get();
+    // The fake rejects this frame ID before making any change. Send a valid
+    // OFF/null-callback descriptor so CE exercises its bridge retirement path.
+    configure.frameID = std::numeric_limits<uint64_t>::max();
+    fidelityfx_->keepProviderConfigureForNextFrame = true;
+    return fidelityfx_->configure(&fidelityfx_->frameGenerationContext, &configure.header) != FFX_API_RETURN_OK;
+}
+
+unsigned FlowGame::FSRAppPresentCallbackCalls() const {
+    return fidelityfx_ ? fidelityfx_->presentCallbackCalls.load(std::memory_order_relaxed) : 0;
 }
 
 bool FlowGame::ReloadForeignFFXRuntime() {
@@ -316,7 +330,11 @@ bool FlowGame::ReloadForeignFFXRuntime() {
 void FlowGame::SubmitFidelityFXFrame() {
     FidelityFXGame& ffx = *fidelityfx_;
     ++ffx.frameId;
-    ConfigureFrameGeneration(ffx, swapchain_.Get());
+    if (ffx.keepProviderConfigureForNextFrame) {
+        ffx.keepProviderConfigureForNextFrame = false;
+    } else {
+        ConfigureFrameGeneration(ffx, swapchain_.Get());
+    }
     RegisterUiResource(ffx);
     ffxDispatchDescFrameGenerationPrepareV2 prepare{};
     prepare.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;

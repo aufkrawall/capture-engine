@@ -38,6 +38,11 @@ TEST(Dx12FgWiring, FreshHandoffExemptionIsAcceptedByBothInitDeferralGates) {
     EXPECT_TRUE(ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
         false, false, true, true, true, true, false, false, false, false,
         /*freshStreamlineHandoffOnSubmittableQueue=*/false));
+    EXPECT_FALSE(
+        ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true, false, false, true, false));
+    EXPECT_FALSE(ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        false, false, true, true, true, true, false, false, false, false,
+        /*freshStreamlineHandoffOnSubmittableQueue=*/false, /*retainedFSRSuspension=*/true));
 }
 
 // Source invariant: the two InitOverlayBackend init-deferral gates carry the SAME fresh-handoff exemption, the
@@ -69,7 +74,7 @@ TEST(Dx12FgWiring, BothInitDeferralGatesAcceptTheSameFreshHandoffExemption) {
               std::string::npos);
     const size_t gateBCall = phase3.find("ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(");
     ASSERT_NE(gateBCall, std::string::npos);
-    EXPECT_NE(phase3.find("commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue))", gateBCall),
+    EXPECT_NE(phase3.find("commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue,", gateBCall),
               std::string::npos)
         << "the queue-settle call site must pass the same exemption variable as gate A";
 

@@ -220,26 +220,18 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
         return SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
     }
 
-    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && nativeFSRInternalNoCallbackCompositionLive &&
-        runtimeOwnsSwapchain) {
-        // Suspended native FSR on AMD's internal no-callback composition route:
-        // the FSR-owned swapchain is still the live present path and no
-        // callback bridge exists that could draw the overlay, so keep rendering
-        // through the runtime-owned swapchain queue exactly like the active
-        // no-callback case. Routing the still-live FSR swapchain's backbuffers
-        // to the original game queue would be cross-queue execution.
-        return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
-                                 : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
-    }
-
-    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && !fsrFGActive && hadFSRFGPhase && hasOriginalGameQueue) {
-        // A disabled native-FSR configure means the FFX runtime has suspended
-        // generation and the live Present path can already be back on the game
-        // queue while the FSR-owned swapchain queue latch is still draining.
-        // Rendering the recovered normal overlay on that stale FSR queue has
-        // been observed to DEVICE_REMOVED; route to the original Present queue
-        // until a later clean swapchain/queue transition clears the teardown.
-        return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
+    if (explicitNativeFSROffPendingRuntimeOwnedTeardown &&
+        (!fsrFGActive || nativeFSRInternalNoCallbackCompositionLive)) {
+        // An OFF configure changes interpolation, not the owner of the live
+        // swapchain's backbuffers. Use its captured queue until ownership
+        // returns to the game. Once it does, a retained FSR queue is stale.
+        if (runtimeOwnsSwapchain) {
+            return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
+                                     : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
+        }
+        if (hadFSRFGPhase && hasOriginalGameQueue) {
+            return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
+        }
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {

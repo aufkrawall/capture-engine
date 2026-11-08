@@ -137,6 +137,7 @@ public:
     bool DestroyFSREffectContextOnly();
     bool RecreateFSREffectContext();
     bool SendRejectedFSRConfigure();
+    unsigned FSRAppPresentCallbackCalls() const;
     bool DetachForeignFFXInputs();
     bool ReloadForeignFFXRuntime();
 

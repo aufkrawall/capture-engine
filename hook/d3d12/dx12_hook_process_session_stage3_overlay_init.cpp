@@ -445,13 +445,13 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         const bool commandQueueMatchesPrimaryGameQueue =
             currentCommandQueue != nullptr &&
             currentCommandQueue == dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire);
-        if (!retainedFSRSuspension &&
-            ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        if (ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
                 actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
                 dx12_hook_g_OriginalGameQueue != nullptr, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr, currentCommandQueue != nullptr,
                 currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                 currentCommandQueue != nullptr && currentCommandQueue == dx12_hook_g_OriginalGameQueue,
-                commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue)) {
+                commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue,
+                retainedFSRSuspension)) {
             // Attribute as gated so any blank window here is a visible [OVERLAY COVERAGE] streak.
             NoteDX12OverlayCoverageGate("sl-teardown-queue-settle-defer");
             static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};

@@ -527,6 +527,9 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     void* originalUserContext = bridge.originalUserContext;
     ce::fg_session::RecordFFXCallbackArrival(userCtx, desc ? desc->frameID : 0,
                                              desc && desc->isGeneratedFrame, bridge.installed);
+    if (!bridge.installed) {
+        return 0;
+    }
 
     uint32_t result = 0;
     if (originalCallback) {
@@ -679,7 +682,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     ce::sharpen::CollectRuntimePostProcess(!ce::sharpen::Requested(postProcessRequest));
     bool overlayDrawn = false;
     if (!callbackYieldsToTopmostRoute && !probeSuppressesBridgeOverlay && RenderOverlayViaFFXPresentCallback(desc)) {
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback, /*frameAttributed=*/true);
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
         overlayDrawn = true;
     }
     // A hidden/yielded callback has no CE GPU work to breadcrumb. Keeping MARKER_OUT writes here

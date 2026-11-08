@@ -123,19 +123,25 @@ TEST(FlowSwitch, EffectContextRecreateWhileSwapchainAlivePreservesOverlay) {
     ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
     ExpectPublished(game, 2, 2, "FSR FG on before context destroy");
 
-    // 2. Reject an invalid configure packet: must not corrupt bridge or state
-    EXPECT_TRUE(game.SendRejectedFSRConfigure());
-    ASSERT_TRUE(game.RenderFrames(50)) << game.Error();
+    // The provider rejects a valid OFF packet with no callback. On the next
+    // frame the provider still calls the previously accepted app delegate.
+    const unsigned callbacksBefore = game.FSRAppPresentCallbackCalls();
+    ASSERT_TRUE(game.SendRejectedFSRConfigure());
+    ASSERT_TRUE(game.RenderFrames(1)) << game.Error();
+    EXPECT_GT(game.FSRAppPresentCallbackCalls(), callbacksBefore);
+    ExpectPublished(game, 2, 2, "FSR FG on after rejected OFF configure");
 
     // 3. Destroy effect context only while FFX swapchain stays alive
     ASSERT_TRUE(game.DestroyFSREffectContextOnly()) << game.Error();
     // Render frames across departing lifetime: swapchain is still presenting
     ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
+    ExpectPublished(game, 0, 1, "FSR FG off after destroying its effect context");
 
     // 4. Recreate effect context on the same swapchain and re-enable with null app callback
     ASSERT_TRUE(game.RecreateFSREffectContext()) << game.Error();
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(200)) << game.Error();
+    ExpectPublished(game, 2, 2, "FSR FG on after recreating its effect context");
 
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();

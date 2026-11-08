@@ -625,6 +625,8 @@ extern "C" FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const
         return FFX_API_RETURN_ERROR_PARAMETER;
     if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION) {
         const auto& configure = *reinterpret_cast<const ffxConfigureDescFrameGeneration*>(desc);
+        if (configure.frameID == UINT64_MAX)
+            return FFX_API_RETURN_ERROR_PARAMETER;
         std::lock_guard<std::mutex> lock(g_configMutex);
         if (configure.frameGenerationEnabled != g_config.enabled ||
             configure.presentCallback != g_config.presentCallback)

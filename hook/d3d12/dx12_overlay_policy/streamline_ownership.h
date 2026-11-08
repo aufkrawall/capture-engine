@@ -319,8 +319,9 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool hasCommandQueue,
     bool commandQueueMatchesSwapchainQueue, bool commandQueueMatchesOriginalGameQueue,
-    bool commandQueueMatchesPrimaryGameQueue, bool freshStreamlineHandoffOnSubmittableQueue = false) {
-    if (actualFGActive || streamlineFGRunning) {
+    bool commandQueueMatchesPrimaryGameQueue, bool freshStreamlineHandoffOnSubmittableQueue = false,
+    bool retainedFSRSuspension = false) {
+    if (actualFGActive || streamlineFGRunning || retainedFSRSuspension) {
         return false;
     }
 

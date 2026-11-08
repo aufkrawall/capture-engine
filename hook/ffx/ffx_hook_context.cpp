@@ -173,7 +173,8 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
         }
     }
 
-    ce::fg_session::RecordFFXContextCreate(ffx_hook_context ? *ffx_hook_context : nullptr,
+    ce::fg_session::RecordFFXContextCreate(result == ffx_hook_FFX_API_RETURN_OK && ffx_hook_context
+                                               ? *ffx_hook_context : nullptr,
                                            ffx_hook_desc ? GetEffectId(ffx_hook_desc->type) : 0, result,
                                            parsedSwapChainCreate.recognized);
     return result;
@@ -273,7 +274,6 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
                                        !ce::fg_cost_probe::Active(ce::fg_cost_probe::kFfxBridgeOff);
     ce::ffx_api::PresentCallback bridgedOriginalCallback = nullptr;
     void* bridgedOriginalUserContext = nullptr;
-    bool usingDefaultPresentCallback = false;
     bool installedPresentCallbackBridge = false;
     bool retainedExistingBridgeForDisabledConfigure = false;
     bool retainedAlreadyBridgedPresentCallback = false;
@@ -283,7 +283,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     bool appPresentCallbackProvided = false;
     bool alreadyBridgedPresentCallbackProvided = false;
     void* bridgeKey = nullptr;
-    FFXPresentCallbackBridgeState previousBridgeState = {};
+    bool stagedNewBridge = false;
+    bool updateExistingBridgeOnSuccess = false;
+    bool clearBridgeOnSuccess = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(ffx_hook_desc);
         // Names the frame this thread presents next, so PC latency can follow it
@@ -315,23 +317,19 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
                 true, localConfig.frameGenerationEnabled != 0,
                 appPresentCallbackProvided || alreadyBridgedPresentCallbackProvided)) {
             bridgeKey = GetOrCreatePresentCallbackBridgeKey(contextHandle);
-            previousBridgeState = DX12_ResolveFFXPresentCallbackBridge(bridgeKey);
-            if (alreadyBridgedPresentCallbackProvided) {
-                retainedAlreadyBridgedPresentCallback = true;
-                if (!localConfig.presentCallbackUserContext) {
-                    localConfig.presentCallbackUserContext = bridgeKey;
-                    descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
-                }
-                if (!DX12_HasFFXPresentCallbackBridge(bridgeKey)) {
-                    DX12_SetFFXPresentCallbackBridge(bridgeKey, nullptr, nullptr);
-                }
-            } else {
-                bridgedOriginalCallback =
-                    localConfig.presentCallback ? localConfig.presentCallback : ffx_hook_g_DefaultPresentCallback;
-                bridgedOriginalUserContext =
-                    localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr;
-                usingDefaultPresentCallback = !localConfig.presentCallback && bridgedOriginalCallback;
+            const auto previousBridgeState = DX12_ResolveFFXPresentCallbackBridge(bridgeKey);
+            retainedAlreadyBridgedPresentCallback = alreadyBridgedPresentCallbackProvided;
+            if (!alreadyBridgedPresentCallbackProvided) {
+                bridgedOriginalCallback = localConfig.presentCallback;
+                bridgedOriginalUserContext = localConfig.presentCallbackUserContext;
+            }
+            if (!previousBridgeState.installed) {
+                // A newly registered callback can fire as soon as the provider accepts it.
+                // Existing registrations keep the accepted delegate until this call succeeds.
                 DX12_SetFFXPresentCallbackBridge(bridgeKey, bridgedOriginalCallback, bridgedOriginalUserContext);
+                stagedNewBridge = true;
+            } else if (!alreadyBridgedPresentCallbackProvided) {
+                updateExistingBridgeOnSuccess = true;
             }
             localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
             localConfig.presentCallbackUserContext = bridgeKey;
@@ -348,10 +346,6 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
                     true, localConfig.frameGenerationEnabled != 0, appPresentCallbackProvided,
                     HasTrackedPresentCallbackBridgeKey(bridgeKey) &&
                         DX12_HasFFXPresentCallbackBridgeWithOriginal(bridgeKey));
-            if (localConfig.frameGenerationEnabled && !appPresentCallbackProvided &&
-                !retainBridgeForNullCallbackToggle) {
-                DX12_ClearFFXPresentCallbackBridge(bridgeKey);
-            }
             if (retainBridgeForNullCallbackToggle) {
                 localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
                 localConfig.presentCallbackUserContext = bridgeKey;
@@ -363,15 +357,17 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
             if (ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(
                     true, localConfig.frameGenerationEnabled != 0, retainedExistingBridgeForDisabledConfigure,
                     disabledStartupArmingConfigure, appPresentCallbackProvided)) {
+                bridgedOriginalCallback = localConfig.presentCallback;
+                bridgedOriginalUserContext = localConfig.presentCallbackUserContext;
+                updateExistingBridgeOnSuccess = true;
                 localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
                 localConfig.presentCallbackUserContext = bridgeKey;
                 descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
                 retainedBridgeForDisabledConfigure = true;
-            } else if (!localConfig.frameGenerationEnabled && !appPresentCallbackProvided && bridgeKey) {
-                // The app explicitly disabled FG without a callback: clear the bridge for this context
-                // so AMD receives a null callback and CE does not expect the callback to fire.
-                DX12_ClearFFXPresentCallbackBridge(bridgeKey);
             }
+            // The null callback must reach AMD. Retire CE's accepted delegate only
+            // after the provider accepts the descriptor and stops using the bridge.
+            clearBridgeOnSuccess = !localConfig.presentCallback && retainedExistingBridgeForDisabledConfigure;
         }
     }
 
@@ -434,16 +430,17 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
         }
     }
     if (result != ffx_hook_FFX_API_RETURN_OK || !ffx_hook_desc) {
-        if (installedPresentCallbackBridge) {
-            if (previousBridgeState.installed) {
-                DX12_SetFFXPresentCallbackBridge(bridgeKey, previousBridgeState.originalCallback,
-                                                 previousBridgeState.originalUserContext);
-            } else {
-                DX12_ClearFFXPresentCallbackBridge(bridgeKey);
-            }
+        if (stagedNewBridge) {
+            DX12_ClearFFXPresentCallbackBridge(bridgeKey);
         }
-        ce::fg_session::RecordFFXConfigure(contextHandle, false, nullptr, bridgeKey, result);
+        ce::fg_session::RecordFFXConfigure(contextHandle, localConfig.frameGenerationEnabled != 0,
+                                           reinterpret_cast<void*>(bridgedOriginalCallback), bridgeKey, result);
         return result;
+    }
+    if (updateExistingBridgeOnSuccess) {
+        DX12_SetFFXPresentCallbackBridge(bridgeKey, bridgedOriginalCallback, bridgedOriginalUserContext);
+    } else if (clearBridgeOnSuccess) {
+        DX12_ClearFFXPresentCallbackBridge(bridgeKey);
     }
     // Before the FG-configure filter below: the swapchain context is only ever configured with RegisterUiResource.
     if (!contextTracked) {
@@ -479,11 +476,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
             const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(ffx_hook_desc);
             HookLogImportant(
                 "FFX Hook: Installed DX12 overlay present-callback bridge for context=%p frameID=%llu enabled=%d "
-                "startupArming=%d originalPresent=%p resolvedPresent=%p usedDefaultPresent=%d log=%d",
+                "startupArming=%d originalPresent=%p resolvedPresent=%p log=%d",
                 ffx_hook_context, static_cast<unsigned long long>(originalDesc->frameID),
                 originalDesc->frameGenerationEnabled ? 1 : 0, disabledStartupArmingConfigure ? 1 : 0,
                 reinterpret_cast<void*>(originalDesc->presentCallback),
-                reinterpret_cast<void*>(bridgedOriginalCallback), usingDefaultPresentCallback ? 1 : 0, logCount + 1);
+                reinterpret_cast<void*>(bridgedOriginalCallback), logCount + 1);
         }
         // The generator's internal pacing target is learned around activation.
         // Record the cadence it is about to pace against, so a start that later
@@ -675,9 +672,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
                 ffx_hook_context, static_cast<unsigned long long>(parsed.frameId));
         }
     }
-    const bool retainedBridgeForConfigure =
-        !parsed.enabled && (retainedExistingBridgeForDisabledConfigure || retainedAlreadyBridgedPresentCallback ||
-                            retainedBridgeForDisabledConfigure);
+    const bool retainedBridgeForConfigure = !parsed.enabled && bridgeActiveForConfigure;
     if (routingStateChanged) {
         DX12_OnNativeFSRPresentCallbackRoutingConfigured(parsed.enabled, bridgeActiveForConfigure,
                                                          appPresentCallbackProvided);

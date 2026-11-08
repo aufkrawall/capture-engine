@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-11-08 - FSR configure and queue ownership review
+
+- `Hooked_ffxConfigure` forwards explicit null callbacks on disable and retires the old delegate only after acceptance. A rejected packet keeps the accepted delegate. An effect-only destroy retires the callback and leaves the registered presentation queue available for the fallback route.
+- `DecideSwapchainOverlayRouting` gives a retained FSR swapchain its captured queue through the OFF transition. After ownership returns to the game, the original Present queue is authoritative. Both backend init and frame submission use that decision.
+- The FSR effect recreation flow sends a valid OFF descriptor that the fake rejects, then verifies the previously accepted callback still executes before another configure can repair it.
+
 ### 2026-11-08 - Diagnostic-arm and termination trace review
 
 - Marker discovery runs on the hook thread independently of logging level. The normal termination policy owns the target, sentinel and one-shot guards.
@@ -17,7 +23,6 @@
 
 - **Diagnostic arm & dump gap:** Avatar's `CrashAnalyser::FinishAnalysis` terminates with `TerminateProcess(3)` from its own executable (`afop.exe`), which CE previously classified as an ordinary application self-termination (`origin == kPrimaryModule`), skipping the dump. Added a session-scoped diagnostic arm marker (`diagnostic_arm.txt`) in the active session directory (and logs root). When armed for the target executable basename, nonzero self-terminations trigger pre-termination minidump capture with fatal-assert scope (`ExternalDumpScope::kFatalAssert`), capturing all thread stacks, referenced memory, and terminating thread ID without affecting clean quits (`exit(0)`) or default crash policy.
 - **First-chance fault candidate history:** A bounded ring in `crash_first_chance` retains first-chance fault evidence for asynchronous reporting threads. The active fault slot owns any context eligible for dump capture. See the diagnostic review above for the current trace format.
-- **FSR callback lifetime & effect context destroy:** Destroying an FSR effect context while the presentation swapchain remains registered previously erased the callback bridge immediately (`DX12_ClearFFXPresentCallbackBridge`), causing in-flight / final callbacks from departing lifetimes to lose their delegate. Bridge state is now bound to the presentation swapchain lifetime, surviving effect context recreation and reverting on rejected configures.
 - **Overlay continuity after FSR OFF:** When FSR FG is turned off, CE keeps the valid passthrough callback route while the runtime continues to invoke it. When the callback route ends or stalls, CE activates the fallback on the verified swapchain queue once the device and queue are proven safe, maintaining continuous 1-draw-per-output coverage and publishing the correct FG status (off, 1x). Verified across 212 FG flow scenarios including `FlowSwitch.FSROffContinuityCoversEveryPresentAndPublishesOff`, `EffectContextRecreateWhileSwapchainAlivePreservesOverlay`, and `SaveLoadHandoffAndSuspensionKeepsOverlay`.
 
 ### 2026-11-08 - Ubisoft Connect / Uplay overlay coexistence and Present originator traversal

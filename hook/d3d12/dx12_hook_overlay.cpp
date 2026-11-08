@@ -126,8 +126,11 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
                    routingDecision ==
                        ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue) {
             queueForBackend = dx12_hook_g_SwapchainQueue;
-        } else if (fsrFGNow && dx12_hook_g_OriginalGameQueue) {
-            queueForBackend = dx12_hook_g_OriginalGameQueue;  // fallback
+        } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue ||
+                   routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
+            return false;
         } else {
             queueForBackend = dx12_hook_g_SwapchainQueue;
             if (!queueForBackend)

@@ -345,6 +345,7 @@ private:
 struct ProgressResolvedOfficialFFXOverlayFallbackProof {
     bool proof = false;
     bool progressResolved = false;
+    bool runtimeOwnsSwapchain = false;
     bool hasSwapchainQueue = false;
     bool hasOriginalGameQueue = false;
     bool swapchainQueueMatchesOriginalGameQueue = false;
