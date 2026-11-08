@@ -190,7 +190,7 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
                                                                 bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
                                                                 bool hasCommandQueue,
                                                                 bool commandQueueMatchesSwapchainQueue,
-                                                                bool retainedNoCallbackFSRSuspension,
+                                                                bool retainedFSRSuspension,
                                                                 bool freshStreamlineHandoffOnSubmittableQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
@@ -200,8 +200,7 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
         return false;
     }
 
-    // RETAINED NO-CALLBACK FSR SUSPENSION (test app session 20260702_142655: overlay INVISIBLE for the
-    // WHOLE suspension): AMD keeps the FI swapchain and its runtime-owned queue latched while the app
+    // RETAINED FSR SUSPENSION: AMD keeps the FI swapchain and its runtime-owned queue latched while the app
     // renders on origGame, so "command traffic settles onto the live swapchain queue" can structurally
     // NEVER happen — this defer stranded the overlay blank until resume (every suspended present logged
     // "Deferring inactive runtime-owned swapchain overlay init until queue settles" with cmdQ=origGame,
@@ -209,7 +208,7 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
     // runtime-owned swapchain queue (AMD is not interpolating, so the backbuffer submit is the
     // documented-safe route, and the ProcessFrame queue routing picks scQueue for exactly this state), so
     // overlay init must proceed instead of waiting for a settle that cannot occur.
-    if (retainedNoCallbackFSRSuspension) {
+    if (retainedFSRSuspension) {
         return false;
     }
 
@@ -320,8 +319,9 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool hasCommandQueue,
     bool commandQueueMatchesSwapchainQueue, bool commandQueueMatchesOriginalGameQueue,
-    bool commandQueueMatchesPrimaryGameQueue, bool freshStreamlineHandoffOnSubmittableQueue = false) {
-    if (actualFGActive || streamlineFGRunning) {
+    bool commandQueueMatchesPrimaryGameQueue, bool freshStreamlineHandoffOnSubmittableQueue = false,
+    bool retainedFSRSuspension = false) {
+    if (actualFGActive || streamlineFGRunning || retainedFSRSuspension) {
         return false;
     }
 

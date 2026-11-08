@@ -49,15 +49,15 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffx
             ffx_hook_g_FrameGenerationRoutingByContext.erase(contextHandle);
         }
         if (!isVulkanContext) {
+            {
+                std::lock_guard<std::mutex> lock(ffx_hook_g_PresentCallbackBridgeMutex);
+                ffx_hook_g_PresentCallbackBridgeKeys.erase(contextHandle);
+            }
+            DX12_ClearFFXPresentCallbackBridge(contextHandle);
             // A known effect context (frame generation, upscaling) presents nothing: AMD keeps presenting what its
-            // swapchain context scheduled, and games destroy the FG context first. Bind the bridge state to the
-            // presentation lifetime that can invoke it; only tearing the presentation swapchain down ends the bridge.
+            // swapchain context scheduled, and games destroy the FG context first. Bind the queue registration to the
+            // presentation lifetime; only tearing the presentation swapchain down unregisters the queue.
             if (isFGSwapchainContext || !isKnownContext) {
-                {
-                    std::lock_guard<std::mutex> lock(ffx_hook_g_PresentCallbackBridgeMutex);
-                    ffx_hook_g_PresentCallbackBridgeKeys.erase(contextHandle);
-                }
-                DX12_ClearFFXPresentCallbackBridge(contextHandle);
                 DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
             } else {
                 HookLog("FFX Hook: effect context %p destroyed; its swapchain's presentation stays registered",
@@ -83,6 +83,19 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffx
         }
 
         HookLog("FFX Hook: FG Context destroyed (liveContexts=%d)", newCount);
+
+        const bool isFGEffectContext = !isVulkanContext && isFGContext && !isFGSwapchainContext;
+        if (isFGEffectContext) {
+            HookLog("FFX Hook: FSR Frame Generation effect context destroyed; FG deactivated");
+            DX12_OnNativeFSRPresentCallbackRoutingConfigured(false, false, false);
+            g_FGCompat.SetFSRFGActive(false);
+            if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+                perf->NotifyFSRFrameGenerationTransition(false, "ffxEffectContextDestroy");
+            }
+            ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kFFXContextDestroy,
+                                        "FFXHook::Hooked_ffxDestroyContext", reinterpret_cast<void*>(ffx_hook_context),
+                                        nullptr, ce::fg_runtime::RuntimeMode::kOff, false, true);
+        }
 
         // Signal FG deactivation when all contexts are destroyed
         if (newCount == 0) {

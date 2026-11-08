@@ -174,8 +174,8 @@ TEST(FlowSwitch, SaveLoadHandoffAndSuspensionKeepsOverlay) {
     ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
     ExpectPublished(game, 2, 2, "DLSS -> FSR after save-load");
 
-    // 5. Temporary FSR suspension and effect context recreation
-    ASSERT_TRUE(game.SetFSRFrameGeneration(false, /*presentCallback=*/true)) << game.Error();
+    // 5. Temporary FSR suspension with null callback and effect context recreation
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, /*presentCallback=*/false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(50)) << game.Error();
     ASSERT_TRUE(game.DestroyFSREffectContextOnly()) << game.Error();
     ASSERT_TRUE(game.RenderFrames(50)) << game.Error();
@@ -183,6 +183,39 @@ TEST(FlowSwitch, SaveLoadHandoffAndSuspensionKeepsOverlay) {
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/true)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
     ExpectPublished(game, 2, 2, "FSR resumed after context recreation");
+
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+// Regression test for save-load teardown where FSR FG is disabled with null callback
+// followed immediately by effect-context destruction while presentation swapchain stays alive.
+TEST(FlowSwitch, FSROffWithNullCallbackTearsDownBridgeCleanlyAndKeepsOverlay) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(100)) << game.Error();
+
+    // 1. Enable FSR FG with present callback
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
+    ExpectPublished(game, 2, 2, "FSR FG on");
+
+    // 2. Disable FSR FG with null callback (Avatar save-load pattern)
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, /*presentCallback=*/false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(50)) << game.Error();
+    ExpectPublished(game, 0, 1, "FSR FG off");
+
+    // 3. Destroy effect context only while swapchain presents
+    ASSERT_TRUE(game.DestroyFSREffectContextOnly()) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(100)) << game.Error();
+
+    // 4. Recreate effect context and re-enable with callback
+    ASSERT_TRUE(game.RecreateFSREffectContext()) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
+    ExpectPublished(game, 2, 2, "FSR FG resumed");
 
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();

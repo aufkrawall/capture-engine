@@ -199,7 +199,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
         }
     }
     if (overlayDrawRecorded) {
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal, /*frameAttributed=*/true);
         if (!useDedicated && pSwapChain && eclQueue == dx12_hook_g_OriginalGameQueue) {
             IDXGISwapChain* previous =
                 dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.load(std::memory_order_relaxed);

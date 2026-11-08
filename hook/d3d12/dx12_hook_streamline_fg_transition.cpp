@@ -502,14 +502,15 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             CleanupRTVs();
         }
 
+        // The direct state-change callback already owns this OFF edge. Keep
+        // the later ProcessFrame outer tracker from replaying a destructive
+        // teardown once the native normal route eventually returns or when FSR is active.
+        dx12_hook_g_OuterTrackedSLFGRunning.store(false, std::memory_order_release);
+        dx12_hook_g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
+
         if (!preserveRuntimeOwnedFSRTakeover && preserveConfirmedPostSLProxyResources) {
             EndFGTransitionCooldown();
             dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.store(true, std::memory_order_release);
-            // The direct state-change callback already owns this OFF edge. Keep
-            // the later ProcessFrame outer tracker from replaying a destructive
-            // teardown once the native normal route eventually returns.
-            dx12_hook_g_OuterTrackedSLFGRunning.store(false, std::memory_order_release);
-            dx12_hook_g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — preserved warm confirmed-PostSL proxy resources "
                 "for exact-swapchain keep-alive (proxy=%p queue=%p; no reinit/copy/wait)",
@@ -519,8 +520,6 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                        dx12_hook_g_HadFSRFGPhase, dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit)) {
             dx12_hook_g_State.syncInit = false;
             dx12_hook_g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
-            dx12_hook_g_OuterTrackedSLFGRunning.store(false, std::memory_order_release);
-            dx12_hook_g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
             auto* oldRealECL = (void*)dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
             const ID3D12CommandQueue* currentPrimaryQueue = dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire);
             const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);

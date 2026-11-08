@@ -398,13 +398,12 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
         int slOffSwapchainGrace = dx12_hook_g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
-        // Retained no-callback FSR suspension: AMD keeps the FI swapchain + queue latched while the
+        // Retained FSR suspension: AMD keeps the FI swapchain + queue latched while the
         // app renders on origGame, so the queue-settle condition below can never be met — the policy
         // exempts it so the overlay re-inits and draws on the runtime-owned swapchain queue (the
         // suspension-approved backbuffer route; test app session 20260702_142655 was blank the whole
         // suspension without this).
-        const bool retainedNoCallbackFSRSuspension =
-            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
+        const bool retainedFSRSuspension =
             dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
         const bool freshStreamlineHandoffOnSubmittableQueue =
             DXGIShared::IsStreamlineStartupHandoffPending() && swapchainQueueSubmittable;
@@ -413,7 +412,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 actualFGActive, streamlineFGRunning, dx12_hook_g_FGRuntimeOwnsSwapchain,
                 currentSwapchainQueue != nullptr, currentCommandQueue != nullptr,
                 currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
-                retainedNoCallbackFSRSuspension, freshHandoffExemption);
+                retainedFSRSuspension, freshHandoffExemption);
         };
         const bool deferInit = deferInactiveRuntimeOwnedInit(freshStreamlineHandoffOnSubmittableQueue);
         if (!deferInit && freshStreamlineHandoffOnSubmittableQueue && deferInactiveRuntimeOwnedInit(false)) {
@@ -451,7 +450,8 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 dx12_hook_g_OriginalGameQueue != nullptr, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr, currentCommandQueue != nullptr,
                 currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                 currentCommandQueue != nullptr && currentCommandQueue == dx12_hook_g_OriginalGameQueue,
-                commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue)) {
+                commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue,
+                retainedFSRSuspension)) {
             // Attribute as gated so any blank window here is a visible [OVERLAY COVERAGE] streak.
             NoteDX12OverlayCoverageGate("sl-teardown-queue-settle-defer");
             static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};

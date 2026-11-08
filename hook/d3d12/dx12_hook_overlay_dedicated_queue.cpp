@@ -83,9 +83,6 @@ if (!skip) {
                 progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
                 static_cast<unsigned>(progressProof.deviceHr), nativeFSRInternalNoCallbackComposition ? 1 : 0);
         }
-        if (explicitNativeFSROffPending) {
-            ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
-        }
     } else if (nativeFSRInternalNoCallbackComposition) {
         static std::atomic<int> s_internalNoCallbackRouteLogCount{0};
         const int logCount = s_internalNoCallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);

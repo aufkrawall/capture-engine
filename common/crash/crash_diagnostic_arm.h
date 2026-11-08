@@ -129,6 +129,17 @@ inline bool ReadDiagnosticArmMarker(const char* sessionDir, char* outTarget, siz
     }
 
     std::snprintf(markerPath, sizeof(markerPath), "%s\\..\\%s", sessionDir, kDiagnosticArmAltMarkerFileName);
+    if (ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity)) {
+        return true;
+    }
+
+    // Also check install root (e.g. "C:\Program Files\Capture Engine\diagnostic_arm.txt")
+    std::snprintf(markerPath, sizeof(markerPath), "%s\\..\\..\\%s", sessionDir, kDiagnosticArmMarkerFileName);
+    if (ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity)) {
+        return true;
+    }
+
+    std::snprintf(markerPath, sizeof(markerPath), "%s\\..\\..\\%s", sessionDir, kDiagnosticArmAltMarkerFileName);
     return ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity);
 }
 

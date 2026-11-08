@@ -404,8 +404,7 @@ inline bool ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(bool runt
 
 inline bool ShouldEvaluateFFXPresentCallbackFallback(bool ffxPresentCallbackStalled,
                                                      bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
-    (void)explicitNativeFSROffPendingRuntimeOwnedTeardown;
-    return ffxPresentCallbackStalled;
+    return ffxPresentCallbackStalled || explicitNativeFSROffPendingRuntimeOwnedTeardown;
 }
 
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
@@ -456,14 +455,15 @@ inline bool IsFFXPresentCallbackProofCurrent(ULONGLONG lastCallbackTickMs, ULONG
 inline bool ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(bool recognizedFrameGenerationConfigure,
                                                                      bool frameGenerationEnabled,
                                                                      bool hasExistingBridge,
-                                                                     bool disabledStartupArmingConfigure) {
-    // Disabled startup-arming packets before the first enabled configure must
-    // stay unmodified. Once an enabled configure already installed the bridge,
-    // though, later OFF/suspend configures should keep that same bridge alive
-    // so menu/loading suspensions still render overlay through FFX's safe
-    // callback point instead of falling back to normal DX12 overlay submits.
+                                                                     bool disabledStartupArmingConfigure,
+                                                                     bool appPresentCallbackProvided) {
+    // Only wrap a REAL app present callback. If the app passed null callback while disabling FG
+    // (e.g. during menu switch or save-load teardown before context destruction), synthesizing CE's bridge
+    // forces AMD's swapchain proxy to retain a callback pointing to the effect context. When the app then
+    // destroys the effect context, AMD's swapchain present tries to dispatch through the destroyed effect
+    // context and crashes (0xC0000005).
     return recognizedFrameGenerationConfigure && !frameGenerationEnabled && hasExistingBridge &&
-           !disabledStartupArmingConfigure;
+           !disabledStartupArmingConfigure && appPresentCallbackProvided;
 }
 
 // FFX present-callback toggle wedge (synthetic dx12_fg_switch_test session 20260615_021242: ~1s

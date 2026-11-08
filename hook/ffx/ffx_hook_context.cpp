@@ -362,11 +362,15 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
                 HasTrackedPresentCallbackBridgeKey(bridgeKey) && DX12_HasFFXPresentCallbackBridge(bridgeKey);
             if (ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(
                     true, localConfig.frameGenerationEnabled != 0, retainedExistingBridgeForDisabledConfigure,
-                    disabledStartupArmingConfigure)) {
+                    disabledStartupArmingConfigure, appPresentCallbackProvided)) {
                 localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
                 localConfig.presentCallbackUserContext = bridgeKey;
                 descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
                 retainedBridgeForDisabledConfigure = true;
+            } else if (!localConfig.frameGenerationEnabled && !appPresentCallbackProvided && bridgeKey) {
+                // The app explicitly disabled FG without a callback: clear the bridge for this context
+                // so AMD receives a null callback and CE does not expect the callback to fire.
+                DX12_ClearFFXPresentCallbackBridge(bridgeKey);
             }
         }
     }

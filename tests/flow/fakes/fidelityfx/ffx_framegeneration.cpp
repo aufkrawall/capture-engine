@@ -607,11 +607,13 @@ extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDestroyContext(ffxContext* context, 
             g_swapchainContext = nullptr;
     } else {
         std::lock_guard<std::mutex> lock(g_configMutex);
-        // Destroying an effect context stops generation, but the presentation swapchain remains
-        // alive and retains its provider-accepted present callback across context recreation.
+        // Destroying an effect context stops generation, and any callback associated with the
+        // destroyed effect context must not be invoked on subsequent presents.
         g_config.enabled = false;
         g_config.frameGenerationCallback = nullptr;
         g_config.frameGenerationCallbackUserContext = nullptr;
+        g_config.presentCallback = nullptr;
+        g_config.presentCallbackUserContext = nullptr;
     }
     delete base;
     *context = nullptr;

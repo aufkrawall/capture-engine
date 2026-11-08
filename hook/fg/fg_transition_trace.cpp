@@ -199,9 +199,11 @@ bool WriteTransitionHistoryFile(const char* sessionDir, const char* triggerReaso
     writeLine(header);
 
     // Section 1: Fault candidates from first-chance recorder
+    // Use static storage: allocating candidate contexts and history ring on the thread stack
+    // can blow small worker/audio thread stacks (e.g. 60 KB) and trigger 0xC00000FD.
     writeLine("--- First-Chance Fault Candidates ---\r\n");
-    ce::crash_first_chance::FaultCandidate candidates[16];
-    const size_t candidateCount = ce::crash_first_chance::CopyFaultCandidates(candidates, 16);
+    static ce::crash_first_chance::FaultCandidate s_Candidates[16];
+    const size_t candidateCount = ce::crash_first_chance::CopyFaultCandidates(s_Candidates, 16);
     if (candidateCount == 0) {
         writeLine("No first-chance fault candidates recorded.\r\n\r\n");
     } else {
@@ -209,9 +211,9 @@ bool WriteTransitionHistoryFile(const char* sessionDir, const char* triggerReaso
             char candBuf[256] = {};
             std::snprintf(candBuf, sizeof(candBuf),
                           "Candidate[%zu]: seq=%llu tid=%lu code=0x%08lX addr=%p confirmed=%d hasContext=%d\r\n",
-                          i, static_cast<unsigned long long>(candidates[i].sequence), candidates[i].threadId,
-                          candidates[i].exceptionCode, reinterpret_cast<void*>(candidates[i].instructionAddress),
-                          candidates[i].confirmedFault ? 1 : 0, candidates[i].hasRecordAndContext ? 1 : 0);
+                          i, static_cast<unsigned long long>(s_Candidates[i].sequence), s_Candidates[i].threadId,
+                          s_Candidates[i].exceptionCode, reinterpret_cast<void*>(s_Candidates[i].instructionAddress),
+                          s_Candidates[i].confirmedFault ? 1 : 0, s_Candidates[i].hasRecordAndContext ? 1 : 0);
             writeLine(candBuf);
         }
         writeLine("\r\n");
@@ -241,24 +243,24 @@ bool WriteTransitionHistoryFile(const char* sessionDir, const char* triggerReaso
 
     // Section 3: Bounded Transition Event Timeline
     writeLine("--- Transition Event Timeline ---\r\n");
-    FGTransitionRecord records[kHistoryCapacity];
-    const size_t recordCount = CopyRecentTransitionHistory(records, kHistoryCapacity);
+    static FGTransitionRecord s_Records[kHistoryCapacity];
+    const size_t recordCount = CopyRecentTransitionHistory(s_Records, kHistoryCapacity);
     if (recordCount == 0) {
         writeLine("No transition events recorded.\r\n");
     } else {
         // Sort chronologically by sequence
         for (size_t i = 0; i < recordCount; ++i) {
             for (size_t j = i + 1; j < recordCount; ++j) {
-                if (records[j].sequence < records[i].sequence) {
-                    FGTransitionRecord tmp = records[i];
-                    records[i] = records[j];
-                    records[j] = tmp;
+                if (s_Records[j].sequence < s_Records[i].sequence) {
+                    FGTransitionRecord tmp = s_Records[i];
+                    s_Records[i] = s_Records[j];
+                    s_Records[j] = tmp;
                 }
             }
         }
         for (size_t i = 0; i < recordCount; ++i) {
             const char* boundaryName = "UNKNOWN";
-            switch (records[i].boundary) {
+            switch (s_Records[i].boundary) {
                 case FGBoundary::kFFX: boundaryName = "FFX"; break;
                 case FGBoundary::kStreamline: boundaryName = "STREAMLINE"; break;
                 case FGBoundary::kDXGIAndOverlay: boundaryName = "DXGI_OVERLAY"; break;
@@ -267,9 +269,9 @@ bool WriteTransitionHistoryFile(const char* sessionDir, const char* triggerReaso
             char eventBuf[256] = {};
             std::snprintf(eventBuf, sizeof(eventBuf),
                           "[%04llu] t=%llu boundary=%s status=0x%X ptrA=%p ptrB=%p details=%s\r\n",
-                          static_cast<unsigned long long>(records[i].sequence),
-                          static_cast<unsigned long long>(records[i].timestampMs),
-                          boundaryName, records[i].status, records[i].ptrA, records[i].ptrB, records[i].details);
+                          static_cast<unsigned long long>(s_Records[i].sequence),
+                          static_cast<unsigned long long>(s_Records[i].timestampMs),
+                          boundaryName, s_Records[i].status, s_Records[i].ptrA, s_Records[i].ptrB, s_Records[i].details);
             writeLine(eventBuf);
         }
     }
