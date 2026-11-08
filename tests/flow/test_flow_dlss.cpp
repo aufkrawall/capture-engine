@@ -109,7 +109,12 @@ TEST(FlowDLSS, ActiveRecreationAfterNativeQueueReturnCoversTheFirstOutput) {
         const auto previous = game.PostSLLifecycle();
         // The intermediate game-queue swapchain never presents. The runtime stays ON throughout.
         ASSERT_TRUE(game.ReturnToNativeSwapchainThroughStreamline()) << game.Error();
-        ASSERT_FALSE(game.PostSLLifecycle().callbacksEnabled) << game.LogDirectory();
+        // The runtime-owned create re-prepares PostSL on its own queue (callbacks may be armed for its first output),
+        // but it must never inherit the departed epoch's confirmation.
+        const auto handedOff = game.PostSLLifecycle();
+        ASSERT_NE(handedOff.epoch, previous.epoch) << game.LogDirectory();
+        ASSERT_FALSE(handedOff.confirmedInEpoch) << game.LogDirectory();
+        ASSERT_EQ(handedOff.callbacksInFlight, 0u) << game.LogDirectory();
         ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
         ASSERT_TRUE(game.DLSSFrameGenerationRunning());
         ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();

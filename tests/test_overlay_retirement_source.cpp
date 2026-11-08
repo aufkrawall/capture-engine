@@ -28,7 +28,7 @@ TEST(OverlayRetirementSourceTest, ShutdownCancelsAdmissionBeforeSharedResourcesA
     EXPECT_LT(cancel, lock);
     EXPECT_LT(lock, cleanup);
     EXPECT_LT(cleanupRtvs, releaseCompletionFence);
-    EXPECT_NE(retire.find("queue->Signal(state.fence, value)"), std::string::npos);
+    EXPECT_NE(retire.find("signal.queue->Signal(pinnedFence.Get(), signal.value)"), std::string::npos);
     EXPECT_NE(retire.find("state.gpuCompletionUnprovable = true"), std::string::npos);
     EXPECT_NE(retire.find("state.overlayCompletionValue"), std::string::npos);
     EXPECT_NE(retire.find("retired.RetainedCount()"), std::string::npos);
