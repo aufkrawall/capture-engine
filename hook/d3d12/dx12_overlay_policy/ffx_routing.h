@@ -682,7 +682,7 @@ inline bool ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(bool slTurned
                                                                    bool runtimeOwnedNativeFGPresentPath,
                                                                    bool overlayInit, bool syncInit,
                                                                    bool deviceRemoved,
-                                                                   bool ffxPresentCallbackBridgeActive = true) {
+                                                                   bool ffxPresentCallbackBridgeActive = false) {
     const bool fsrRouteActive = nativeFSRInternalNoCallbackComposition || ffxPresentCallbackBridgeActive;
     return slTurnedOff && fsrFGApiActive && fsrRouteActive && runtimeOwnedNativeFGPresentPath &&
            overlayInit && syncInit && !deviceRemoved;
