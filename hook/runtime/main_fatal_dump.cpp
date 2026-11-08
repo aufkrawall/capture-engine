@@ -6,7 +6,6 @@
 #include "common/platform/ansi_path.h"
 #include "common/crash/crash_first_chance.h"
 #include "freeze_watchdog.h"
-#include "main_fatal_diagnostic_arm.h"
 #include "hook/fg/fg_transition_trace.h"
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
@@ -499,11 +498,11 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
       ce::crash_dump_policy::IsTerminationFollowingUnresolvedFault(exitCode, insideExceptionDispatch, pendingFault);
   const bool followsRenderThreadDialog =
       targetIsCurrentProcess && g_RenderWatchdog.TerminationFollowsRenderThreadDialog();
-  const bool diagnosticArmed = ce::diagnostic_arm::IsArmed();
+  const bool diagnosticArmed = ce::crash_first_chance::IsDiagnosticArmEnabled();
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
                                                               frameGenerationRuntimeActiveOrRecent, origin,
-                                                              followsUnresolvedFault, followsRenderThreadDialog) &&
-      !ce::crash_dump_policy::ShouldCaptureArmedTermination(diagnosticArmed, exitCode)) {
+                                                              followsUnresolvedFault, followsRenderThreadDialog,
+                                                              diagnosticArmed)) {
     // Only the FG fallback can suppress a dump the old policy would have taken,
     // so record that decision once instead of leaving a silent gap.
     if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
@@ -518,9 +517,7 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
     return false;
   }
 
-  bool expected = false;
-  if (!g_PreTerminationDumpAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
-                                                             std::memory_order_acquire)) {
+  if (!ce::crash_dump_policy::TryClaimPreTerminationDump(g_PreTerminationDumpAttempted)) {
     return false;
   }
   const bool crashLikeExit = ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode);
@@ -580,9 +577,8 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
 
   char captureReason[160] = {};
   if (diagnosticArmed && !crashLikeExit && !followsUnresolvedFault) {
-    snprintf(captureReason, sizeof(captureReason), "diagnostic_arm_self_termination(code=0x%08lX,source=%s,target=%s)",
-             static_cast<unsigned long>(exitCode), source ? source : "unknown",
-             ce::diagnostic_arm::GetTargetProcess());
+    snprintf(captureReason, sizeof(captureReason), "diagnostic_arm_self_termination(code=0x%08lX,source=%s)",
+             static_cast<unsigned long>(exitCode), source ? source : "unknown");
   } else if (crashLikeExit) {
     snprintf(captureReason, sizeof(captureReason), "crash_like_exit(code=0x%08lX,source=%s)",
              static_cast<unsigned long>(exitCode), source ? source : "unknown");

@@ -131,6 +131,14 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       EarlyLog("HookThread: install folder is not expressible in the code page and has no 8.3 name; "
                "config.ini cannot be read, settings stay at defaults");
     }
+    const std::string sessionLogsDir = ResolveSessionLogDirectory(dir);
+    if (main_g_ProcessCategory != ProcessCategory::Blacklisted) {
+      if (!sessionLogsDir.empty()) {
+        CreateDirectoryA(sessionLogsDir.c_str(), nullptr);
+        SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false);
+      }
+      ce::diagnostic_arm::CheckAndCache(sessionLogsDir.c_str(), g_ProcessName);
+    }
     std::string configPath = dir + "\\config.ini";
 
     EnsureLocalConfigAllocated();
@@ -160,7 +168,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       const uint8_t logLevel = ParseNgxLogLevel(g_pLocalConfig->graphics.ngxLog);
       std::string ngxLogDir;
       if (logLevel != kNgxLogLevelDefault && logLevel != kNgxLogLevelOff) {
-        ngxLogDir = ResolveSessionLogDirectory(dir);
+        ngxLogDir = sessionLogsDir;
         if (!ngxLogDir.empty()) {
           CreateDirectoryA(ngxLogDir.c_str(), nullptr);
         }
@@ -250,34 +258,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // and the registration are off both the DllMain loader lock and the Present hot path.
     InitializeThirdPartyOverlayDetection();
 
-    // perf_metrics_logging now folds into debug_logging so a single switch
-    // controls all hook-side diagnostics.
-    if (g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
-      // Read session-specific logs path from DiscoveryInfo (set by inject process)
-      std::string sessionLogsDir;
-      HANDLE hDisc = OpenHostDiscoveryMapping();
-      if (hDisc) {
-        DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
-            hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0]) {
-          sessionLogsDir = pDisc->logsPath;
-        }
-        if (pDisc) UnmapViewOfFile(pDisc);
-        CloseHandle(hDisc);
-      }
-
-      // Fall back to {dllDir}\logs if DiscoveryInfo unavailable
-      if (sessionLogsDir.empty())
-        sessionLogsDir = dir + "\\logs";
-
-      CreateDirectoryA(sessionLogsDir.c_str(), NULL);
-
-      // Update crash dump directory to session folder.
-      // The controller already archived this session's symbols; the hook never
-      // copies installed artifacts itself (least of all under the loader lock).
-      SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false);
-      ce::diagnostic_arm::CheckAndCache(sessionLogsDir.c_str(), g_ProcessName);
-
+    if (!sessionLogsDir.empty() && g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
       char perfLogPath[MAX_PATH];
       snprintf(perfLogPath, sizeof(perfLogPath),
                "%s\\perf_metrics_%lu.csv", sessionLogsDir.c_str(),

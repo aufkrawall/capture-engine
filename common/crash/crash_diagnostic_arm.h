@@ -143,8 +143,4 @@ inline bool ReadDiagnosticArmMarker(const char* sessionDir, char* outTarget, siz
     return ReadDiagnosticArmMarkerFile(markerPath, outTarget, outCapacity);
 }
 
-inline bool ShouldCaptureArmedTermination(bool diagnosticArmActive, DWORD exitCode) {
-    return diagnosticArmActive && exitCode != 0;
-}
-
 }  // namespace ce::crash_dump_policy

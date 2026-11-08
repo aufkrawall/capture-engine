@@ -68,7 +68,7 @@ TEST(RenderThreadDialogExitTest, WatchdogAndFatalExitAreWiredTogether) {
 
     const std::string fatal = ce::test_source::ReadFile(root / "hook/runtime/main_fatal_dump.cpp");
     const size_t query = fatal.find("g_RenderWatchdog.TerminationFollowsRenderThreadDialog()");
-    const size_t decision = fatal.find("followsUnresolvedFault, followsRenderThreadDialog)");
+    const size_t decision = fatal.find("followsUnresolvedFault, followsRenderThreadDialog,");
     ASSERT_NE(query, std::string::npos);
     ASSERT_NE(decision, std::string::npos) << "the pre-termination policy never sees the dialog evidence";
     EXPECT_LT(query, decision);

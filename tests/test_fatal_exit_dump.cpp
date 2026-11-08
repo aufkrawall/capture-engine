@@ -12,7 +12,7 @@
 #include "common/crash/crash_diagnostic_arm.h"
 #include "common/crash/crash_dump_policy.h"
 #include "common/crash/crash_first_chance.h"
-#include "common/crash/crash_handler.h"
+#include "common/crash/crash_handler_internal.h"
 #include "hook/fg/fg_transition_trace.h"
 
 std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
@@ -61,34 +61,32 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
     }
 
     const bool armed = ce::crash_first_chance::IsDiagnosticArmEnabled();
-    const bool shouldDump = ce::crash_dump_policy::ShouldCapturePreTerminationDump(
-        true, static_cast<DWORD>(exitCode), false, true, ce::crash_dump_policy::TerminationOrigin::kPrimaryModule,
-        false, false, armed);
-
-    if (shouldDump && !sessionDir.empty()) {
-        char dumpPath[MAX_PATH] = {};
-        std::snprintf(dumpPath, sizeof(dumpPath), "%s\\fatal_exit_probe_%08lx.dmp", sessionDir.c_str(),
-                      static_cast<unsigned long>(exitCode));
-        HANDLE hFile = CreateFileA(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            MINIDUMP_HEADER header{};
-            header.Signature = MINIDUMP_SIGNATURE;
-            header.Version = MINIDUMP_VERSION;
-            header.NumberOfStreams = 1;
-            DWORD written = 0;
-            WriteFile(hFile, &header, sizeof(header), &written, nullptr);
-            CloseHandle(hFile);
+    std::atomic<bool> attempted{false};
+    unsigned dumpWrites = 0;
+    const auto captureIfNeeded = [&] {
+        if (sessionDir.empty() ||
+            !ce::crash_dump_policy::ShouldCapturePreTerminationDump(
+                true, static_cast<DWORD>(exitCode), attempted.load(), true,
+                ce::crash_dump_policy::TerminationOrigin::kPrimaryModule, false, false, armed) ||
+            !ce::crash_dump_policy::TryClaimPreTerminationDump(attempted)) {
+            return true;
         }
-        ce::fg_session::WriteTransitionHistoryFile(sessionDir.c_str(), "fatal_exit_child_probe",
-                                                   static_cast<DWORD>(exitCode));
-    }
 
-    if (nested) {
-        // Exercise nested hooks: second call rejected by atomic alreadyAttempted guard
-        const bool secondDump = ce::crash_dump_policy::ShouldCapturePreTerminationDump(
-            true, static_cast<DWORD>(exitCode), true, true, ce::crash_dump_policy::TerminationOrigin::kPrimaryModule,
-            false, false, armed);
-        (void)secondDump;
+        const HMODULE dbgHelp = LoadLibraryExW(L"dbghelp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!dbgHelp) {
+            return false;
+        }
+        g_pMiniDumpWriteDump = reinterpret_cast<MINIDUMPWRITEDUMP>(GetProcAddress(dbgHelp, "MiniDumpWriteDump"));
+        const std::string name = "fatal_exit_probe_" + std::to_string(++dumpWrites) + ".dmp";
+        const bool wroteDump = WriteSupplementalCrashDump(name.c_str(), GetCurrentProcess(), GetCurrentProcessId(),
+                                                          ce::crash_dump_policy::kMinimalDumpType, nullptr);
+        g_pMiniDumpWriteDump = nullptr;
+        FreeLibrary(dbgHelp);
+        return wroteDump && ce::fg_session::WriteTransitionHistoryFile(
+                               sessionDir.c_str(), "fatal_exit_child_probe", static_cast<DWORD>(exitCode));
+    };
+    if (!captureIfNeeded() || (nested && !captureIfNeeded())) {
+        return 100;
     }
 
     ExitProcess(static_cast<UINT>(exitCode));
@@ -96,6 +94,26 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
 }
 
 namespace {
+
+class ScopedMarkerEnvironment {
+public:
+    ScopedMarkerEnvironment() {
+        const DWORD length = GetEnvironmentVariableA(ce::crash_dump_policy::kDiagnosticArmEnvVar, nullptr, 0);
+        if (length != 0) {
+            original_.resize(length);
+            GetEnvironmentVariableA(ce::crash_dump_policy::kDiagnosticArmEnvVar, original_.data(), length);
+        }
+        SetEnvironmentVariableA(ce::crash_dump_policy::kDiagnosticArmEnvVar, nullptr);
+    }
+
+    ~ScopedMarkerEnvironment() {
+        SetEnvironmentVariableA(ce::crash_dump_policy::kDiagnosticArmEnvVar,
+                                original_.empty() ? nullptr : original_.c_str());
+    }
+
+private:
+    std::string original_;
+};
 
 std::filesystem::path CreateTestSessionDir(const char* name) {
     static std::atomic<uint32_t> s_counter{0};
@@ -138,15 +156,19 @@ bool LaunchChildProbe(const std::filesystem::path& sessionDir, int exitCode, boo
         *outPid = pi.dwProcessId;
     }
 
-    WaitForSingleObject(pi.hProcess, 10000);
+    const bool exited = WaitForSingleObject(pi.hProcess, 10000) == WAIT_OBJECT_0;
+    if (!exited) {
+        TerminateProcess(pi.hProcess, 101);
+        WaitForSingleObject(pi.hProcess, 5000);
+    }
     DWORD code = 0;
-    GetExitCodeProcess(pi.hProcess, &code);
+    const bool gotCode = GetExitCodeProcess(pi.hProcess, &code) != FALSE;
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     if (outExitCode) {
         *outExitCode = code;
     }
-    return true;
+    return exited && gotCode;
 }
 
 size_t CountDumpFiles(const std::filesystem::path& dir) {
@@ -163,6 +185,7 @@ size_t CountDumpFiles(const std::filesystem::path& dir) {
 }  // namespace
 
 TEST(FatalExitDumpTest, DiagnosticArmMarkerMatching) {
+    const ScopedMarkerEnvironment markerEnvironment;
     EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch("afop.exe", "D:\\Games\\Avatar\\afop.exe"));
     EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch("  AFOP.EXE \r\n", "afop.exe"));
     EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch("afop.exe", "AFOP.EXE"));
@@ -235,6 +258,11 @@ TEST(FatalExitDumpTest, PolicyAllowsArmedNonzeroSelfTermination) {
                                                  /*terminationFollowsUnresolvedFault=*/false,
                                                  /*terminationFollowsApplicationErrorDialog=*/false,
                                                  /*diagnosticArmActive=*/true));
+
+    for (const DWORD sentinel : {kProcessIsTerminatingExitCode, kExternalDumpStormTerminationExitCode}) {
+        EXPECT_FALSE(ShouldCapturePreTerminationDump(true, sentinel, false, true, TerminationOrigin::kUnknown,
+                                                     true, true, true));
+    }
 
     // Scope check: armed dump selects fatal assert scope
     EXPECT_EQ(PreTerminationDumpScope(/*crashLikeExit=*/false, /*followsFault=*/false, /*armed=*/true),
@@ -320,7 +348,8 @@ TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     ce::fg_session::ResetTransitionHistoryForTesting();
 }
 
-TEST(FatalExitDumpTest, InjectedChildUnarmedProducesNoDump) {
+TEST(FatalExitDumpTest, ChildProbeUnarmedProducesNoDump) {
+    const ScopedMarkerEnvironment markerEnvironment;
     const auto sessionDir = CreateTestSessionDir("child_unarmed");
     DWORD exitCode = 0;
     DWORD pid = 0;
@@ -333,7 +362,8 @@ TEST(FatalExitDumpTest, InjectedChildUnarmedProducesNoDump) {
     std::filesystem::remove_all(sessionDir, ec);
 }
 
-TEST(FatalExitDumpTest, InjectedChildArmedProducesOneReadableDumpAndTransitionTrace) {
+TEST(FatalExitDumpTest, ChildProbeArmedProducesOneReadableDumpAndTransitionTrace) {
+    const ScopedMarkerEnvironment markerEnvironment;
     const auto sessionDir = CreateTestSessionDir("child_armed");
 
     // Arm the diagnostic for unit_tests.exe
@@ -368,15 +398,20 @@ TEST(FatalExitDumpTest, InjectedChildArmedProducesOneReadableDumpAndTransitionTr
             MINIDUMP_HEADER header{};
             dumpStream.read(reinterpret_cast<char*>(&header), sizeof(header));
             EXPECT_EQ(header.Signature, MINIDUMP_SIGNATURE);
-            EXPECT_EQ(header.Version, MINIDUMP_VERSION);
+            EXPECT_EQ(LOWORD(header.Version), MINIDUMP_VERSION);
             EXPECT_GT(header.NumberOfStreams, 0u);
+            dumpStream.seekg(header.StreamDirectoryRva);
+            MINIDUMP_DIRECTORY directory{};
+            ASSERT_TRUE(dumpStream.read(reinterpret_cast<char*>(&directory), sizeof(directory)).good());
+            EXPECT_NE(directory.StreamType, UnusedStream);
         }
     }
 
     std::filesystem::remove_all(sessionDir, ec);
 }
 
-TEST(FatalExitDumpTest, InjectedChildArmedNestedHooksProduceOnlyOneDump) {
+TEST(FatalExitDumpTest, ChildProbeArmedNestedHooksProduceOnlyOneDump) {
+    const ScopedMarkerEnvironment markerEnvironment;
     const auto sessionDir = CreateTestSessionDir("child_nested");
 
     // Arm the diagnostic for unit_tests.exe

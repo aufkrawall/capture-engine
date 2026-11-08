@@ -5,13 +5,12 @@
 #include <dbghelp.h>
 // clang-format on
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <string>
-
-#include "crash_diagnostic_arm.h"
 
 namespace ce::crash_dump_policy {
 
@@ -592,6 +591,13 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
     // report a crash-like exit code and returned above, whether the CRT is
     // statically linked into the executable or not.
     return origin != TerminationOrigin::kPrimaryModule;
+}
+
+// Claim only after establishing a dump-worthy termination. Every entry point
+// shares the same claim, including nested hooks and simultaneous exits.
+inline bool TryClaimPreTerminationDump(std::atomic<bool>& attempted) {
+    bool expected = false;
+    return attempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
 }
 
 // Unreal's assertion exception: check()/verify() failures and fatal errors

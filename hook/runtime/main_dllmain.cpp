@@ -7,7 +7,6 @@
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/overrides/published_graphics_config.h"
 #include "main_startup_launcher.h"
-#include "main_fatal_diagnostic_arm.h"
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                                LPVOID lpReserved) {
@@ -118,7 +117,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // DllMain runs under the loader lock: never stage installed symbols here.
     // The controller archives them into the session directory it owns.
     SetCrashDumpDirectory(crashDir, /*archiveInstalledSymbols=*/false);
-    ce::diagnostic_arm::CheckAndCache(crashDir.c_str(), fileName);
 
     // CRITICAL FIX: Install crash handler IMMEDIATELY for all non-service
     // processes Don't wait for whitelist check or graphics DLL detection -
