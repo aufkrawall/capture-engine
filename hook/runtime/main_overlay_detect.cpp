@@ -380,16 +380,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // d3d11.dll churn during the Alt+Tab mode switch) must NOT touch the detection state, so the
   // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
   // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
-  const char* overlayTarget = moduleNameOrPath;
-  char fullModulePath[MAX_PATH] = {};
-  if (module && moduleNameOrPath &&
-      ce::overlay_compat::IsUbisoftOverlayCandidateBaseName(
-          ce::overlay_compat::detail::ExtractBaseName(moduleNameOrPath))) {
-    if (GetModuleFileNameA(module, fullModulePath, MAX_PATH) > 0) {
-      overlayTarget = fullModulePath;
-    }
-  }
-  ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(overlayTarget);
+  ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
