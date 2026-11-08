@@ -463,15 +463,20 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresen
 }
 
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
+    const auto bridge = DX12_ResolveFFXPresentCallbackBridge(userCtx);
+    const auto originalCallback = bridge.originalCallback;
+    void* originalUserContext = bridge.originalUserContext;
     if (HookIsShuttingDown()) {
-        const auto bridge = DX12_ResolveFFXPresentCallbackBridge(userCtx);
-        const auto originalCallback = bridge.originalCallback;
-        void* originalUserContext = bridge.originalUserContext;
         return originalCallback && originalCallback != &DX12_RenderOverlayViaFFXPresentCallback
                    ? originalCallback(desc, originalUserContext)
                    : 0;
     }
 
+    ce::fg_session::RecordFFXCallbackArrival(userCtx, desc ? desc->frameID : 0,
+                                             desc && desc->isGeneratedFrame, bridge.installed);
+    if (!bridge.installed) {
+        return 0;
+    }
     dx12_hook_g_LastFFXPresentCallbackTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
 
     // This bridge runs once per displayed output frame, so anything it adds is
@@ -521,15 +526,6 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
             --depth;
         }
     } depthGuard(s_ffxPresentCallbackDepth);
-
-    const auto bridge = DX12_ResolveFFXPresentCallbackBridge(userCtx);
-    const auto originalCallback = bridge.originalCallback;
-    void* originalUserContext = bridge.originalUserContext;
-    ce::fg_session::RecordFFXCallbackArrival(userCtx, desc ? desc->frameID : 0,
-                                             desc && desc->isGeneratedFrame, bridge.installed);
-    if (!bridge.installed) {
-        return 0;
-    }
 
     uint32_t result = 0;
     if (originalCallback) {

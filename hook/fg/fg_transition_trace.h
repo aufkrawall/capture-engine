@@ -15,7 +15,7 @@ void RecordFFXContextCreate(void* context, uint32_t effectId, uint32_t status, b
 void RecordFFXContextDestroy(void* context, uint32_t effectId, uint32_t status, bool isSwapchain);
 void RecordFFXConfigure(void* context, bool enabled, void* originalCallback, void* bridgeKey, uint32_t status);
 void RecordFFXCallbackArrival(void* userCtx, uint64_t frameId, bool isGenerated, bool bridgeValid);
-void RecordStreamlineDLSSGOptions(bool enabled, uint32_t status);
+void RecordStreamlineDLSSGOptions(uint32_t viewport, bool enabled, uint32_t status);
 void RecordStreamlineReflexOptions(uint32_t mode, uint32_t status);
 void RecordStreamlineReflexSleepFailure(uint32_t status);
 void RecordSwapchainTransition(const char* action, void* swapchain, void* device, void* queue, uint32_t status);

@@ -88,8 +88,10 @@ inline bool ReadDiagnosticArmMarkerFile(const char* filePath, char* outTarget, s
     }
     char lineBuffer[MAX_PATH] = {};
     const char* readResult = std::fgets(lineBuffer, static_cast<int>(sizeof(lineBuffer)), file);
+    const bool completeLine = readResult &&
+        (std::strchr(lineBuffer, '\n') || (std::fgetc(file) == EOF && !std::ferror(file)));
     std::fclose(file);
-    if (!readResult) {
+    if (!completeLine) {
         return false;
     }
     return TrimWhitespaceAscii(lineBuffer, outTarget, outCapacity);

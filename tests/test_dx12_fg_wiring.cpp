@@ -45,6 +45,30 @@ TEST(Dx12FgWiring, FreshHandoffExemptionIsAcceptedByBothInitDeferralGates) {
         /*freshStreamlineHandoffOnSubmittableQueue=*/false, /*retainedFSRSuspension=*/true));
 }
 
+TEST(DXGISharedTest, DisabledFFXConfigureRetainsOnlyAnExistingAppCallbackBridge) {
+    using ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure;
+    EXPECT_TRUE(ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, true, false, true));
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, true, false, false));
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, true, true, true));
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, false, false, true));
+}
+
+TEST(DXGISharedTest, FFXOffFallbackRequiresAnUnavailableBridgeAndSafeSubmitQueue) {
+    using namespace ce::dx12_overlay_policy;
+    EXPECT_FALSE(ShouldEvaluateFFXPresentCallbackFallback(false, true, true));
+    EXPECT_TRUE(ShouldEvaluateFFXPresentCallbackFallback(true, true, true));
+    EXPECT_TRUE(ShouldEvaluateFFXPresentCallbackFallback(false, true, false));
+    EXPECT_FALSE(ShouldEvaluateFFXPresentCallbackFallback(false, false, false));
+    EXPECT_FALSE(ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        false, false, true, true, false, 0, true, true));
+    EXPECT_FALSE(ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, true, true, false, 0, true, false));
+    EXPECT_TRUE(ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, false, false, false, 0, true, true));
+    EXPECT_FALSE(ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, true, false, false, true, 0, false, true));
+}
+
 // Source invariant: the two InitOverlayBackend init-deferral gates carry the SAME fresh-handoff exemption, the
 // call site hands both the same variable, and the handoff's "submittable queue" proof is this
 // swapchain's own tracked submit path — the global realECL pointer proves nothing about it and a

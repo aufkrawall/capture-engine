@@ -146,8 +146,13 @@ if (result.progressResolved && assumedSince != 0) {
     result.stableMs = (now >= assumedSince) ? (now - assumedSince) : 0;
 }
 
+ce::ComGuard<ID3D12Device> device;
 {
     std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    if (auto* currentDevice = g_Device.load(std::memory_order_acquire)) {
+        currentDevice->AddRef();
+        device.attach(currentDevice);
+    }
     result.runtimeOwnsSwapchain = dx12_hook_g_FGRuntimeOwnsSwapchain;
     result.hasSwapchainQueue = dx12_hook_g_SwapchainQueue != nullptr;
     result.hasOriginalGameQueue = dx12_hook_g_OriginalGameQueue != nullptr;
@@ -155,9 +160,8 @@ if (result.progressResolved && assumedSince != 0) {
         result.hasSwapchainQueue && result.hasOriginalGameQueue && dx12_hook_g_SwapchainQueue == dx12_hook_g_OriginalGameQueue;
 }
 
-ID3D12Device* device = g_Device.load(std::memory_order_acquire);
-result.hasDevice = device != nullptr;
-result.deviceHr = device ? device->GetDeviceRemovedReason() : E_POINTER;
+result.hasDevice = device.get() != nullptr;
+result.deviceHr = result.hasDevice ? device.get()->GetDeviceRemovedReason() : E_POINTER;
 
 result.proof = result.progressResolved && result.stableMs >= dx12_hook_kProgressResolvedOfficialFFXOverlayFallbackStableMs &&
                result.swapchainQueueMatchesOriginalGameQueue && result.hasDevice && SUCCEEDED(result.deviceHr);

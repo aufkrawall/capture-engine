@@ -788,7 +788,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
                          adjustedOptions.numFramesToGenerate, result);
     }
 
-    ce::fg_session::RecordStreamlineDLSSGOptions(requestedEnabled, static_cast<uint32_t>(result));
+    ce::fg_session::RecordStreamlineDLSSGOptions(viewportKey, requestedEnabled, static_cast<uint32_t>(result));
     return result;
 
 }

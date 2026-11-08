@@ -86,11 +86,12 @@ void RecordFFXCallbackArrival(void* userCtx, uint64_t frameId, bool isGenerated,
            static_cast<unsigned long long>(frameId), isGenerated ? 1 : 0, bridgeValid ? 1 : 0);
 }
 
-void RecordStreamlineDLSSGOptions(bool enabled, uint32_t status) {
-    static log_meter::ChangeGate gate;
-    const auto verdict = gate.Observe(log_meter::FieldKey(enabled, status));
+void RecordStreamlineDLSSGOptions(uint32_t viewport, bool enabled, uint32_t status) {
+    static log_meter::StreamChangeGate<32> gate;
+    const auto verdict = gate.Observe(viewport, log_meter::FieldKey(enabled, status));
     if (verdict) {
-        Record("STREAMLINE", "DLSSGOptions", status, nullptr, nullptr, "enabled=%d%s", enabled ? 1 : 0,
+        Record("STREAMLINE", "DLSSGOptions", status, nullptr, nullptr, "viewport=%u enabled=%d%s",
+               viewport, enabled ? 1 : 0,
                log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
 }

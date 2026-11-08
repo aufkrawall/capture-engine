@@ -211,6 +211,20 @@ TEST(FatalExitDumpTest, DiagnosticArmMarkerMatching) {
     std::filesystem::remove_all(sessionDir, ec);
 }
 
+TEST(FatalExitDumpTest, OverlongMarkerCannotArmATruncatedProcessName) {
+    const auto sessionDir = CreateTestSessionDir("long_marker");
+    const auto marker = sessionDir / ce::crash_dump_policy::kDiagnosticArmMarkerFileName;
+    {
+        std::ofstream out(marker);
+        out << std::string(MAX_PATH - 1 - std::strlen("game.exe"), ' ') << "game.exe.extra";
+    }
+    char target[MAX_PATH] = {};
+    EXPECT_FALSE(ce::crash_dump_policy::ReadDiagnosticArmMarkerFile(marker.string().c_str(), target, sizeof(target)));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionDir, ec);
+}
+
 TEST(FatalExitDumpTest, PolicyAllowsArmedNonzeroSelfTermination) {
     using namespace ce::crash_dump_policy;
 
@@ -339,7 +353,7 @@ TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     ce::fg_session::RecordFFXContextCreate(reinterpret_cast<void*>(0x1000), 0x0001, 0, false);
     ce::fg_session::RecordFFXConfigure(reinterpret_cast<void*>(0x1000), true, reinterpret_cast<void*>(0x2000),
                                        reinterpret_cast<void*>(0x3000), 0);
-    ce::fg_session::RecordStreamlineDLSSGOptions(true, 0);
+    ce::fg_session::RecordStreamlineDLSSGOptions(1, true, 0);
     ce::fg_session::RecordSwapchainTransition("Create", reinterpret_cast<void*>(0x4000),
                                               reinterpret_cast<void*>(0x5000), reinterpret_cast<void*>(0x6000), 0);
 
@@ -347,7 +361,8 @@ TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     ce::fg_session::RecordStreamlineReflexOptions(2, 0);
     for (uint64_t frame = 0; frame < 1000; ++frame) {
         ce::fg_session::RecordFFXCallbackArrival(reinterpret_cast<void*>(0x3000), frame, (frame & 1) != 0, true);
-        ce::fg_session::RecordStreamlineDLSSGOptions(true, 0);
+        ce::fg_session::RecordStreamlineDLSSGOptions(1, true, 0);
+        ce::fg_session::RecordStreamlineDLSSGOptions(2, false, 0);
         ce::fg_session::RecordStreamlineReflexSleepFailure(5);
     }
     ce::fg_session::RecordFFXCallbackArrival(reinterpret_cast<void*>(0x3000), 1000, false, false);
@@ -363,7 +378,8 @@ TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     EXPECT_NE(content.find("Capture Engine Frame Generation Transition Trace"), std::string::npos);
     EXPECT_NE(content.find("ExitCode: 0x00000003"), std::string::npos);
     EXPECT_NE(content.find("ContextCreate"), std::string::npos);
-    EXPECT_NE(content.find("DLSSGOptions"), std::string::npos);
+    EXPECT_NE(content.find("DLSSGOptions: viewport=1 enabled=1"), std::string::npos);
+    EXPECT_NE(content.find("DLSSGOptions: viewport=2 enabled=0"), std::string::npos);
     EXPECT_NE(content.find("SwapchainTransition"), std::string::npos);
     EXPECT_NE(content.find("ReflexOptions: mode=2"), std::string::npos);
     EXPECT_NE(content.find("ReflexSleepFailed"), std::string::npos);
