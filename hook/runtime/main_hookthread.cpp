@@ -15,6 +15,7 @@
 #include "graphics_env_report.h"
 #include "main_startup_launcher.h"
 #include "module_replacement.h"
+#include "main_fatal_diagnostic_arm.h"
 
 namespace {
 
@@ -275,6 +276,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       // The controller already archived this session's symbols; the hook never
       // copies installed artifacts itself (least of all under the loader lock).
       SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false);
+      ce::diagnostic_arm::CheckAndCache(sessionLogsDir.c_str(), g_ProcessName);
 
       char perfLogPath[MAX_PATH];
       snprintf(perfLogPath, sizeof(perfLogPath),

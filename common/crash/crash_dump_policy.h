@@ -11,6 +11,8 @@
 #include <cwchar>
 #include <string>
 
+#include "crash_diagnostic_arm.h"
+
 namespace ce::crash_dump_policy {
 
 inline constexpr const char* kSymbolArchiveDirName = "symbols";
@@ -121,8 +123,9 @@ inline constexpr MINIDUMP_TYPE ExternalHelperDumpType(ExternalDumpScope scope) {
 // 182 MB on them and they answered nothing. A suspicious but clean exit (an
 // FG runtime closing down) still gets the rich dump, where process state can
 // still explain the exit.
-inline constexpr ExternalDumpScope PreTerminationDumpScope(bool crashLikeExit, bool followsFault = false) {
-    return crashLikeExit || followsFault ? ExternalDumpScope::kFatalAssert : ExternalDumpScope::kRich;
+inline constexpr ExternalDumpScope PreTerminationDumpScope(bool crashLikeExit, bool followsFault = false,
+                                                           bool armed = false) {
+    return crashLikeExit || followsFault || armed ? ExternalDumpScope::kFatalAssert : ExternalDumpScope::kRich;
 }
 
 // `--dump-helper-scope=` value; nullptr means the rich default, which predates
@@ -558,13 +561,17 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
                                             bool frameGenerationRuntimeActiveOrRecent = false,
                                             TerminationOrigin origin = TerminationOrigin::kUnknown,
                                             bool terminationFollowsUnresolvedFault = false,
-                                            bool terminationFollowsApplicationErrorDialog = false) {
+                                            bool terminationFollowsApplicationErrorDialog = false,
+                                            bool diagnosticArmActive = false) {
     // STATUS_PROCESS_IS_TERMINATING is the runtime's own "the process is
     // already exiting" sentinel; it never represents a genuine abnormal exit,
     // so it must also skip the active-FG fallback below.
     if (!targetIsCurrentProcess || alreadyAttempted || exitCode == kExternalDumpStormTerminationExitCode ||
         exitCode == kProcessIsTerminatingExitCode) {
         return false;
+    }
+    if (diagnosticArmActive && exitCode != 0) {
+        return true;
     }
     if (IsCrashLikeProcessExitCode(exitCode) || terminationFollowsUnresolvedFault ||
         terminationFollowsApplicationErrorDialog) {

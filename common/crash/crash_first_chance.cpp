@@ -23,6 +23,16 @@ struct alignas(16) FaultSlot {
 constexpr size_t kSlotCount = 64;
 FaultSlot g_Slots[kSlotCount];
 
+struct CandidateSlot {
+    std::atomic<uint64_t> sequence{0};
+    std::atomic<bool> writing{false};
+    FaultCandidate candidate{};
+};
+constexpr size_t kCandidateRingCapacity = 16;
+CandidateSlot g_CandidateRing[kCandidateRingCapacity];
+std::atomic<uint64_t> g_CandidateCounter{0};
+std::atomic<bool> g_DiagnosticArmEnabled{false};
+
 std::atomic<uint64_t> g_Recorded{0};
 std::atomic<uint64_t> g_ResolvedByContinue{0};
 std::atomic<uint64_t> g_Dropped{0};
@@ -186,6 +196,27 @@ void RecordFault(const EXCEPTION_POINTERS* pointers) {
     slot->sequence.fetch_add(1, std::memory_order_release);
     slot->writing.store(false, std::memory_order_release);
     g_Recorded.fetch_add(1, std::memory_order_relaxed);
+
+    if (g_DiagnosticArmEnabled.load(std::memory_order_acquire)) {
+        const uint64_t seq = g_CandidateCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+        CandidateSlot& candidateSlot = g_CandidateRing[seq % kCandidateRingCapacity];
+        bool expectedWriting = false;
+        if (candidateSlot.writing.compare_exchange_strong(expectedWriting, true, std::memory_order_acq_rel)) {
+            candidateSlot.candidate.threadId = threadId;
+            candidateSlot.candidate.exceptionCode = pointers->ExceptionRecord->ExceptionCode;
+            candidateSlot.candidate.instructionAddress =
+                reinterpret_cast<uintptr_t>(pointers->ExceptionRecord->ExceptionAddress);
+            candidateSlot.candidate.sequence = seq;
+            candidateSlot.candidate.hasRecordAndContext = true;
+            candidateSlot.candidate.confirmedFault = false;
+            candidateSlot.candidate.record = *pointers->ExceptionRecord;
+            candidateSlot.candidate.record.ExceptionRecord = nullptr;
+            candidateSlot.candidate.context = *pointers->ContextRecord;
+            candidateSlot.candidate.context.ContextFlags &= ~static_cast<DWORD>(0x40);
+            candidateSlot.sequence.store(seq, std::memory_order_release);
+            candidateSlot.writing.store(false, std::memory_order_release);
+        }
+    }
 }
 
 void ClearFaultForCurrentThread() {
@@ -258,6 +289,80 @@ Statistics GetStatistics() {
     return statistics;
 }
 
+void SetDiagnosticArmEnabled(bool enabled) {
+    g_DiagnosticArmEnabled.store(enabled, std::memory_order_release);
+}
+
+bool IsDiagnosticArmEnabled() {
+    return g_DiagnosticArmEnabled.load(std::memory_order_acquire);
+}
+
+size_t CopyFaultCandidates(FaultCandidate* outCandidates, size_t maxCandidates) {
+    if (!outCandidates || maxCandidates == 0) {
+        return 0;
+    }
+    size_t count = 0;
+    for (CandidateSlot& slot : g_CandidateRing) {
+        const uint64_t seq = slot.sequence.load(std::memory_order_acquire);
+        if (seq == 0) {
+            continue;
+        }
+        if (slot.writing.load(std::memory_order_acquire)) {
+            continue;
+        }
+        outCandidates[count] = slot.candidate;
+        ++count;
+        if (count >= maxCandidates) {
+            break;
+        }
+    }
+    return count;
+}
+
+bool FindBestFaultCandidate(FaultCandidate* outCandidate, DWORD terminatingThreadId, DWORD exitCode) {
+    if (!outCandidate) {
+        return false;
+    }
+    FaultCandidate candidates[kCandidateRingCapacity];
+    const size_t count = CopyFaultCandidates(candidates, kCandidateRingCapacity);
+    if (count == 0) {
+        return false;
+    }
+
+    // 1. Same thread as terminating thread
+    for (size_t i = 0; i < count; ++i) {
+        if (candidates[i].threadId == terminatingThreadId) {
+            *outCandidate = candidates[i];
+            outCandidate->confirmedFault = true;
+            return true;
+        }
+    }
+
+    // 2. Matching nonzero exit code from any thread
+    if (exitCode != 0) {
+        for (size_t i = 0; i < count; ++i) {
+            if (candidates[i].exceptionCode == exitCode) {
+                *outCandidate = candidates[i];
+                outCandidate->confirmedFault = false;
+                return true;
+            }
+        }
+    }
+
+    // 3. Most recent candidate (highest sequence)
+    size_t newestIndex = 0;
+    uint64_t highestSeq = candidates[0].sequence;
+    for (size_t i = 1; i < count; ++i) {
+        if (candidates[i].sequence > highestSeq) {
+            highestSeq = candidates[i].sequence;
+            newestIndex = i;
+        }
+    }
+    *outCandidate = candidates[newestIndex];
+    outCandidate->confirmedFault = (outCandidate->threadId == terminatingThreadId);
+    return true;
+}
+
 void SetBeforeClearForTesting(void (*hook)()) { g_BeforeClearForTesting.store(hook, std::memory_order_release); }
 bool TakeOverCurrentFaultForTesting(DWORD newOwner) {
     auto* slot = FindOwnSlot(GetCurrentThreadId());
@@ -270,6 +375,13 @@ bool HasFaultOwnerForTesting(DWORD owner) { return FindOwnSlot(owner) != nullptr
 
 void ResetForTesting() {
     g_BeforeClearForTesting.store(nullptr, std::memory_order_release);
+    g_DiagnosticArmEnabled.store(false, std::memory_order_release);
+    g_CandidateCounter.store(0, std::memory_order_release);
+    for (CandidateSlot& slot : g_CandidateRing) {
+        slot.sequence.store(0, std::memory_order_release);
+        slot.writing.store(false, std::memory_order_release);
+        slot.candidate = {};
+    }
     for (FaultSlot& slot : g_Slots) {
         slot.threadId.store(0, std::memory_order_release);
         slot.sequence.store(0, std::memory_order_release);

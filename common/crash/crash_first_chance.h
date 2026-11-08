@@ -53,6 +53,22 @@ struct Statistics {
 };
 Statistics GetStatistics();
 
+struct FaultCandidate {
+    DWORD threadId = 0;
+    DWORD exceptionCode = 0;
+    uintptr_t instructionAddress = 0;
+    uint64_t sequence = 0;
+    bool hasRecordAndContext = false;
+    bool confirmedFault = false;
+    EXCEPTION_RECORD record{};
+    CONTEXT context{};
+};
+
+void SetDiagnosticArmEnabled(bool enabled);
+bool IsDiagnosticArmEnabled();
+size_t CopyFaultCandidates(FaultCandidate* outCandidates, size_t maxCandidates);
+bool FindBestFaultCandidate(FaultCandidate* outCandidate, DWORD terminatingThreadId, DWORD exitCode);
+
 #ifdef CE_UNIT_TESTS
 void ResetForTesting();
 bool IsAddressInDispatcherForTesting(const void* address);

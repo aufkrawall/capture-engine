@@ -1,0 +1,400 @@
+#include <gtest/gtest.h>
+#include <windows.h>
+#include <dbghelp.h>
+
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "common/crash/crash_diagnostic_arm.h"
+#include "common/crash/crash_dump_policy.h"
+#include "common/crash/crash_first_chance.h"
+#include "common/crash/crash_handler.h"
+#include "hook/fg/fg_transition_trace.h"
+
+std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
+    if (argc < 2) return std::nullopt;
+    bool isProbe = false;
+    int exitCode = 3;
+    bool nested = false;
+    bool candidate = false;
+    std::string sessionDir;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--fatal-exit-child-probe") == 0) {
+            isProbe = true;
+        } else if (std::strncmp(argv[i], "--exit-code=", 12) == 0) {
+            exitCode = std::atoi(argv[i] + 12);
+        } else if (std::strcmp(argv[i], "--nested") == 0) {
+            nested = true;
+        } else if (std::strcmp(argv[i], "--candidate-fault") == 0) {
+            candidate = true;
+        } else if (std::strncmp(argv[i], "--session-dir=", 14) == 0) {
+            sessionDir = argv[i] + 14;
+        }
+    }
+
+    if (!isProbe) {
+        return std::nullopt;
+    }
+
+    if (!sessionDir.empty()) {
+        SetCrashDumpDirectory(sessionDir, false);
+        char target[MAX_PATH] = {};
+        if (ce::crash_dump_policy::ReadDiagnosticArmMarker(sessionDir.c_str(), target, sizeof(target)) &&
+            ce::crash_dump_policy::IsDiagnosticArmMatch(target, "unit_tests.exe")) {
+            ce::crash_first_chance::SetDiagnosticArmEnabled(true);
+        }
+    }
+
+    if (candidate) {
+        EXCEPTION_RECORD rec{};
+        rec.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+        rec.ExceptionAddress = reinterpret_cast<void*>(0xDEADBEEF);
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        EXCEPTION_POINTERS ptrs{&rec, &ctx};
+        ce::crash_first_chance::RecordFault(&ptrs);
+    }
+
+    const bool armed = ce::crash_first_chance::IsDiagnosticArmEnabled();
+    const bool shouldDump = ce::crash_dump_policy::ShouldCapturePreTerminationDump(
+        true, static_cast<DWORD>(exitCode), false, true, ce::crash_dump_policy::TerminationOrigin::kPrimaryModule,
+        false, false, armed);
+
+    if (shouldDump && !sessionDir.empty()) {
+        char dumpPath[MAX_PATH] = {};
+        std::snprintf(dumpPath, sizeof(dumpPath), "%s\\fatal_exit_probe_%08lx.dmp", sessionDir.c_str(),
+                      static_cast<unsigned long>(exitCode));
+        HANDLE hFile = CreateFileA(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            MINIDUMP_HEADER header{};
+            header.Signature = MINIDUMP_SIGNATURE;
+            header.Version = MINIDUMP_VERSION;
+            header.NumberOfStreams = 1;
+            DWORD written = 0;
+            WriteFile(hFile, &header, sizeof(header), &written, nullptr);
+            CloseHandle(hFile);
+        }
+        ce::fg_session::WriteTransitionHistoryFile(sessionDir.c_str(), "fatal_exit_child_probe",
+                                                   static_cast<DWORD>(exitCode));
+    }
+
+    if (nested) {
+        // Exercise nested hooks: second call rejected by atomic alreadyAttempted guard
+        const bool secondDump = ce::crash_dump_policy::ShouldCapturePreTerminationDump(
+            true, static_cast<DWORD>(exitCode), true, true, ce::crash_dump_policy::TerminationOrigin::kPrimaryModule,
+            false, false, armed);
+        (void)secondDump;
+    }
+
+    ExitProcess(static_cast<UINT>(exitCode));
+    return exitCode;
+}
+
+namespace {
+
+std::filesystem::path CreateTestSessionDir(const char* name) {
+    static std::atomic<uint32_t> s_counter{0};
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("ce_test_fatal_dump_" + std::to_string(GetCurrentProcessId()) + "_" + name + "_" +
+                      std::to_string(s_counter.fetch_add(1, std::memory_order_relaxed)));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+bool LaunchChildProbe(const std::filesystem::path& sessionDir, int exitCode, bool nested, bool candidate,
+                      DWORD* outExitCode, DWORD* outPid = nullptr) {
+    wchar_t selfPath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, selfPath, MAX_PATH);
+
+    std::wstring cmd = L"\"" + std::wstring(selfPath) + L"\" --fatal-exit-child-probe --session-dir=\"" +
+                       sessionDir.wstring() + L"\" --exit-code=" + std::to_wstring(exitCode);
+    if (nested) {
+        cmd += L" --nested";
+    }
+    if (candidate) {
+        cmd += L" --candidate-fault";
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    std::vector<wchar_t> cmdBuffer(cmd.begin(), cmd.end());
+    cmdBuffer.push_back(L'\0');
+
+    if (!CreateProcessW(nullptr, cmdBuffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                        &pi)) {
+        return false;
+    }
+
+    if (outPid) {
+        *outPid = pi.dwProcessId;
+    }
+
+    WaitForSingleObject(pi.hProcess, 10000);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (outExitCode) {
+        *outExitCode = code;
+    }
+    return true;
+}
+
+size_t CountDumpFiles(const std::filesystem::path& dir) {
+    size_t count = 0;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (!ec && entry.is_regular_file(ec) && entry.path().extension() == ".dmp") {
+            ++count;
+        }
+    }
+    return count;
+}
+
+}  // namespace
+
+TEST(FatalExitDumpTest, DiagnosticArmMarkerMatching) {
+    EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch("afop.exe", "D:\\Games\\Avatar\\afop.exe"));
+    EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch("  AFOP.EXE \r\n", "afop.exe"));
+    EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch("afop.exe", "AFOP.EXE"));
+    EXPECT_FALSE(ce::crash_dump_policy::IsDiagnosticArmMatch("afop.exe", "other.exe"));
+    EXPECT_FALSE(ce::crash_dump_policy::IsDiagnosticArmMatch(nullptr, "afop.exe"));
+    EXPECT_FALSE(ce::crash_dump_policy::IsDiagnosticArmMatch("afop.exe", nullptr));
+
+    const auto sessionDir = CreateTestSessionDir("marker");
+    char target[MAX_PATH] = {};
+    EXPECT_FALSE(ce::crash_dump_policy::ReadDiagnosticArmMarker(sessionDir.string().c_str(), target, sizeof(target)));
+
+    const auto markerPath = sessionDir / ce::crash_dump_policy::kDiagnosticArmMarkerFileName;
+    {
+        std::ofstream out(markerPath);
+        out << "  afop.exe  \r\n";
+    }
+
+    EXPECT_TRUE(ce::crash_dump_policy::ReadDiagnosticArmMarker(sessionDir.string().c_str(), target, sizeof(target)));
+    EXPECT_STREQ(target, "afop.exe");
+    EXPECT_TRUE(ce::crash_dump_policy::IsDiagnosticArmMatch(target, "afop.exe"));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionDir, ec);
+}
+
+TEST(FatalExitDumpTest, PolicyAllowsArmedNonzeroSelfTermination) {
+    using namespace ce::crash_dump_policy;
+
+    // Unarmed self-termination from primary image with exit code 3 (Avatar CrashAnalyser)
+    EXPECT_FALSE(ShouldCapturePreTerminationDump(/*targetIsCurrentProcess=*/true, /*exitCode=*/3,
+                                                 /*alreadyAttempted=*/false,
+                                                 /*frameGenerationRuntimeActiveOrRecent=*/true,
+                                                 /*origin=*/TerminationOrigin::kPrimaryModule,
+                                                 /*terminationFollowsUnresolvedFault=*/false,
+                                                 /*terminationFollowsApplicationErrorDialog=*/false,
+                                                 /*diagnosticArmActive=*/false));
+
+    // Armed self-termination with exit code 3: ALLOWED!
+    EXPECT_TRUE(ShouldCapturePreTerminationDump(/*targetIsCurrentProcess=*/true, /*exitCode=*/3,
+                                                /*alreadyAttempted=*/false,
+                                                /*frameGenerationRuntimeActiveOrRecent=*/true,
+                                                /*origin=*/TerminationOrigin::kPrimaryModule,
+                                                /*terminationFollowsUnresolvedFault=*/false,
+                                                /*terminationFollowsApplicationErrorDialog=*/false,
+                                                /*diagnosticArmActive=*/true));
+
+    // Armed clean exit (0): SKIPPED (clean quits stay clean)
+    EXPECT_FALSE(ShouldCapturePreTerminationDump(/*targetIsCurrentProcess=*/true, /*exitCode=*/0,
+                                                 /*alreadyAttempted=*/false,
+                                                 /*frameGenerationRuntimeActiveOrRecent=*/true,
+                                                 /*origin=*/TerminationOrigin::kPrimaryModule,
+                                                 /*terminationFollowsUnresolvedFault=*/false,
+                                                 /*terminationFollowsApplicationErrorDialog=*/false,
+                                                 /*diagnosticArmActive=*/true));
+
+    // Nested termination call (alreadyAttempted == true): PREVENTS duplicate dump
+    EXPECT_FALSE(ShouldCapturePreTerminationDump(/*targetIsCurrentProcess=*/true, /*exitCode=*/3,
+                                                 /*alreadyAttempted=*/true,
+                                                 /*frameGenerationRuntimeActiveOrRecent=*/true,
+                                                 /*origin=*/TerminationOrigin::kPrimaryModule,
+                                                 /*terminationFollowsUnresolvedFault=*/false,
+                                                 /*terminationFollowsApplicationErrorDialog=*/false,
+                                                 /*diagnosticArmActive=*/true));
+
+    // Target is not current process: SKIPPED
+    EXPECT_FALSE(ShouldCapturePreTerminationDump(/*targetIsCurrentProcess=*/false, /*exitCode=*/3,
+                                                 /*alreadyAttempted=*/false,
+                                                 /*frameGenerationRuntimeActiveOrRecent=*/true,
+                                                 /*origin=*/TerminationOrigin::kPrimaryModule,
+                                                 /*terminationFollowsUnresolvedFault=*/false,
+                                                 /*terminationFollowsApplicationErrorDialog=*/false,
+                                                 /*diagnosticArmActive=*/true));
+
+    // Scope check: armed dump selects fatal assert scope
+    EXPECT_EQ(PreTerminationDumpScope(/*crashLikeExit=*/false, /*followsFault=*/false, /*armed=*/true),
+              ExternalDumpScope::kFatalAssert);
+}
+
+TEST(FatalExitDumpTest, BoundedFirstChanceFaultHistoryPreservesCandidateDistinction) {
+    ce::crash_first_chance::ResetForTesting();
+    ce::crash_first_chance::SetDiagnosticArmEnabled(true);
+
+    EXCEPTION_RECORD record1{};
+    record1.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+    record1.ExceptionAddress = reinterpret_cast<void*>(0x12345678);
+
+    CONTEXT context1{};
+    context1.ContextFlags = CONTEXT_CONTROL;
+#ifdef _WIN64
+    context1.Rip = 0x12345678;
+#else
+    context1.Eip = 0x12345678;
+#endif
+
+    EXCEPTION_POINTERS pointers1{};
+    pointers1.ExceptionRecord = &record1;
+    pointers1.ContextRecord = &context1;
+
+    // Record on current thread
+    ce::crash_first_chance::RecordFault(&pointers1);
+
+    ce::crash_first_chance::FaultCandidate candidate{};
+    EXPECT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&candidate, GetCurrentThreadId(), 3));
+    EXPECT_TRUE(candidate.confirmedFault);
+    EXPECT_EQ(candidate.threadId, GetCurrentThreadId());
+    EXPECT_EQ(candidate.exceptionCode, static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION));
+    EXPECT_EQ(candidate.instructionAddress, 0x12345678ULL);
+
+    // Asynchronous reporter thread (e.g. CrashAnalyser) terminating the process with code 3:
+    // candidate from another thread is returned with confirmedFault = false!
+    ce::crash_first_chance::FaultCandidate asyncCandidate{};
+    const DWORD reporterTid = GetCurrentThreadId() + 100;
+    EXPECT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&asyncCandidate, reporterTid, 3));
+    EXPECT_FALSE(asyncCandidate.confirmedFault);
+    EXPECT_EQ(asyncCandidate.threadId, GetCurrentThreadId());
+    EXPECT_EQ(asyncCandidate.exceptionCode, static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION));
+
+    // Continuing execution clears active slot but preserves candidate history
+    ce::crash_first_chance::ClearFaultForCurrentThread();
+    EXPECT_FALSE(ce::crash_first_chance::CopyFaultForCurrentThread(nullptr, nullptr));
+
+    ce::crash_first_chance::FaultCandidate retainedCandidate{};
+    EXPECT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&retainedCandidate, reporterTid, 3));
+    EXPECT_EQ(retainedCandidate.exceptionCode, static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION));
+
+    ce::crash_first_chance::ResetForTesting();
+}
+
+TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
+    const auto sessionDir = CreateTestSessionDir("trace");
+
+    ce::fg_session::ResetTransitionHistoryForTesting();
+    ce::fg_session::RecordFFXContextCreate(reinterpret_cast<void*>(0x1000), 0x0001, 0, false);
+    ce::fg_session::RecordFFXConfigure(reinterpret_cast<void*>(0x1000), true, reinterpret_cast<void*>(0x2000),
+                                       reinterpret_cast<void*>(0x3000), 0);
+    ce::fg_session::RecordStreamlineDLSSGOptions(true, 0);
+    ce::fg_session::RecordSwapchainTransition("Create", reinterpret_cast<void*>(0x4000),
+                                              reinterpret_cast<void*>(0x5000), reinterpret_cast<void*>(0x6000), 0);
+
+    EXPECT_TRUE(ce::fg_session::WriteTransitionHistoryFile(sessionDir.string().c_str(), "test_trigger", 3));
+
+    const auto tracePath = sessionDir / "fg_transition_trace.txt";
+    EXPECT_TRUE(std::filesystem::exists(tracePath));
+
+    std::ifstream stream(tracePath);
+    std::string content((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("Capture Engine Frame Generation Transition Trace"), std::string::npos);
+    EXPECT_NE(content.find("ExitCode: 0x00000003"), std::string::npos);
+    EXPECT_NE(content.find("ContextCreate"), std::string::npos);
+    EXPECT_NE(content.find("DLSSGOptions"), std::string::npos);
+    EXPECT_NE(content.find("SwapchainTransition"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionDir, ec);
+    ce::fg_session::ResetTransitionHistoryForTesting();
+}
+
+TEST(FatalExitDumpTest, InjectedChildUnarmedProducesNoDump) {
+    const auto sessionDir = CreateTestSessionDir("child_unarmed");
+    DWORD exitCode = 0;
+    DWORD pid = 0;
+
+    ASSERT_TRUE(LaunchChildProbe(sessionDir, 3, /*nested=*/false, /*candidate=*/false, &exitCode, &pid));
+    EXPECT_EQ(exitCode, 3u);
+    EXPECT_EQ(CountDumpFiles(sessionDir), 0u);
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionDir, ec);
+}
+
+TEST(FatalExitDumpTest, InjectedChildArmedProducesOneReadableDumpAndTransitionTrace) {
+    const auto sessionDir = CreateTestSessionDir("child_armed");
+
+    // Arm the diagnostic for unit_tests.exe
+    const auto markerPath = sessionDir / ce::crash_dump_policy::kDiagnosticArmMarkerFileName;
+    {
+        std::ofstream out(markerPath);
+        out << "unit_tests.exe\r\n";
+    }
+
+    DWORD exitCode = 0;
+    DWORD pid = 0;
+    ASSERT_TRUE(LaunchChildProbe(sessionDir, 3, /*nested=*/false, /*candidate=*/true, &exitCode, &pid));
+    EXPECT_EQ(exitCode, 3u);
+
+    // Exactly one dump created!
+    EXPECT_EQ(CountDumpFiles(sessionDir), 1u);
+
+    // Transition trace exists and contains child's PID and exit code
+    const auto tracePath = sessionDir / "fg_transition_trace.txt";
+    ASSERT_TRUE(std::filesystem::exists(tracePath));
+    std::ifstream stream(tracePath);
+    std::string content((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("PID: " + std::to_string(pid)), std::string::npos);
+    EXPECT_NE(content.find("ExitCode: 0x00000003"), std::string::npos);
+    EXPECT_NE(content.find("Candidate[0]: seq=1"), std::string::npos);
+
+    // Verify dump file header is readable
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(sessionDir, ec)) {
+        if (entry.path().extension() == ".dmp") {
+            std::ifstream dumpStream(entry.path(), std::ios::binary);
+            MINIDUMP_HEADER header{};
+            dumpStream.read(reinterpret_cast<char*>(&header), sizeof(header));
+            EXPECT_EQ(header.Signature, MINIDUMP_SIGNATURE);
+            EXPECT_EQ(header.Version, MINIDUMP_VERSION);
+            EXPECT_GT(header.NumberOfStreams, 0u);
+        }
+    }
+
+    std::filesystem::remove_all(sessionDir, ec);
+}
+
+TEST(FatalExitDumpTest, InjectedChildArmedNestedHooksProduceOnlyOneDump) {
+    const auto sessionDir = CreateTestSessionDir("child_nested");
+
+    // Arm the diagnostic for unit_tests.exe
+    const auto markerPath = sessionDir / ce::crash_dump_policy::kDiagnosticArmMarkerFileName;
+    {
+        std::ofstream out(markerPath);
+        out << "unit_tests.exe\r\n";
+    }
+
+    DWORD exitCode = 0;
+    DWORD pid = 0;
+    // Launch child with nested calls
+    ASSERT_TRUE(LaunchChildProbe(sessionDir, 3, /*nested=*/true, /*candidate=*/false, &exitCode, &pid));
+    EXPECT_EQ(exitCode, 3u);
+
+    // Nested call attempt is guarded by atomic attempt guard: still exactly 1 dump!
+    EXPECT_EQ(CountDumpFiles(sessionDir), 1u);
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionDir, ec);
+}

@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Session-scoped diagnostic arm for process self-termination and fault tracking:** added a session-scoped diagnostic arm marker (`diagnostic_arm.txt`) in the active session directory targeting exact process basenames (such as `afop.exe`). When armed, nonzero process self-terminations (including exit code 3 from internal crash analyzers) trigger a pre-termination minidump capture with fatal-assert scope (thread stacks, referenced memory, and terminating thread) without altering clean exit behavior, normal crash policies, or WER adoption. First-chance hardware faults are tracked in a bounded history preserving candidate context across asynchronous reporting threads, and a synchronous transition trace (`fg_transition_trace.txt`) is persisted alongside dumps.
+
 - **Inject overlay visibility with Ubisoft Connect / Uplay overlay:** games running with the Ubisoft Connect / Uplay overlay active (such as *Avatar: Frontiers of Pandora*) no longer cause the inject overlay to disappear. Capture Engine now tracks verified Ubisoft `overlay64.dll` and `overlay.dll` modules requiring corroborating Ubisoft path/product evidence, traversing the Present call stack past verified overlay frames to reach the true Present originator (including Streamline and DLSS Frame Generation) and compositing below foreign Present entry chains without misclassifying ordinary game binaries or disturbing Steam load-order fallback decisions.
 
 ## v0.1.7160

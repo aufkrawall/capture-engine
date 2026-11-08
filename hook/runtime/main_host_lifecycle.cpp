@@ -2,6 +2,7 @@
 #include "hook/pacing/fps_limiter.h"
 #include "hook/runtime/freeze_watchdog.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "main_fatal_diagnostic_arm.h"
 
 namespace {
 
@@ -39,6 +40,7 @@ void RebindHookSessionDiagnostics() {
     return;
   CreateDirectoryA(sessionLogsDir, NULL);
   SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false);
+  ce::diagnostic_arm::CheckAndCache(sessionLogsDir, g_ProcessName);
   if (g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
     char perfLogPath[MAX_PATH];
     snprintf(perfLogPath, sizeof(perfLogPath), "%s\\perf_metrics_%lu.csv", sessionLogsDir,
@@ -153,6 +155,7 @@ bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDi
     UE5::ShutdownOverrides();
     ce::ngx_ota::RestoreLogEnvironment();
     FFXHook::EnterDormant();
+    ce::diagnostic_arm::Clear();
     CaptureManager::Get().SetCaptureEnabled(false);
     g_SharedFpsLimiter.Shutdown();
     QuiesceHostBoundCaptureResources();

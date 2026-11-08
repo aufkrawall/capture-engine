@@ -6,6 +6,7 @@
 #include "common/platform/ansi_path.h"
 #include "common/crash/crash_first_chance.h"
 #include "freeze_watchdog.h"
+#include "main_fatal_diagnostic_arm.h"
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 
@@ -497,14 +498,16 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
       ce::crash_dump_policy::IsTerminationFollowingUnresolvedFault(exitCode, insideExceptionDispatch, pendingFault);
   const bool followsRenderThreadDialog =
       targetIsCurrentProcess && g_RenderWatchdog.TerminationFollowsRenderThreadDialog();
+  const bool diagnosticArmed = ce::diagnostic_arm::IsArmed();
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
                                                               frameGenerationRuntimeActiveOrRecent, origin,
-                                                              followsUnresolvedFault, followsRenderThreadDialog)) {
+                                                              followsUnresolvedFault, followsRenderThreadDialog,
+                                                              diagnosticArmed)) {
     // Only the FG fallback can suppress a dump the old policy would have taken,
     // so record that decision once instead of leaving a silent gap.
     if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
         origin == ce::crash_dump_policy::TerminationOrigin::kPrimaryModule &&
-        !ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode)) {
+        !ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode) && !diagnosticArmed) {
       LogSuppressedPreTerminationDump(source, exitCode, callerAddress, terminationRequester);
     }
     return false;
@@ -570,27 +573,54 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   snprintf(dumpHint, sizeof(dumpHint), "fatal_exit_%s_%08lx.dmp", source ? source : "unknown",
            static_cast<unsigned long>(exitCode));
 
+  ce::crash_first_chance::FaultCandidate faultCandidate{};
+  const bool hasCandidate = targetIsCurrentProcess &&
+      ce::crash_first_chance::FindBestFaultCandidate(&faultCandidate, GetCurrentThreadId(), exitCode);
+
+  char captureReason[160] = {};
+  if (diagnosticArmed && !crashLikeExit && !followsUnresolvedFault) {
+    snprintf(captureReason, sizeof(captureReason), "diagnostic_arm_self_termination(code=0x%08lX,source=%s,target=%s)",
+             static_cast<unsigned long>(exitCode), source ? source : "unknown",
+             ce::diagnostic_arm::GetTargetProcess());
+  } else if (crashLikeExit) {
+    snprintf(captureReason, sizeof(captureReason), "crash_like_exit(code=0x%08lX,source=%s)",
+             static_cast<unsigned long>(exitCode), source ? source : "unknown");
+  } else if (followsUnresolvedFault) {
+    snprintf(captureReason, sizeof(captureReason), "follows_unresolved_fault(code=0x%08lX,source=%s)",
+             static_cast<unsigned long>(exitCode), source ? source : "unknown");
+  } else {
+    snprintf(captureReason, sizeof(captureReason), "fg_runtime_exit(code=0x%08lX,source=%s)",
+             static_cast<unsigned long>(exitCode), source ? source : "unknown");
+  }
+
   char requesterModule[MAX_PATH + 64] = {};
   DescribeAddressModule(const_cast<void*>(terminationRequester), requesterModule, sizeof(requesterModule));
   HookLogImportant(
-      "FatalExitDump: Capturing pre-termination dump before crash-like process exit or active FG runtime exit "
-      "(source=%s code=0x%08lX exceptionAddr=%p crashLike=%d fgRuntimeActiveOrRecent=%d origin=%s requester=%p "
-      "requesterModule=%s)",
+      "FatalExitDump: Capturing pre-termination dump (source=%s code=0x%08lX exceptionAddr=%p crashLike=%d "
+      "fgRuntimeActiveOrRecent=%d origin=%s requester=%p requesterModule=%s reason=%s armed=%d)",
       source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress,
-      crashLikeExit ? 1 : 0,
-      frameGenerationRuntimeActiveOrRecent ? 1 : 0, DescribeTerminationOrigin(origin), terminationRequester,
-      requesterModule);
+      crashLikeExit ? 1 : 0, frameGenerationRuntimeActiveOrRecent ? 1 : 0, DescribeTerminationOrigin(origin),
+      terminationRequester, requesterModule, captureReason, diagnosticArmed ? 1 : 0);
+  if (hasCandidate && diagnosticArmed && !pendingFault) {
+    HookLogImportant(
+        "FatalExitDump: Diagnostic arm candidate first-chance fault: thread=%lu code=0x%08lX addr=%p (confirmed=%d, "
+        "terminatingThread=%lu exitCode=0x%08lX)",
+        faultCandidate.threadId, faultCandidate.exceptionCode, reinterpret_cast<void*>(faultCandidate.instructionAddress),
+        faultCandidate.confirmedFault ? 1 : 0, GetCurrentThreadId(), static_cast<unsigned long>(exitCode));
+  }
   OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
 
-  HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s)",
-                   source ? source : "unknown", dumpHint);
+  HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s scope=%s)",
+                   source ? source : "unknown", dumpHint, diagnosticArmed || crashLikeExit || followsUnresolvedFault ? "assert" : "rich");
   // This thread waits for the helper, so `pointers` (on this stack) stays valid
   // for the helper's ClientPointers read.
   ExternalDumpException externalException;
   externalException.pointers = &pointers;
   externalException.threadId = GetCurrentThreadId();
   const ExternalPreTerminationDumpResult externalDumpResult = TryCapturePreTerminationDumpWithExternalHelper(
-      source, dumpHint, ce::crash_dump_policy::PreTerminationDumpScope(crashLikeExit, followsUnresolvedFault), &externalException);
+      source, dumpHint,
+      ce::crash_dump_policy::PreTerminationDumpScope(crashLikeExit, followsUnresolvedFault, diagnosticArmed),
+      &externalException);
   bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
   if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut &&
       ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(
