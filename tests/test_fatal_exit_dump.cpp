@@ -294,19 +294,30 @@ TEST(FatalExitDumpTest, BoundedFirstChanceFaultHistoryPreservesCandidateDistinct
 
     ce::crash_first_chance::FaultCandidate candidate{};
     EXPECT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&candidate, GetCurrentThreadId(), 3));
-    EXPECT_TRUE(candidate.confirmedFault);
+    EXPECT_TRUE(candidate.onTerminatingThread);
     EXPECT_EQ(candidate.threadId, GetCurrentThreadId());
     EXPECT_EQ(candidate.exceptionCode, static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION));
     EXPECT_EQ(candidate.instructionAddress, 0x12345678ULL);
 
     // Asynchronous reporter thread (e.g. CrashAnalyser) terminating the process with code 3:
-    // candidate from another thread is returned with confirmedFault = false!
+    // candidate from another thread is returned as correlation evidence.
     ce::crash_first_chance::FaultCandidate asyncCandidate{};
     const DWORD reporterTid = GetCurrentThreadId() + 100;
     EXPECT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&asyncCandidate, reporterTid, 3));
-    EXPECT_FALSE(asyncCandidate.confirmedFault);
+    EXPECT_FALSE(asyncCandidate.onTerminatingThread);
     EXPECT_EQ(asyncCandidate.threadId, GetCurrentThreadId());
     EXPECT_EQ(asyncCandidate.exceptionCode, static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION));
+
+    // Wrap the history and verify the newest candidate wins within both match classes.
+    for (uintptr_t i = 0; i < 24; ++i) {
+        record1.ExceptionAddress = reinterpret_cast<void*>(0x2000 + i);
+        ce::crash_first_chance::RecordFault(&pointers1);
+    }
+    ASSERT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&candidate, GetCurrentThreadId(), 3));
+    EXPECT_EQ(candidate.instructionAddress, 0x2017u);
+    ASSERT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&candidate, reporterTid, EXCEPTION_ACCESS_VIOLATION));
+    EXPECT_EQ(candidate.instructionAddress, 0x2017u);
+    EXPECT_EQ(candidate.sequence, 25u);
 
     // Continuing execution clears active slot but preserves candidate history
     ce::crash_first_chance::ClearFaultForCurrentThread();
@@ -316,13 +327,15 @@ TEST(FatalExitDumpTest, BoundedFirstChanceFaultHistoryPreservesCandidateDistinct
     EXPECT_TRUE(ce::crash_first_chance::FindBestFaultCandidate(&retainedCandidate, reporterTid, 3));
     EXPECT_EQ(retainedCandidate.exceptionCode, static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION));
 
+    ce::crash_first_chance::SetDiagnosticArmEnabled(false);
+    ce::crash_first_chance::SetDiagnosticArmEnabled(true);
+    EXPECT_FALSE(ce::crash_first_chance::FindBestFaultCandidate(&candidate, GetCurrentThreadId(), 3));
     ce::crash_first_chance::ResetForTesting();
 }
 
 TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     const auto sessionDir = CreateTestSessionDir("trace");
 
-    ce::fg_session::ResetTransitionHistoryForTesting();
     ce::fg_session::RecordFFXContextCreate(reinterpret_cast<void*>(0x1000), 0x0001, 0, false);
     ce::fg_session::RecordFFXConfigure(reinterpret_cast<void*>(0x1000), true, reinterpret_cast<void*>(0x2000),
                                        reinterpret_cast<void*>(0x3000), 0);
@@ -330,9 +343,19 @@ TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     ce::fg_session::RecordSwapchainTransition("Create", reinterpret_cast<void*>(0x4000),
                                               reinterpret_cast<void*>(0x5000), reinterpret_cast<void*>(0x6000), 0);
 
-    EXPECT_TRUE(ce::fg_session::WriteTransitionHistoryFile(sessionDir.string().c_str(), "test_trigger", 3));
+    ce::fg_session::RecordStreamlineReflexSleepFailure(5);
+    ce::fg_session::RecordStreamlineReflexOptions(2, 0);
+    for (uint64_t frame = 0; frame < 1000; ++frame) {
+        ce::fg_session::RecordFFXCallbackArrival(reinterpret_cast<void*>(0x3000), frame, (frame & 1) != 0, true);
+        ce::fg_session::RecordStreamlineDLSSGOptions(true, 0);
+        ce::fg_session::RecordStreamlineReflexSleepFailure(5);
+    }
+    ce::fg_session::RecordFFXCallbackArrival(reinterpret_cast<void*>(0x3000), 1000, false, false);
 
-    const auto tracePath = sessionDir / "fg_transition_trace.txt";
+    EXPECT_TRUE(ce::fg_session::WriteTransitionHistoryFile(sessionDir.string().c_str(), "test_trigger", 3));
+    EXPECT_FALSE(ce::fg_session::WriteTransitionHistoryFile(sessionDir.string().c_str(), "nested_exit", 0));
+
+    const auto tracePath = sessionDir / ("fg_transition_trace_" + std::to_string(GetCurrentProcessId()) + ".txt");
     EXPECT_TRUE(std::filesystem::exists(tracePath));
 
     std::ifstream stream(tracePath);
@@ -342,10 +365,15 @@ TEST(FatalExitDumpTest, TransitionTraceSnapshotWritesValidFile) {
     EXPECT_NE(content.find("ContextCreate"), std::string::npos);
     EXPECT_NE(content.find("DLSSGOptions"), std::string::npos);
     EXPECT_NE(content.find("SwapchainTransition"), std::string::npos);
+    EXPECT_NE(content.find("ReflexOptions: mode=2"), std::string::npos);
+    EXPECT_NE(content.find("ReflexSleepFailed"), std::string::npos);
+    EXPECT_NE(content.find("CallbackArrived: frameId=0"), std::string::npos);
+    EXPECT_NE(content.find("CallbackArrived: frameId=1000"), std::string::npos);
+    EXPECT_EQ(content.find("CallbackArrived: frameId=999"), std::string::npos);
+    stream.close();
 
     std::error_code ec;
     std::filesystem::remove_all(sessionDir, ec);
-    ce::fg_session::ResetTransitionHistoryForTesting();
 }
 
 TEST(FatalExitDumpTest, ChildProbeUnarmedProducesNoDump) {
@@ -382,13 +410,14 @@ TEST(FatalExitDumpTest, ChildProbeArmedProducesOneReadableDumpAndTransitionTrace
     EXPECT_EQ(CountDumpFiles(sessionDir), 1u);
 
     // Transition trace exists and contains child's PID and exit code
-    const auto tracePath = sessionDir / "fg_transition_trace.txt";
+    const auto tracePath = sessionDir / ("fg_transition_trace_" + std::to_string(pid) + ".txt");
     ASSERT_TRUE(std::filesystem::exists(tracePath));
     std::ifstream stream(tracePath);
     std::string content((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     EXPECT_NE(content.find("PID: " + std::to_string(pid)), std::string::npos);
     EXPECT_NE(content.find("ExitCode: 0x00000003"), std::string::npos);
     EXPECT_NE(content.find("Candidate[0]: seq=1"), std::string::npos);
+    stream.close();
 
     // Verify dump file header is readable
     std::error_code ec;

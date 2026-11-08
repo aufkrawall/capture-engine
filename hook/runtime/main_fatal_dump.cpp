@@ -510,6 +510,11 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
         !ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode) && !diagnosticArmed) {
       LogSuppressedPreTerminationDump(source, exitCode, callerAddress, terminationRequester);
     }
+    if (targetIsCurrentProcess && !alreadyAttempted &&
+        exitCode != ce::crash_dump_policy::kProcessIsTerminatingExitCode &&
+        exitCode != ce::crash_dump_policy::kExternalDumpStormTerminationExitCode) {
+      ce::fg_session::WriteTransitionHistoryFile(GetCrashDumpDirectory().c_str(), source, exitCode);
+    }
     return false;
   }
 
@@ -601,10 +606,10 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
       terminationRequester, requesterModule, captureReason, diagnosticArmed ? 1 : 0);
   if (hasCandidate && diagnosticArmed && !pendingFault) {
     HookLogImportant(
-        "FatalExitDump: Diagnostic arm candidate first-chance fault: thread=%lu code=0x%08lX addr=%p (confirmed=%d, "
+        "FatalExitDump: Diagnostic arm candidate first-chance fault: thread=%lu code=0x%08lX addr=%p (sameThread=%d, "
         "terminatingThread=%lu exitCode=0x%08lX)",
         faultCandidate.threadId, faultCandidate.exceptionCode, reinterpret_cast<void*>(faultCandidate.instructionAddress),
-        faultCandidate.confirmedFault ? 1 : 0, GetCurrentThreadId(), static_cast<unsigned long>(exitCode));
+        faultCandidate.onTerminatingThread ? 1 : 0, GetCurrentThreadId(), static_cast<unsigned long>(exitCode));
   }
   const std::string dumpDir = GetCrashDumpDirectory();
   ce::fg_session::WriteTransitionHistoryFile(dumpDir.c_str(), captureReason, exitCode);

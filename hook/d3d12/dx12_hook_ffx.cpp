@@ -526,7 +526,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     const auto originalCallback = bridge.originalCallback;
     void* originalUserContext = bridge.originalUserContext;
     ce::fg_session::RecordFFXCallbackArrival(userCtx, desc ? desc->frameID : 0,
-                                             desc ? desc->isGeneratedFrame != 0 : false, bridge.installed, false);
+                                             desc && desc->isGeneratedFrame, bridge.installed);
 
     uint32_t result = 0;
     if (originalCallback) {

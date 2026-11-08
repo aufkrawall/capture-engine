@@ -1,4 +1,5 @@
 #include "fg_session_state.h"
+#include "fg_transition_trace.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
@@ -644,6 +645,11 @@ void RefreshStateLocked(SessionState& state, const char* trigger, bool emitLogs)
             LogPlanDiffIfNeeded(previousSnapshot, previousPlan, snapshot, plan);
             LogTransitionIfNeeded(previousSnapshot, previousPlan, snapshot, plan, trigger);
         }
+    }
+    if (buildResult.sessionChanged || !hadPrevious || previousPlan.route != plan.route ||
+        previousPlan.transport != plan.transport || previousPlan.selectedQueueRole != plan.selectedQueueRole ||
+        previousPlan.backendMode != plan.backendMode) {
+        RecordPublishedFGState(snapshot, plan);
     }
     CommitState(state, snapshot, plan);
     UpdateSessionManifestIfNeeded(state, snapshot);

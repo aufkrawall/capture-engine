@@ -497,8 +497,8 @@ slResult Hooked_slReflexSleep(const void* streamline_hook_frame) {
         if (failCount < 5) {
             HookLogImportant("Streamline Hook: slReflexSleep forward failed result=%d frame=%p", result, streamline_hook_frame);
         }
+        ce::fg_session::RecordStreamlineReflexSleepFailure(static_cast<uint32_t>(result));
     }
-    ce::fg_session::RecordStreamlineReflexOptions(0, static_cast<uint32_t>(result));
     return result;
 
 }

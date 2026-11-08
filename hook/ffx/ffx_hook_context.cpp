@@ -697,8 +697,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
             parsed.enabled ? ce::fg_runtime::RuntimeMode::kFSRFG : ce::fg_runtime::RuntimeMode::kOff, parsed.enabled,
             true);
     }
-    ce::fg_session::RecordFFXConfigure(contextHandle, parsed.enabled,
-                                       reinterpret_cast<void*>(bridgedOriginalCallback), bridgeKey, result);
+    if (routingStateChanged) {
+        ce::fg_session::RecordFFXConfigure(contextHandle, parsed.enabled,
+                                           reinterpret_cast<void*>(bridgedOriginalCallback), bridgeKey, result);
+    }
     return result;
 
 }

@@ -3,6 +3,8 @@
 #include <atomic>
 #include <iterator>
 
+#include "common/platform/bounded_diagnostic_history.h"
+
 namespace ce::crash_first_chance {
 
 namespace {
@@ -23,15 +25,14 @@ struct alignas(16) FaultSlot {
 constexpr size_t kSlotCount = 64;
 FaultSlot g_Slots[kSlotCount];
 
-struct CandidateSlot {
-    std::atomic<uint64_t> sequence{0};
-    std::atomic<bool> writing{false};
-    FaultCandidate candidate{};
+struct CandidateRecord {
+    FaultCandidate fault;
+    uint64_t armEpoch = 0;
 };
-constexpr size_t kCandidateRingCapacity = 16;
-CandidateSlot g_CandidateRing[kCandidateRingCapacity];
-std::atomic<uint64_t> g_CandidateCounter{0};
-std::atomic<bool> g_DiagnosticArmEnabled{false};
+
+BoundedDiagnosticHistory<CandidateRecord, kFaultCandidateHistoryCapacity> g_CandidateHistory;
+// Low bit is the arm state. A new arm gets a fresh epoch so histories cannot cross sessions.
+std::atomic<uint64_t> g_DiagnosticArmEpoch{0};
 
 std::atomic<uint64_t> g_Recorded{0};
 std::atomic<uint64_t> g_ResolvedByContinue{0};
@@ -197,25 +198,13 @@ void RecordFault(const EXCEPTION_POINTERS* pointers) {
     slot->writing.store(false, std::memory_order_release);
     g_Recorded.fetch_add(1, std::memory_order_relaxed);
 
-    if (g_DiagnosticArmEnabled.load(std::memory_order_acquire)) {
-        const uint64_t seq = g_CandidateCounter.fetch_add(1, std::memory_order_relaxed) + 1;
-        CandidateSlot& candidateSlot = g_CandidateRing[seq % kCandidateRingCapacity];
-        bool expectedWriting = false;
-        if (candidateSlot.writing.compare_exchange_strong(expectedWriting, true, std::memory_order_acq_rel)) {
-            candidateSlot.candidate.threadId = threadId;
-            candidateSlot.candidate.exceptionCode = pointers->ExceptionRecord->ExceptionCode;
-            candidateSlot.candidate.instructionAddress =
-                reinterpret_cast<uintptr_t>(pointers->ExceptionRecord->ExceptionAddress);
-            candidateSlot.candidate.sequence = seq;
-            candidateSlot.candidate.hasRecordAndContext = true;
-            candidateSlot.candidate.confirmedFault = false;
-            candidateSlot.candidate.record = *pointers->ExceptionRecord;
-            candidateSlot.candidate.record.ExceptionRecord = nullptr;
-            candidateSlot.candidate.context = *pointers->ContextRecord;
-            candidateSlot.candidate.context.ContextFlags &= ~static_cast<DWORD>(0x40);
-            candidateSlot.sequence.store(seq, std::memory_order_release);
-            candidateSlot.writing.store(false, std::memory_order_release);
-        }
+    const uint64_t armEpoch = g_DiagnosticArmEpoch.load(std::memory_order_acquire);
+    if (armEpoch & 1) {
+        g_CandidateHistory.Append({
+            {threadId, pointers->ExceptionRecord->ExceptionCode,
+             reinterpret_cast<uintptr_t>(pointers->ExceptionRecord->ExceptionAddress)},
+            armEpoch,
+        });
     }
 }
 
@@ -290,32 +279,29 @@ Statistics GetStatistics() {
 }
 
 void SetDiagnosticArmEnabled(bool enabled) {
-    g_DiagnosticArmEnabled.store(enabled, std::memory_order_release);
+    uint64_t epoch = g_DiagnosticArmEpoch.load(std::memory_order_relaxed);
+    while (!g_DiagnosticArmEpoch.compare_exchange_weak(
+        epoch, ((epoch & ~uint64_t{1}) + 2) | static_cast<uint64_t>(enabled), std::memory_order_release,
+        std::memory_order_relaxed)) {
+    }
 }
 
 bool IsDiagnosticArmEnabled() {
-    return g_DiagnosticArmEnabled.load(std::memory_order_acquire);
+    return (g_DiagnosticArmEpoch.load(std::memory_order_acquire) & 1) != 0;
 }
 
 size_t CopyFaultCandidates(FaultCandidate* outCandidates, size_t maxCandidates) {
     if (!outCandidates || maxCandidates == 0) {
         return 0;
     }
+    const uint64_t armEpoch = g_DiagnosticArmEpoch.load(std::memory_order_acquire);
     size_t count = 0;
-    for (CandidateSlot& slot : g_CandidateRing) {
-        const uint64_t seq = slot.sequence.load(std::memory_order_acquire);
-        if (seq == 0) {
-            continue;
+    g_CandidateHistory.VisitRecent([&](uint64_t sequence, const CandidateRecord& candidate) {
+        if (candidate.armEpoch == armEpoch && count < maxCandidates) {
+            outCandidates[count] = candidate.fault;
+            outCandidates[count++].sequence = sequence;
         }
-        if (slot.writing.load(std::memory_order_acquire)) {
-            continue;
-        }
-        outCandidates[count] = slot.candidate;
-        ++count;
-        if (count >= maxCandidates) {
-            break;
-        }
-    }
+    });
     return count;
 }
 
@@ -323,44 +309,23 @@ bool FindBestFaultCandidate(FaultCandidate* outCandidate, DWORD terminatingThrea
     if (!outCandidate) {
         return false;
     }
-    FaultCandidate candidates[kCandidateRingCapacity];
-    const size_t count = CopyFaultCandidates(candidates, kCandidateRingCapacity);
-    if (count == 0) {
-        return false;
-    }
-
-    // 1. Same thread as terminating thread
-    for (size_t i = 0; i < count; ++i) {
-        if (candidates[i].threadId == terminatingThreadId) {
-            *outCandidate = candidates[i];
-            outCandidate->confirmedFault = true;
-            return true;
+    const uint64_t armEpoch = g_DiagnosticArmEpoch.load(std::memory_order_acquire);
+    int bestRank = 0;
+    g_CandidateHistory.VisitRecent([&](uint64_t sequence, const CandidateRecord& candidate) {
+        if (candidate.armEpoch != armEpoch) {
+            return;
         }
-    }
-
-    // 2. Matching nonzero exit code from any thread
-    if (exitCode != 0) {
-        for (size_t i = 0; i < count; ++i) {
-            if (candidates[i].exceptionCode == exitCode) {
-                *outCandidate = candidates[i];
-                outCandidate->confirmedFault = false;
-                return true;
-            }
+        const bool sameThread = candidate.fault.threadId == terminatingThreadId;
+        const bool matchingCode = exitCode != 0 && candidate.fault.exceptionCode == exitCode;
+        const int rank = sameThread ? 3 : matchingCode ? 2 : 1;
+        if (rank >= bestRank) {
+            bestRank = rank;
+            *outCandidate = candidate.fault;
+            outCandidate->sequence = sequence;
+            outCandidate->onTerminatingThread = sameThread;
         }
-    }
-
-    // 3. Most recent candidate (highest sequence)
-    size_t newestIndex = 0;
-    uint64_t highestSeq = candidates[0].sequence;
-    for (size_t i = 1; i < count; ++i) {
-        if (candidates[i].sequence > highestSeq) {
-            highestSeq = candidates[i].sequence;
-            newestIndex = i;
-        }
-    }
-    *outCandidate = candidates[newestIndex];
-    outCandidate->confirmedFault = (outCandidate->threadId == terminatingThreadId);
-    return true;
+    });
+    return bestRank != 0;
 }
 
 void SetBeforeClearForTesting(void (*hook)()) { g_BeforeClearForTesting.store(hook, std::memory_order_release); }
@@ -375,13 +340,8 @@ bool HasFaultOwnerForTesting(DWORD owner) { return FindOwnSlot(owner) != nullptr
 
 void ResetForTesting() {
     g_BeforeClearForTesting.store(nullptr, std::memory_order_release);
-    g_DiagnosticArmEnabled.store(false, std::memory_order_release);
-    g_CandidateCounter.store(0, std::memory_order_release);
-    for (CandidateSlot& slot : g_CandidateRing) {
-        slot.sequence.store(0, std::memory_order_release);
-        slot.writing.store(false, std::memory_order_release);
-        slot.candidate = {};
-    }
+    g_DiagnosticArmEpoch.store(0, std::memory_order_relaxed);
+    g_CandidateHistory.ResetForTesting();
     for (FaultSlot& slot : g_Slots) {
         slot.threadId.store(0, std::memory_order_release);
         slot.sequence.store(0, std::memory_order_release);

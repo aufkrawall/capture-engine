@@ -58,14 +58,12 @@ struct FaultCandidate {
     DWORD exceptionCode = 0;
     uintptr_t instructionAddress = 0;
     uint64_t sequence = 0;
-    bool hasRecordAndContext = false;
-    bool confirmedFault = false;
-    EXCEPTION_RECORD record{};
-    CONTEXT context{};
+    bool onTerminatingThread = false;
 };
 
 void SetDiagnosticArmEnabled(bool enabled);
 bool IsDiagnosticArmEnabled();
+inline constexpr size_t kFaultCandidateHistoryCapacity = 16;
 size_t CopyFaultCandidates(FaultCandidate* outCandidates, size_t maxCandidates);
 bool FindBestFaultCandidate(FaultCandidate* outCandidate, DWORD terminatingThreadId, DWORD exitCode);
 
