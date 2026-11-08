@@ -490,11 +490,6 @@ inline bool IsPresentInterposerModulePath(const wchar_t* path) {
     return false;
 }
 
-}  // namespace ce::overlay_compat
-
-#include "runtime_module_inspect.h"
-
-namespace ce::overlay_compat {
 
 // IsThirdPartyOverlayLoaded() and GetLoadedThirdPartyOverlayModuleName() live in
 // overlay_compat_detail/routing_policy.h, which includes this header.

@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "module_address_cache.h"
+#include "module_table.h"
 
 namespace ce::overlay_compat {
 
