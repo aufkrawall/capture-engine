@@ -168,7 +168,9 @@ TEST(ModuleAddressCacheSource, UnloadNotificationInvalidatesBeforeAnyEarlyReturn
 TEST(ModuleAddressCacheSource, HotPathHelpersNoLongerAskTheLoaderPerCall) {
     const std::string helpers = ReadSource("hook/d3d12/dx12_hook_helpers.cpp");
     const std::string steam = ReadSource("hook/present/dxgi_shared_steam.cpp");
-    const std::string table = ReadSource("hook/overlay/overlay_compat_detail/module_table.h");
+    const std::string inspectSource = ReadSource("hook/overlay/overlay_compat_detail/runtime_module_inspect.h");
+    const std::string table =
+        inspectSource.empty() ? ReadSource("hook/overlay/overlay_compat_detail/module_table.h") : inspectSource;
     ASSERT_FALSE(helpers.empty());
     ASSERT_FALSE(steam.empty());
     ASSERT_FALSE(table.empty());
