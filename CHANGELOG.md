@@ -2,21 +2,31 @@
 
 ## Unreleased
 
+Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7160).
+
+## v0.1.7160
+
 Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7159).
 
 ### New
 
 - **Recordings use the application profile name in output files:** when recording through a named application profile (`[Profile.<name>]`), the resulting file name replaces `capture` with the game profile name (for example, `hots_20261106T204334392Z_p25304_s2.mkv` or `Strange Brigade DX12_20261106T204334392Z_p25304_s2.mkv`) across inject, WGC, and desktop duplication captures. Audio-only recordings append `_audio` (`<name>_audio_*.mka`). Profile names with spaces and safe punctuation are preserved while invalid characters are sanitized, and unprofiled captures continue to use `capture_*`.
+
 - **Four overlay layouts:** the in-game overlay was hard to read at a glance, so `[Overlay] layout` now chooses how it arranges its values, live while a game runs. `hero` (the new default) shows FPS as one large number above its graph and puts GPU and CPU in one table. `list` keeps one row per value, grouped, with aligned columns. `meters` shows load and memory as bars. `strip` is a narrow band along the screen edge that wraps in small windows. All four show the same values.
+
 - **Overlay font choice:** `[Overlay] font` picks any installed font and `font_weight` its weight; `font_size` now works too. A font that is not installed falls back to the default instead of whatever Windows substitutes. Font settings apply the next time the game starts.
+
 
 ### Improved
 
 - **Build verification:** split oversized configuration and overlay test groups and cast media shared-memory slot indices so the complete verification gate and clang-tidy ratchet run cleanly without relaxing source-size limits.
+
 - **D3D9 hook recovery and build verification:** bounded hook restoration now selects slots in table order. Explicit graphics enum defaults in test fixtures and encoder texture export, pointer conversions and test arithmetic clear the Windows verification regressions.
 
 - **Overlay colors now mean something:** values stay neutral until they need attention. Load turns amber at 85%, memory amber at 90% and red at 97% of its total, and recording shows as white text on a filled red chip that reads on any scene. A changing digit count no longer moves other values or resizes the panel, and a sensor dropping out reads `--` in place.
+
 - **Sharper, steadier overlay text:** numbers no longer twitch sideways as their digits change, whatever the font, and the overlay now uses Bahnschrift SemiBold when it is available, which needs less row height for the same digit size. A font that is not installed is now really detected, so the fallback to Segoe UI and Arial works.
+
 - **Overlay stays readable on bright scenes:** the default panel opacity rose from 50% to 72%. At 50% over a white scene the panel turned mid-grey, where red REC text all but vanished. An existing `config.ini` keeps its own `bg_alpha` until you change it.
 
 - **Graphics API translation reporting in the overlay:** when games run through 3D API translation layers or wrappers, the overlay now reports the complete translation chain ending in the underlying graphics driver rather than an ambiguous wrapper label. This clarifies the active presentation API and intermediate steps, reporting pipelines such as `DX9 -> Vk (DXVK)`, `DX12 -> Vk (VKD3D-Proton)`, `DX9 -> DX12 (DXUP)`, `DX9 -> DX11 -> DX12 (DXUP)`, and `DX11 -> DX12 (DXUP)`.
@@ -29,6 +39,7 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Resilient recording output with local write-ahead spooling and automatic network-share repair:** local video recordings now write through `ResilientOutputSink`, which writes directly to the staging file while destination storage is healthy and transparently fails over to an append-only local spool (`%LOCALAPPDATA%\CaptureEngine\spool`) if a network share or drive stalls and drops the open file handle. Queued packets, encoder flush packets, and container trailer seek-back patches (MKV Cues, SeekHead, and segment duration; MP4 `moov`) are preserved in the local spool and replayed onto the destination file as soon as the target path is reachable again—either mid-recording, during finalization, or by `RecoverInterruptedRecording` once an offline share reconnects.
 
+
 ### Fixed
 
 - **Graphics runtime detection and trace startup:** translation labels follow late module and device changes. Streamline ignores module-query answers that name an unrelated image, and DLSS logs identify mapped copies. The window heartbeat keeps the original ETW open error through cleanup.
@@ -40,10 +51,13 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 - **AAC retries and interrupted output:** a rejected AAC quantization pass restores the encoder's rate-control history. Reconnecting to output storage keeps the spool writer open until replay succeeds. Recovery retains corrupt spools and salvages a partial final record only after a crash.
 
 - **Stopping or restarting an active recording:** media workers and the encoder now hand off one shared-state snapshot, so a finishing session cannot leave late updates in the next session. D3D9 shared-memory uploads use the dimensions and pitch of the actual queued pixel slot.
+
 - **Vulkan zero-copy capture after resize or restart:** offers identify the adapter that allocated the textures. The Vulkan producer owns the timeline fence and commits the imported pool after synchronization is ready. An incompatible import continues on the existing interop route.
 
 - **Overlay layout and fonts:** the starting-recording blink keeps its row and panel size. Strip uses wrapped vertical rows when a cell exceeds the viewport, and strict font selection rejects substitutions even when a permissive lookup previously cached them.
+
 - **D3D9 overlay rendering:** the overlay draws with normal stream frequency and restores the application's instancing and vertex input state afterwards.
+
 - **Unicode recording filenames and AV1 repeats:** long profile names keep complete characters at the filename limit, and AV1 repeats no longer inherit overlay metadata from an earlier encoder submission.
 
 - **Present stall and pacing diagnostics:** concurrent presenter threads keep their own stack-sample identity, and restarting a measurement uses one transition sample. Forwarded Present1 and guarded Steam calls include timing, and held frame rows retain source metrics and emit their pacing trace once.
@@ -135,10 +149,15 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 - **XeFG enabled while a menu sends no frame IDs:** the overlay now recognizes that no frames are being generated even when no application frame follows a generation toggle, and restores XeFG status as soon as frame IDs resume. Cadence resets and status publication are serialized between the game and presenter threads so an older window cannot overwrite a newer verdict.
 
 - **Minimized D3D12 games that present with Present1:** CaptureEngine now recognizes when such a game cannot present, on the same path Present already used, and pauses its work on the back buffer until the window returns.
+
 - **Streamline games with the Steam overlay:** the same recognition now works in these games without frame generation, and CaptureEngine also notices a lost device from their `Present` results, with or without frame generation, including DLSS FG after a switch from FSR FG. That route now also writes the performance CSV, which had no rows for as long as DLSS FG ran after FSR FG, and no longer repeats a memory check on every frame.
+
 - **Performance CSV with XeFG:** rows now show the `Present` call, the time around it and the limiter wait, which were always 0.
+
 - **Performance CSV with DLSS FG:** rows now include the overlay's cost, which they showed as 0 while it was drawn.
+
 - **Debug logs:** a slow overlay submit now logs itself, and one right after a frame generation switch or a focus change also logs what the thread was waiting in.
+
 - **Switching to DLSS FG:** the first frames after the switch now appear in the performance CSV, and CaptureEngine also notices a lost device on them, as on the frames that follow.
 
 - **XeFG status in the overlay:** after DLSS FG or FSR FG, the overlay now shows XeFG as soon as it turns on instead of showing frame generation as off for 300 frames, it no longer shows a false 4x for a moment after that, a hitch can no longer show a higher factor than the game set (such as 3x for a second instead of 2x), and it shows frame generation as off while XeFG generates nothing, as in a game menu. XeFG's own GPU queue also no longer reads as FSR FG: the overlay could show "FSR FG 2x" for one frame when XeFG started, and that status could stay on after the game left XeFG.

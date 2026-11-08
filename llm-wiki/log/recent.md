@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-08 - Stable release v0.1.7160 published and attested (run 42427416394)
+
+- Dispatched via `python tools/stable_release.py dispatch --yes` after resolving preflight
+  findings (`media_main_threads_inject.cpp` uint32_t geometry slot narrowing, and `encoder_texture_export.cpp`
+  D3D_FEATURE_LEVEL enum default initialization).
+- Job run 42427416394 completed cleanly in 43m 20s; published tag `v0.1.7160` with six release
+  assets (`captureengine-0.1.7160.7z`, `captureengine-setup-0.1.7160.exe`, `testapps-0.1.7160.7z`,
+  `ffmpeg-corresponding-source-0.1.7160.7z`, `latest_manifest.json`, `latest_summary.txt`).
+- All six assets attested with GitHub SLSA v1 provenance and verified with `gh attestation verify`.
+- CHANGELOG promoted to v0.1.7160 (`manage_changelog.py --promote-release 0.1.7160`). Runner stopped cleanly.
+
 ### 2026-11-07 - Review of the day's commits: encoder import retry, smaller findings
 
 - Read ~20 of 45 commits (diffs only). `ce3357a4` removed the per-frame
