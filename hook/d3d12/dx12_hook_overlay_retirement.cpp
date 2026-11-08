@@ -136,9 +136,9 @@ void RetireOverlayGpuResources(bool synchronization, bool views) {
     if (retired.Pending()) {
         const size_t retainedCount = retired.RetainedCount();
         const size_t unprovableCount = retired.UnprovableCount();
-        static ce::log_meter::ChangeGate deferred;
+        static ce::log_meter::ChangeGate retirementLog;
         const auto verdict =
-            deferred.Observe(ce::log_meter::FieldKey(fence, value, unprovable, retainedCount, unprovableCount));
+            retirementLog.Observe(ce::log_meter::FieldKey(fence, value, unprovable, retainedCount, unprovableCount));
         if (verdict)
             HookLogImportant(
                 "[OverlayRetirement] generation=retained fence=%p value=%llu unprovable=%d retained=%zu "
