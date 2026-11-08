@@ -50,8 +50,8 @@ inline bool ContainsInsensitive(const CharT* haystack, const CharT* needle) {
 
 // Case-insensitive (ASCII) full-string equality. Locale-independent and deterministic so it
 // is safe to call under the loader lock (DLL load/unload notifications) and from unit tests.
-template <typename CharT>
-inline bool EqualsInsensitive(const CharT* a, const CharT* b) {
+template <typename CharA, typename CharB>
+inline bool EqualsInsensitive(const CharA* a, const CharB* b) {
     if (!a || !b) {
         return false;
     }
@@ -62,7 +62,7 @@ inline bool EqualsInsensitive(const CharT* a, const CharT* b) {
         ++a;
         ++b;
     }
-    return *a == *b;  // both reached the terminator
+    return !*a && !*b;  // both reached the terminator
 }
 
 // Returns the base-name portion of a module path/name (after the last '\\' or '/'). Never
@@ -306,19 +306,75 @@ inline bool IsFrameGenerationRuntimeModulePath(const CharT* path) {
            IsXeSSUpscalerModulePath(baseName) || IsFFXFrameGenerationModulePath(baseName);
 }
 
+template <typename CharT>
+inline bool IsUbisoftOverlayCandidateBaseName(const CharT* baseName) {
+    if (!baseName || !*baseName) {
+        return false;
+    }
+    return detail::EqualsInsensitive(baseName, "overlay64.dll") ||
+           detail::EqualsInsensitive(baseName, "overlay.dll");
+}
+
+template <typename CharT>
+inline bool HasUbisoftLauncherPathSegment(const CharT* path) {
+    if (!path || !*path) {
+        return false;
+    }
+    static constexpr const char kSegment[] = "Ubisoft Game Launcher";
+    constexpr size_t kSegmentLen = sizeof(kSegment) - 1;
+
+    size_t len = 0;
+    while (path[len]) {
+        ++len;
+    }
+    if (len < kSegmentLen) {
+        return false;
+    }
+
+    for (size_t i = 0; i + kSegmentLen <= len; ++i) {
+        if (i > 0 && path[i - 1] != '/' && path[i - 1] != '\\') {
+            continue;
+        }
+        if (i + kSegmentLen < len && path[i + kSegmentLen] != '/' && path[i + kSegmentLen] != '\\') {
+            continue;
+        }
+        bool match = true;
+        for (size_t j = 0; j < kSegmentLen; ++j) {
+            if (detail::ToLowerAscii(path[i + j]) != detail::ToLowerAscii(kSegment[j])) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename CharT>
+inline bool IsVerifiedUbisoftOverlayModulePath(const CharT* path) {
+    if (!path || !*path) {
+        return false;
+    }
+    const CharT* baseName = ExtractModuleBaseName(path);
+    if (!IsUbisoftOverlayCandidateBaseName(baseName)) {
+        return false;
+    }
+    return HasUbisoftLauncherPathSegment(path) || IsIdentifiedThirdPartyOverlayModulePath(path);
+}
+
 inline bool IsThirdPartyOverlayModulePath(const char* path) {
     if (IsFrameGenerationRuntimeModulePath(path)) {
         return false;
     }
-    const char* baseName = ExtractModuleBaseName(path);
-    if (detail::EqualsInsensitive(baseName, "overlay64.dll") ||
-        detail::EqualsInsensitive(baseName, "overlay.dll")) {
+    if (IsVerifiedUbisoftOverlayModulePath(path)) {
         return true;
     }
     static constexpr const char* kOverlayTokens[] = {
         "gameoverlayrenderer",   "discord_hook", "socialclub", "eosovh",    "eossdk_win64_shipping",
         "eossdk-win64-shipping", "nvspcap",      "nvoverlay",  "rtsshooks", "specialk",
-        "reshade",               "optiscaler",   "overlay64",  "uplay_overlay", "ubisoft_overlay",
+        "reshade",               "optiscaler",
     };
 
     for (const char* token : kOverlayTokens) {
@@ -333,15 +389,13 @@ inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
     if (IsFrameGenerationRuntimeModulePath(path)) {
         return false;
     }
-    const wchar_t* baseName = ExtractModuleBaseName(path);
-    if (detail::EqualsInsensitive(baseName, L"overlay64.dll") ||
-        detail::EqualsInsensitive(baseName, L"overlay.dll")) {
+    if (IsVerifiedUbisoftOverlayModulePath(path)) {
         return true;
     }
     static constexpr const wchar_t* kOverlayTokens[] = {
         L"gameoverlayrenderer",   L"discord_hook", L"socialclub", L"eosovh",    L"eossdk_win64_shipping",
         L"eossdk-win64-shipping", L"nvspcap",      L"nvoverlay",  L"rtsshooks", L"specialk",
-        L"reshade",               L"optiscaler",   L"overlay64",  L"uplay_overlay", L"ubisoft_overlay",
+        L"reshade",               L"optiscaler",
     };
 
     for (const wchar_t* token : kOverlayTokens) {

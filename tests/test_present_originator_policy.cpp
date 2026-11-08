@@ -244,4 +244,48 @@ TEST_F(PresentOriginatorPolicyTest, TheUbisoftOverlayCallStackResolvesApplicatio
     EXPECT_EQ(ClassifyOriginatorModule(frames[originator].path, false), Originator::kApplication);
 }
 
+TEST_F(PresentOriginatorPolicyTest, DirectoryWithOverlay64NameRemainsApplicationOriginator) {
+    const char* gameExe = "D:\\Games\\overlay64-test\\game.exe";
+    struct Frame {
+        const char* path;
+        bool captureEngine;
+    } frames[] = {
+        {"C:\\Program Files\\Capture Engine\\capture_hook_x64.dll", true},
+        {"C:\\WINDOWS\\SYSTEM32\\dxgi.dll", false},
+        {gameExe, false},
+    };
+
+    FrameKind kinds[3] = {};
+    for (int i = 0; i < 3; ++i) {
+        kinds[i] = ClassifyFrame(frames[i].path, frames[i].captureEngine, kSystemDirectory);
+    }
+
+    EXPECT_EQ(kinds[2], FrameKind::kOther);
+    const int originator = SelectOriginatorFrame(kinds, 3);
+    ASSERT_EQ(originator, 2);
+    EXPECT_EQ(ClassifyOriginatorModule(frames[originator].path, false), Originator::kApplication);
+}
+
+TEST_F(PresentOriginatorPolicyTest, UnrelatedOverlay64RemainsApplicationOriginator) {
+    const char* gameOverlay = "D:\\Games\\Example\\overlay64.dll";
+    struct Frame {
+        const char* path;
+        bool captureEngine;
+    } frames[] = {
+        {"C:\\Program Files\\Capture Engine\\capture_hook_x64.dll", true},
+        {"C:\\WINDOWS\\SYSTEM32\\dxgi.dll", false},
+        {gameOverlay, false},
+    };
+
+    FrameKind kinds[3] = {};
+    for (int i = 0; i < 3; ++i) {
+        kinds[i] = ClassifyFrame(frames[i].path, frames[i].captureEngine, kSystemDirectory);
+    }
+
+    EXPECT_EQ(kinds[2], FrameKind::kOther);
+    const int originator = SelectOriginatorFrame(kinds, 3);
+    ASSERT_EQ(originator, 2);
+    EXPECT_EQ(ClassifyOriginatorModule(frames[originator].path, false), Originator::kApplication);
+}
+
 }  // namespace

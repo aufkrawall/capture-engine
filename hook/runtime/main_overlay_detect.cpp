@@ -73,7 +73,14 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     // Real load notification: also record load order so a later overlay that
     // displaces another overlay's Present entry jump (e.g. RTSS after Steam)
     // can be identified as the chain owner.
-    const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(base);
+    wchar_t fullPath[MAX_PATH] = {};
+    if (data->FullDllName && data->FullDllName->Buffer && data->FullDllName->Length > 0) {
+      const size_t chars = std::min<size_t>(data->FullDllName->Length / sizeof(wchar_t), MAX_PATH - 1);
+      wcsncpy_s(fullPath, data->FullDllName->Buffer, chars);
+    }
+    const char *matched = fullPath[0]
+        ? ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(fullPath)
+        : ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
       // Loader-free bookkeeping only. A foreign overlay joining a Present entry CE has
@@ -157,7 +164,14 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     }
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
     UE5::NotifyModuleUnloaded(data->DllBase, data->SizeOfImage);
-    const char *matched = ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
+    wchar_t fullPath[MAX_PATH] = {};
+    if (data->FullDllName && data->FullDllName->Buffer && data->FullDllName->Length > 0) {
+      const size_t chars = std::min<size_t>(data->FullDllName->Length / sizeof(wchar_t), MAX_PATH - 1);
+      wcsncpy_s(fullPath, data->FullDllName->Buffer, chars);
+    }
+    const char *matched = fullPath[0]
+        ? ce::overlay_compat::NoteModuleUnloadedForOverlayCache(fullPath)
+        : ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module unloaded: %s", matched);
     }
@@ -232,7 +246,15 @@ void RefreshThirdPartyOverlayIdentityCache() {
     char path[MAX_PATH] = {};
     if (GetModuleFileNameA(retained, path, MAX_PATH)) {
       const char* baseName = ce::overlay_compat::detail::ExtractBaseName(path);
-      ce::overlay_compat::NoteModuleLoadedForOverlayCache(baseName);
+      const bool isUbisoftCandidate = ce::overlay_compat::IsUbisoftOverlayCandidateBaseName(baseName);
+      const bool isUbisoft = isUbisoftCandidate &&
+                             (ce::overlay_compat::HasUbisoftLauncherPathSegment(path) ||
+                              ModuleVersionStringContains(retained, "Ubisoft"));
+      if (isUbisoft) {
+        ce::overlay_compat::NoteModuleLoadedForOverlayCache(path);
+      } else if (!isUbisoftCandidate) {
+        ce::overlay_compat::NoteModuleLoadedForOverlayCache(path);
+      }
       const bool proxyCandidate = ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName(baseName);
       const bool isReshade = GetProcAddress(retained, "ReShadeVersion") != nullptr ||
                              GetProcAddress(retained, "ReShadeRegisterAddon") != nullptr ||
@@ -242,7 +264,7 @@ void RefreshThirdPartyOverlayIdentityCache() {
                               GetProcAddress(retained, "SK_Inject_GetRecord") != nullptr ||
                               (proxyCandidate && ModuleVersionStringContains(retained, "Special K"));
       const bool isOptiScaler = proxyCandidate && ModuleVersionStringContains(retained, "OptiScaler");
-      if (isReshade || isSpecialK || isOptiScaler) {
+      if (isReshade || isSpecialK || isOptiScaler || isUbisoft) {
         if (identifiedPathCount < ce::overlay_compat::kIdentifiedOverlayPathSlotCount) {
           auto& identified = identifiedPaths[identifiedPathCount++];
           strncpy_s(identified.narrow, _countof(identified.narrow), path, _TRUNCATE);
@@ -358,7 +380,16 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // d3d11.dll churn during the Alt+Tab mode switch) must NOT touch the detection state, so the
   // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
   // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
-  ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);
+  const char* overlayTarget = moduleNameOrPath;
+  char fullModulePath[MAX_PATH] = {};
+  if (module && moduleNameOrPath &&
+      ce::overlay_compat::IsUbisoftOverlayCandidateBaseName(
+          ce::overlay_compat::detail::ExtractBaseName(moduleNameOrPath))) {
+    if (GetModuleFileNameA(module, fullModulePath, MAX_PATH) > 0) {
+      overlayTarget = fullModulePath;
+    }
+  }
+  ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(overlayTarget);
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);

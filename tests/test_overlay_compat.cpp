@@ -68,25 +68,78 @@ TEST_F(OverlayModuleDetectionTest, MatcherAcceptsKnownOverlayModulesCaseInsensit
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("Overlay.Dll"), nullptr);
 }
 
-TEST_F(OverlayModuleDetectionTest, UbisoftOverlayPathsAreRecognized) {
+TEST_F(OverlayModuleDetectionTest, UbisoftOverlayPathsRequireCorroboratingEvidence) {
+    // Verified positive paths (narrow and wide, including custom drive roots):
     EXPECT_TRUE(IsThirdPartyOverlayModulePath(
         "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll"));
     EXPECT_TRUE(IsThirdPartyOverlayModulePath(
         "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay.dll"));
     EXPECT_TRUE(IsThirdPartyOverlayModulePath("D:\\Ubisoft Game Launcher\\overlay64.dll"));
-    EXPECT_TRUE(IsThirdPartyOverlayModulePath("overlay64.dll"));
-    EXPECT_TRUE(IsThirdPartyOverlayModulePath("overlay.dll"));
-
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("E:\\Games\\Ubisoft Game Launcher\\overlay.dll"));
     EXPECT_TRUE(IsThirdPartyOverlayModulePath(
         L"C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll"));
     EXPECT_TRUE(IsThirdPartyOverlayModulePath(
-        L"C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay.dll"));
+        L"D:\\Ubisoft Game Launcher\\overlay.dll"));
+
+    // Explicit negative: D:\Games\overlay64-test\game.exe
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("D:\\Games\\overlay64-test\\game.exe"));
+
+    // Explicit negative: D:\Games\Example\overlay.dll and overlay64.dll remain ordinary game modules
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("D:\\Games\\Example\\overlay.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("D:\\Games\\Example\\overlay64.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(L"D:\\Games\\Example\\overlay.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(L"D:\\Games\\Example\\overlay64.dll"));
+
+    // Explicit negative: bare overlay.dll or overlay64.dll has no path evidence and is not an overlay
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("overlay64.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("overlay.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(L"overlay64.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(L"overlay.dll"));
 
     // Aux/Launcher DLLs are not overlays
     EXPECT_FALSE(IsThirdPartyOverlayModulePath(
         "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\uplay_aux_r164.dll"));
     EXPECT_FALSE(IsThirdPartyOverlayModulePath(
         "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\uplay_r264.dll"));
+}
+
+TEST_F(OverlayModuleDetectionTest, BareAndUnrelatedUbisoftCandidatesCannotSetPresenceOrChangeLoadOrder) {
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+
+    // Bare names cannot set presence:
+    EXPECT_EQ(NoteModuleLoadedForOverlayCache("overlay64.dll"), nullptr);
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    EXPECT_EQ(NoteModuleLoadedForOverlayCache("overlay.dll"), nullptr);
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+
+    // Bare names cannot change load order:
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification("overlay64.dll"), nullptr);
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification("overlay.dll"), nullptr);
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+
+    // Unrelated game-local candidate paths cannot set presence or change load order:
+    EXPECT_EQ(NoteModuleLoadedForOverlayCache("D:\\Games\\Example\\overlay64.dll"), nullptr);
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification("D:\\Games\\Example\\overlay.dll"), nullptr);
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+
+    // Verified Ubisoft load sets presence and updates load order:
+    const char* verifiedUbisoft = "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay.dll";
+    EXPECT_STREQ(NoteModuleLoadedForOverlayCacheFromNotification(verifiedUbisoft), "overlay.dll");
+    EXPECT_STREQ(GetLoadedThirdPartyOverlayModuleName(), "overlay.dll");
+    EXPECT_STREQ(GetLastLoadedTrackedOverlayModuleName(), "overlay.dll");
+
+    // Unrelated same-basename unload leaves verified Ubisoft overlay tracked:
+    EXPECT_EQ(NoteModuleUnloadedForOverlayCache("D:\\Games\\Example\\overlay.dll"), nullptr);
+    EXPECT_STREQ(GetLoadedThirdPartyOverlayModuleName(), "overlay.dll");
+    EXPECT_EQ(NoteModuleUnloadedForOverlayCache("overlay.dll"), nullptr);
+    EXPECT_STREQ(GetLoadedThirdPartyOverlayModuleName(), "overlay.dll");
+
+    // Verified unload clears tracking:
+    EXPECT_STREQ(NoteModuleUnloadedForOverlayCache(verifiedUbisoft), "overlay.dll");
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
 }
 
 TEST_F(OverlayModuleDetectionTest, IdentifiedProxyPathIsRecognizedWithoutMatchingItsGenericFilename) {
@@ -465,6 +518,48 @@ TEST_F(OverlayModuleDetectionTest, UnresolvableChainOwnerFollowsLoadOrderEvidenc
     EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(nullptr, "RTSSHooks64.dll"));
     EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(nullptr, nullptr));
     EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence("RTSSHooks64.dll", nullptr));
+}
+
+TEST_F(OverlayModuleDetectionTest, SteamFallbackWithUbisoftAndRtssLoadOrderEvidence) {
+    EXPECT_EQ(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+
+    // Steam alone:
+    NoteModuleLoadedForOverlayCacheFromNotification("C:\\Steam\\gameoverlayrenderer64.dll");
+    const char* steamName = GetLastLoadedTrackedOverlayModuleName();
+    ASSERT_NE(steamName, nullptr);
+    EXPECT_TRUE(IsSteamName(steamName));
+    EXPECT_TRUE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+
+    // Steam followed by RTSS:
+    NoteModuleLoadedForOverlayCacheFromNotification("C:\\Program Files\\RTSS\\RTSSHooks64.dll");
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+
+    // Unrelated overlay64.dll load leaves existing ownership evidence intact (still RTSS):
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification("D:\\Games\\Example\\overlay64.dll"), nullptr);
+    EXPECT_NE(std::strstr(GetLastLoadedTrackedOverlayModuleName(), "RTSSHooks"), nullptr);
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+
+    // Verified Ubisoft module load:
+    const char* ubisoftVerified = "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll";
+    NoteModuleLoadedForOverlayCacheFromNotification(ubisoftVerified);
+    ASSERT_NE(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+    EXPECT_STREQ(GetLastLoadedTrackedOverlayModuleName(), "overlay64.dll");
+    // Assert that the fallback remains non-Steam after both foreign loads:
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+
+    // Reset and test Steam followed directly by verified Ubisoft:
+    ResetThirdPartyOverlayModuleCacheForTesting();
+    NoteModuleLoadedForOverlayCacheFromNotification("C:\\Steam\\gameoverlayrenderer64.dll");
+    EXPECT_TRUE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
+    NoteModuleLoadedForOverlayCacheFromNotification(ubisoftVerified);
+    EXPECT_STREQ(GetLastLoadedTrackedOverlayModuleName(), "overlay64.dll");
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(
+        GetLastLoadedTrackedOverlayModuleName(), GetLoadedThirdPartyOverlayModuleName()));
 }
 
 // sl.interposer is tracked for a loader-free SL-loaded check (replaces a per-Present
