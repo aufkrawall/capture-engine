@@ -57,11 +57,36 @@ TEST_F(OverlayModuleDetectionTest, MatcherAcceptsKnownOverlayModulesCaseInsensit
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("ReShade64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("SpecialK64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("OptiScaler.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("overlay64.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("overlay.dll"), nullptr);
 
     // Case-insensitive.
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("SocialClub.DLL"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("GAMEOVERLAYRENDERER64.DLL"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("rtsshooks64.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("OVERLAY64.DLL"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("Overlay.Dll"), nullptr);
+}
+
+TEST_F(OverlayModuleDetectionTest, UbisoftOverlayPathsAreRecognized) {
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(
+        "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(
+        "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay.dll"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("D:\\Ubisoft Game Launcher\\overlay64.dll"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("overlay64.dll"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("overlay.dll"));
+
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(
+        L"C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(
+        L"C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay.dll"));
+
+    // Aux/Launcher DLLs are not overlays
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(
+        "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\uplay_aux_r164.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(
+        "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\uplay_r264.dll"));
 }
 
 TEST_F(OverlayModuleDetectionTest, IdentifiedProxyPathIsRecognizedWithoutMatchingItsGenericFilename) {

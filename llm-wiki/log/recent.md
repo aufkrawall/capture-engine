@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-11-08 - Ubisoft Connect / Uplay overlay coexistence and Present originator traversal
+
+- **Root cause:** In games running with Ubisoft Connect / Uplay overlay active (*Avatar: Frontiers of Pandora*, session `20261108_133912`), Ubisoft's `overlay64.dll` (and 32-bit `overlay.dll`) hooked DXGI `Present`. In `WalkPresentOriginator`, `overlay64.dll` was not in `kOverlayTokens` or `kTrackedOverlayModules`, so `ClassifyFrame` returned `FrameKind::kOther` and `ClassifyOriginatorModule` classified it as `Originator::kApplication`. This prematurely halted the stack walk at frame 0, never reaching `sl.dlss_g.dll` / `sl.interposer.dll`. With `ctx.callerFromStreamlineModule` false, `DetourPresent` never invoked `g_PostSLOverlayRenderCallback`, while `ProcessFrameExternal` skipped pre-SL rendering because `g_PostSLLifecycle.RouteConfirmed()` was true. As a result, the overlay was entirely suppressed on both draw paths.
+- **Fix:** Added `overlay64.dll` and `overlay.dll` to `kTrackedOverlayModules` and `IsThirdPartyOverlayModulePath`. `WalkPresentOriginator` now correctly classifies Ubisoft overlay frames as `FrameKind::kThirdPartyOverlay`, skips them, and resolves the true originator (`sl.dlss_g.dll` -> `Originator::kStreamline`). PostSL draws normally and CE composites below the foreign Present chain.
+- **Deep module decomposition:** Extracted code address and stack inspection functions from `hook/overlay/overlay_compat_detail/module_table.h` into `runtime_module_inspect.h`, reducing `module_table.h` from 820 lines down to ~600 lines (comfortably below the 800-line ceiling).
+
 ### 2026-11-08 - Stable release v0.1.7160 published and attested (run 42427416394)
 
 - Dispatched via `python tools/stable_release.py dispatch --yes` after resolving preflight

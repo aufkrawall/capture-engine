@@ -155,4 +155,93 @@ TEST_F(PresentOriginatorPolicyTest, XeFGIsTrackedForLoaderFreePresenceButIsNoOve
     EXPECT_FALSE(kTrackedOverlayModules[index].startupBlockingRender);
 }
 
+TEST_F(PresentOriginatorPolicyTest, TheUbisoftOverlayCallStackResolvesStreamlineOriginator) {
+    const char* ubisoftOverlay = "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll";
+    const char* slDlssG = "C:\\Users\\User\\Programme\\npi\\sl\\sl.dlss_g.dll";
+    const char* gameExe = "D:\\AFOP\\afop.exe";
+
+    struct Frame {
+        const char* path;
+        bool captureEngine;
+    } frames[] = {
+        {"C:\\Program Files\\Capture Engine\\capture_hook_x64.dll", true},
+        {"C:\\WINDOWS\\SYSTEM32\\dxgi.dll", false},
+        {ubisoftOverlay, false},
+        {slDlssG, false},
+        {gameExe, false},
+    };
+
+    FrameKind kinds[5] = {};
+    for (int i = 0; i < 5; ++i) {
+        kinds[i] = ClassifyFrame(frames[i].path, frames[i].captureEngine, kSystemDirectory);
+    }
+
+    EXPECT_EQ(kinds[0], FrameKind::kCaptureEngine);
+    EXPECT_EQ(kinds[1], FrameKind::kGraphicsDispatch);
+    EXPECT_EQ(kinds[2], FrameKind::kThirdPartyOverlay);
+    EXPECT_EQ(kinds[3], FrameKind::kOther);
+    EXPECT_EQ(kinds[4], FrameKind::kOther);
+
+    const int originator = SelectOriginatorFrame(kinds, 5);
+    ASSERT_EQ(originator, 3);
+    EXPECT_EQ(ClassifyOriginatorModule(frames[originator].path, false), Originator::kStreamline);
+}
+
+TEST_F(PresentOriginatorPolicyTest, BothSteamAndUbisoftOverlaysAreSkippedAsThirdPartyOverlays) {
+    const char* ubisoftOverlay = "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll";
+    const char* steamOverlay = "C:\\Program Files (x86)\\Steam\\gameoverlayrenderer64.dll";
+    const char* slInterposer = "C:\\npi\\sl\\sl.interposer.dll";
+    const char* gameExe = "D:\\AFOP\\afop.exe";
+
+    struct Frame {
+        const char* path;
+        bool captureEngine;
+    } frames[] = {
+        {"C:\\Program Files\\Capture Engine\\capture_hook_x64.dll", true},
+        {"C:\\WINDOWS\\SYSTEM32\\dxgi.dll", false},
+        {ubisoftOverlay, false},
+        {steamOverlay, false},
+        {slInterposer, false},
+        {gameExe, false},
+    };
+
+    FrameKind kinds[6] = {};
+    for (int i = 0; i < 6; ++i) {
+        kinds[i] = ClassifyFrame(frames[i].path, frames[i].captureEngine, kSystemDirectory);
+    }
+
+    EXPECT_EQ(kinds[2], FrameKind::kThirdPartyOverlay);
+    EXPECT_EQ(kinds[3], FrameKind::kThirdPartyOverlay);
+
+    const int originator = SelectOriginatorFrame(kinds, 6);
+    ASSERT_EQ(originator, 4);
+    EXPECT_EQ(ClassifyOriginatorModule(frames[originator].path, false), Originator::kStreamline);
+}
+
+TEST_F(PresentOriginatorPolicyTest, TheUbisoftOverlayCallStackResolvesApplicationOriginatorWithoutFG) {
+    const char* ubisoftOverlay = "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\overlay64.dll";
+    const char* gameExe = "D:\\AFOP\\afop.exe";
+
+    struct Frame {
+        const char* path;
+        bool captureEngine;
+    } frames[] = {
+        {"C:\\Program Files\\Capture Engine\\capture_hook_x64.dll", true},
+        {"C:\\WINDOWS\\SYSTEM32\\dxgi.dll", false},
+        {ubisoftOverlay, false},
+        {gameExe, false},
+    };
+
+    FrameKind kinds[4] = {};
+    for (int i = 0; i < 4; ++i) {
+        kinds[i] = ClassifyFrame(frames[i].path, frames[i].captureEngine, kSystemDirectory);
+    }
+
+    EXPECT_EQ(kinds[2], FrameKind::kThirdPartyOverlay);
+
+    const int originator = SelectOriginatorFrame(kinds, 4);
+    ASSERT_EQ(originator, 3);
+    EXPECT_EQ(ClassifyOriginatorModule(frames[originator].path, false), Originator::kApplication);
+}
+
 }  // namespace

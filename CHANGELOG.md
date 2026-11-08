@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7160).
 
+### Fixed
+
+- **Inject overlay visibility with Ubisoft Connect / Uplay overlay:** games running with the Ubisoft Connect / Uplay overlay active (such as *Avatar: Frontiers of Pandora*) no longer cause the inject overlay to disappear. Capture Engine now tracks Ubisoft's `overlay64.dll` and `overlay.dll` as foreign overlay modules, properly traversing the Present call stack past the overlay layer down to frame generation runtimes (such as Streamline and DLSS Frame Generation) and compositing below foreign Present entry chains.
+
 ## v0.1.7160
 
 Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7159).
