@@ -166,7 +166,12 @@ gameQueue = nullptr;
             const auto queueSource =
                 ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(dx12_hook_g_OriginalGameQueue != nullptr);
             if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
-                gameQueue = dx12_hook_g_OriginalGameQueue;
+                if (dx12_hook_g_FGRuntimeOwnsSwapchain && dx12_hook_g_SwapchainQueue &&
+                    dx12_hook_g_SwapchainQueue != dx12_hook_g_OriginalGameQueue) {
+                    gameQueue = dx12_hook_g_SwapchainQueue;
+                } else {
+                    gameQueue = dx12_hook_g_OriginalGameQueue;
+                }
                 const bool explicitNativeFSROffPending =
                     dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
                 static std::atomic<int> s_postFSRInactiveOrigRouteLogCount{0};

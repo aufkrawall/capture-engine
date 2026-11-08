@@ -55,7 +55,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 slTurnedOff, g_FGCompat.IsFSRFGApiActive(),
                 dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                 HookHasRuntimeOwnedNativeFGPresentPath(), dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
-                FAILED(transitionDeviceHr));
+                FAILED(transitionDeviceHr),
+                dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire));
         const bool keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn =
             ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
                 slTurnedOff, authoritativeDLSSOffNormalReturnReinitializedThisPresent,

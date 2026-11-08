@@ -403,8 +403,12 @@ inline bool ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(bool runt
 }
 
 inline bool ShouldEvaluateFFXPresentCallbackFallback(bool ffxPresentCallbackStalled,
-                                                     bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
-    return ffxPresentCallbackStalled || explicitNativeFSROffPendingRuntimeOwnedTeardown;
+                                                     bool explicitNativeFSROffPendingRuntimeOwnedTeardown,
+                                                     bool ffxPresentCallbackBridgeExpected = true) {
+    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && !ffxPresentCallbackBridgeExpected) {
+        return true;
+    }
+    return ffxPresentCallbackStalled;
 }
 
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(

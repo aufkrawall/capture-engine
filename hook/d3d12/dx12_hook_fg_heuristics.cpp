@@ -198,8 +198,10 @@ dx12_hook_g_FFXPresentCallbackFirstStallEverDetectedMs.compare_exchange_strong(e
 bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bool ffxPresentCallbackStalled) {
 const bool explicitNativeFSROffPending =
     dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
+const bool bridgeExpected =
+    dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire);
 const bool evaluateFFXCallbackFallback = ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(
-    ffxPresentCallbackStalled, explicitNativeFSROffPending);
+    ffxPresentCallbackStalled, explicitNativeFSROffPending, bridgeExpected);
 UpdateFFXPresentCallbackFirstStallDetection(ffxPresentCallbackStalled);
 const bool progressResolvedOfficialFFXPresentPath =
     dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
