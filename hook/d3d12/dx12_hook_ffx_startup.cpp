@@ -329,6 +329,11 @@ if (!ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOffici
 const char* source = context && context[0] ? context : "protected official FFX startup";
 SetPostSLCallbackInstalled(false, "DX12: protected official FFX startup");
 const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
+// FFX owns the departing Streamline edge. Do not replay it when the
+// normal backend next runs, which can be the first present after FSR turns off.
+if (dx12_hook_g_OuterTrackedSLFGRunning.exchange(false, std::memory_order_acq_rel)) {
+    dx12_hook_g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
+}
 g_FGCompat.SetStreamlineFGSignal(false);
 g_FGCompat.SetDLSSFGActive(false);
 g_PostSLLifecycle.SuspendRoute();
@@ -429,6 +434,11 @@ if (capturedQueue) {
 }
 
 const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
+// FFX owns the departing Streamline edge. Do not replay it when the
+// normal backend next runs, which can be the first present after FSR turns off.
+if (dx12_hook_g_OuterTrackedSLFGRunning.exchange(false, std::memory_order_acq_rel)) {
+    dx12_hook_g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
+}
 g_FGCompat.SetStreamlineFGSignal(false);
 g_FGCompat.SetDLSSFGActive(false);
 g_PostSLLifecycle.SuspendRoute();

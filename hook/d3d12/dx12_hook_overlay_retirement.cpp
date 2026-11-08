@@ -5,18 +5,85 @@
 namespace {
 ce::dx12::OverlayResourceRetirement<IUnknown, ID3D12Fence> retired;
 std::atomic<bool> pending{false};
+
+// The swapchain can release its submit queue before the next Present or
+// retirement. Keep the exact submitting queue alive with the pending value.
+struct DeferredOverlaySignal {
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+    UINT64 value = 0;
+    int allocatorIndex = -1;
+};
+DeferredOverlaySignal deferred;
+}
+
+void StageDeferredOverlaySignal(ID3D12CommandQueue* queue, UINT64 value, int allocatorIndex) {
+    // The draw transaction owns the overlay mutex.
+    deferred = {Microsoft::WRL::ComPtr<ID3D12CommandQueue>(queue), value, allocatorIndex};
+}
+
+void FlushDeferredOverlaySignalBeforeDraw() {
+    // The draw transaction owns the overlay mutex. A runtime can present
+    // without taking CE's post-Present flush, so resolve that work before
+    // selecting an allocator or computing a new fence value.
+    if (deferred.value) {
+        DX12_FlushDeferredSignalWithInfo(nullptr);
+    }
+}
+
+extern "C" __declspec(dllexport) bool DX12_FlushDeferredSignalWithInfo(
+    ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* outInfo) {
+    std::lock_guard<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex);
+    auto& state = dx12_hook_g_State;
+    if (outInfo) {
+        *outInfo = {};
+        outInfo->hadDeferredSignal = deferred.value != 0;
+        outInfo->hasFence = state.fence != nullptr;
+        outInfo->hasFenceEvent = state.fenceEvent != nullptr;
+        outInfo->fence = state.fence;
+        outInfo->fenceEvent = state.fenceEvent;
+        outInfo->fenceValue = deferred.value;
+        outInfo->completedValue = state.fence ? state.fence->GetCompletedValue() : 0;
+    }
+    if (!deferred.value) {
+        return false;
+    }
+
+    auto signal = std::exchange(deferred, {});
+    Microsoft::WRL::ComPtr<ID3D12Fence> pinnedFence = state.fence;
+    const HRESULT hr = signal.queue && pinnedFence ? signal.queue->Signal(pinnedFence.Get(), signal.value) : E_POINTER;
+    if (outInfo) {
+        outInfo->queue = signal.queue.Get();
+        outInfo->signalHr = hr;
+        outInfo->signalSucceeded = SUCCEEDED(hr);
+    }
+    if (SUCCEEDED(hr)) {
+        if (ce::dx12_overlay_policy::ShouldCommitDeferredOverlayFenceSignalValue(true, signal.value,
+                                                                                 state.currentFenceValue)) {
+            state.currentFenceValue = signal.value;
+        }
+        if (signal.allocatorIndex >= 0 && static_cast<size_t>(signal.allocatorIndex) < state.fenceValues.size()) {
+            state.fenceValues[signal.allocatorIndex] = signal.value;
+        }
+        if (outInfo) {
+            outInfo->completedValue = pinnedFence->GetCompletedValue();
+        }
+    } else {
+        state.gpuCompletionUnprovable = true;
+    }
+    static std::atomic<uint32_t> flushCount{0};
+    static ce::log_meter::ChangeGate failureGate;
+    const uint32_t call = flushCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ce::log_meter::ShouldLogCadence(call, 12, 2048) ||
+        (FAILED(hr) && failureGate.Observe(ce::log_meter::FieldKey(hr, signal.queue.Get())))) {
+        HookLogImportant("DX12: Flushed deferred overlay fence signal (fence=%p value=%llu queue=%p hr=0x%08X)",
+                         pinnedFence.Get(), static_cast<unsigned long long>(signal.value), signal.queue.Get(),
+                         static_cast<unsigned>(hr));
+    }
+    return SUCCEEDED(hr);
 }
 
 void PrepareOverlayGpuRetirement() {
-    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
-    const UINT64 value = dx12_hook_g_deferredSignalValue.exchange(0, std::memory_order_acq_rel);
-    auto* queue = dx12_hook_g_deferredSignalQueue.exchange(nullptr, std::memory_order_acq_rel);
-    dx12_hook_g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
-    if (!value) return;
-    auto& state = dx12_hook_g_State;
-    if (queue && state.fence && SUCCEEDED(queue->Signal(state.fence, value)))
-        state.currentFenceValue = std::max(state.currentFenceValue, value);
-    else state.gpuCompletionUnprovable = true;
+    DX12_FlushDeferredSignalWithInfo(nullptr);
 }
 
 void CollectRetiredOverlayGpuResources() {

@@ -328,10 +328,6 @@ QueryPerformanceFrequency(&freq);
 ce::hook_clock::QueryCounter(&now);
 dx12_hook_g_OverlayCooldownUntilQpc.store(now.QuadPart + freq.QuadPart * dx12_hook_kTransitionCooldownMs / 1000,
                                 std::memory_order_release);
-// Discard any pending deferred Signal — the queue may change during FG switch
-dx12_hook_g_deferredSignalValue.store(0, std::memory_order_release);
-dx12_hook_g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
-dx12_hook_g_deferredSignalQueue.store(nullptr, std::memory_order_release);
 HookLogImportant("DX12: Overlay transition cooldown started (%lldms)", (long long)dx12_hook_kTransitionCooldownMs);
 }
 

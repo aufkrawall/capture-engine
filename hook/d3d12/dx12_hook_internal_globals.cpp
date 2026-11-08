@@ -294,11 +294,8 @@ std::mutex dx12_hook_g_FFXPresentCallbackBridgeMutex;
 
 std::unordered_map<void*, FFXPresentCallbackBridgeState> dx12_hook_g_FFXPresentCallbackBridges;
 
-std::atomic<UINT64> dx12_hook_g_deferredSignalValue{0};
 
-std::atomic<int> dx12_hook_g_deferredSignalAllocIdx{-1};
 
-std::atomic<ID3D12CommandQueue*> dx12_hook_g_deferredSignalQueue{nullptr};
 
 std::atomic<UINT64> dx12_hook_g_FocusLossPendingOverlayFenceValue{0};
 

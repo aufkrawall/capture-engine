@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-08 - Deferred D3D12 overlay fence ownership during FSR handoff
+
+- The Talos-style WARP flow faulted in `PrepareOverlayGpuRetirement` at the deferred queue's virtual `Signal` call. The symbolized x64 minidump showed `CleanupRTVs` running during the fresh Streamline swapchain handoff after the FSR queue had been released.
+- The overlay retirement unit owns the deferred submit queue and consumes the value and allocator index under the overlay mutex. Retirement and post-Present use the same flush. Before another draw selects an allocator, it flushes any pending request from a runtime output that bypassed the post-Present hook.
+- The callback FSR recording flow also showed a stale outer Streamline OFF observer discarding an FSR fallback backend immediately after initialization. Protected and authoritative FFX takeover clear the outer Streamline edge along with the direct signal.
+
+- The FSR OFF regressions also showed a completed callback draw followed by a normal overlay draw on the queued output when its Present arrived after OFF. The callback stages the drawn resource on its presenter thread, and the next Present skips normal rendering only when its actual target matches.
+
 ### 2026-11-08 - Ubisoft overlay identity publication review
 
 - The overlay identity bank distinguishes Ubisoft metadata from generic graphics-proxy evidence. The scan holds each verified Ubisoft module through bank publication and presence registration, then releases the loader reference.

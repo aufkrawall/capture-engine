@@ -459,6 +459,8 @@ void LogOverlayCoverageSummary(const char* edge);
 // `frameAttributed`: drawn for one FG runtime frame whose outputs are judged by that frame (AMD frame generation
 // swapchain); two such draws in one present window are no double draw.
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route, bool frameAttributed = false);
+void NoteDX12FFXCallbackOverlayOutput(void* output);
+bool DX12PresentAlreadyCoveredByFFXCallback(ID3D12Resource* output, IDXGISwapChain* swapchain);
 void RequestFGDetectionHeuristicReset(ID3D12CommandQueue* authoritativeBaseline = nullptr);
 void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = false);
 bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORMAT format, const char* context);
@@ -513,6 +515,8 @@ void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain = false);
 void ClearPostSLPinnedSLWrapperQueue(const char* reason);
 void PrepareOverlayGpuRetirement();
+void StageDeferredOverlaySignal(ID3D12CommandQueue* queue, UINT64 value, int allocatorIndex);
+void FlushDeferredOverlaySignalBeforeDraw();
 void RetireOverlayGpuResources(bool synchronization, bool views);
 void CollectRetiredOverlayGpuResources();
 void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQueue* queue);

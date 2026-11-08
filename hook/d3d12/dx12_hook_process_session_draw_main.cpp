@@ -689,6 +689,7 @@ struct FrameProcessSession::DrawOperations {
 };
 
 ProcessFrameFlow FrameProcessSession::ExecuteDrawTransaction() {
+    FlushDeferredOverlaySignalBeforeDraw();
     DrawOperations operations{*this};
     return ce::dx12::ExecuteOverlayDraw(operations, dx12_hook_g_State, backBuffer);
 }

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_overlay_policy/coverage_inheritance.h"
 #include "hook/streamline/streamline_runtime_policy.h"
 
 #include "source_fragment_reader.h"
@@ -21,6 +22,19 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
 // command tracking the handoff had not populated yet (and the SL-off grace it keys on is re-seeded
 // by the same transition's late outer observer), so the overlay still stayed gone. Both gates must
 // accept the same exemption.
+TEST(Dx12FgWiring, QueuedFfxCallbackCoverageBelongsOnlyToItsNextPresentedOutput) {
+    ce::dx12_overlay_policy::FFXCallbackOutputCoverage coverage;
+    coverage.Stage(0x1000);
+    EXPECT_FALSE(coverage.Covers(0x1000));
+    coverage.BeginPresent();
+    EXPECT_TRUE(coverage.Covers(0x1000));
+    EXPECT_FALSE(coverage.Covers(0x2000));
+    coverage.EndPresent();
+    coverage.BeginPresent();
+    EXPECT_FALSE(coverage.Covers(0x1000));
+    EXPECT_FALSE(coverage.Covers(0));
+}
+
 TEST(Dx12FgWiring, FreshHandoffExemptionIsAcceptedByBothInitDeferralGates) {
     using ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit;
     using ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown;
@@ -262,21 +276,22 @@ TEST(Dx12FgWiring, DeferredFenceSignalAccountingNeverCommitsAValueTheFenceCannot
 // and commit the accounting through the failure-accounting policy — never through the raw
 // dx12_hook_g_State.fence pointer again.
 TEST(Dx12FgWiring, DeferredSignalFlushPinsTheFenceUnderTheOverlayLock) {
-    const std::string flushUnit = ReadSource("hook/d3d12/dx12_hook_streamline_fg_transition.cpp");
+    const std::string flushUnit = ReadSource("hook/d3d12/dx12_hook_overlay_retirement.cpp");
     ASSERT_FALSE(flushUnit.empty());
     const size_t flushFn = flushUnit.find("bool DX12_FlushDeferredSignalWithInfo(");
     ASSERT_NE(flushFn, std::string::npos);
-    const size_t flushEnd = flushUnit.find("void DX12_FlushDeferredSignal()", flushFn);
+    const size_t flushEnd = flushUnit.find("void PrepareOverlayGpuRetirement()", flushFn);
     ASSERT_NE(flushEnd, std::string::npos);
     const std::string flushBody = flushUnit.substr(flushFn, flushEnd - flushFn);
 
     EXPECT_NE(flushBody.find("std::lock_guard<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex);"),
               std::string::npos)
         << "the flush must serialize against InitOverlaySync's fence release/recreate";
-    EXPECT_NE(flushBody.find("pinnedFence = dx12_hook_g_State.fence;"), std::string::npos);
-    EXPECT_NE(flushBody.find("q->Signal(pinnedFence.Get(), deferredVal)"), std::string::npos);
+    EXPECT_NE(flushBody.find("pinnedFence = state.fence;"), std::string::npos);
+    EXPECT_NE(flushBody.find("auto signal = std::exchange(deferred, {});"), std::string::npos);
+    EXPECT_NE(flushBody.find("signal.queue->Signal(pinnedFence.Get(), signal.value)"), std::string::npos);
     EXPECT_NE(flushBody.find("ShouldCommitDeferredOverlayFenceSignalValue("), std::string::npos);
-    EXPECT_EQ(flushBody.find("q->Signal(dx12_hook_g_State.fence"), std::string::npos)
+    EXPECT_EQ(flushBody.find("signal.queue->Signal(state.fence"), std::string::npos)
         << "signaling the raw state pointer reintroduces the ABA/use-after-free race";
 }
 

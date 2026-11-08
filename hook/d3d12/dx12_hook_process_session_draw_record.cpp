@@ -6,6 +6,12 @@
 ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
     ID3D12Resource* bb = backBuffer.Borrow();
     cmdRecordOk = false;
+    // A callback can finish a queued FSR output before an OFF configure
+    // arrives, while the output's physical Present enters afterward.
+    if (DX12PresentAlreadyCoveredByFFXCallback(bb, pSwapChain)) {
+        NoteDX12OverlayCoverageGate("ffx-callback-output-already-drawn");
+        return ProcessFrameFlow::kSkipOverlayDraw;
+    }
     static std::atomic<int> s_firstBackBufferLogCount{0};
     if (s_firstBackBufferLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
         HookLogImportant(

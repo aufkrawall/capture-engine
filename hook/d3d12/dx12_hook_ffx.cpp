@@ -679,6 +679,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     bool overlayDrawn = false;
     if (!callbackYieldsToTopmostRoute && !probeSuppressesBridgeOverlay && RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+        NoteDX12FFXCallbackOverlayOutput(desc->outputSwapChainBuffer.resource);
         overlayDrawn = true;
     }
     // A hidden/yielded callback has no CE GPU work to breadcrumb. Keeping MARKER_OUT writes here

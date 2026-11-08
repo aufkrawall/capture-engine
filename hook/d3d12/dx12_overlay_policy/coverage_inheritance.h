@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <utility>
+
 // When a physical Present no overlay route drew on may still count as covered. Header-only for the unit tests.
 
 #include "hook/present/present_originator_policy.h"
@@ -18,5 +21,19 @@ inline bool ShouldInheritFGComposedCoverage(ce::present_originator::Originator p
     return present == Originator::kUnresolved || present == Originator::kStreamline ||
            present == Originator::kFFXFrameGeneration;
 }
+
+// The callback and physical Present run on the same presenter thread. Carry
+// the output identity across a configure edge, then expire it at that Present.
+class FFXCallbackOutputCoverage {
+public:
+    void Stage(uintptr_t output) { pendingOutput_ = output; }
+    void BeginPresent() { currentOutput_ = std::exchange(pendingOutput_, 0); }
+    void EndPresent() { currentOutput_ = 0; }
+    bool Covers(uintptr_t output) const { return output != 0 && output == currentOutput_; }
+
+private:
+    uintptr_t pendingOutput_ = 0;
+    uintptr_t currentOutput_ = 0;
+};
 
 }  // namespace ce::dx12_overlay_policy

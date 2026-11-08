@@ -1,5 +1,6 @@
 #include "fg_transition_trace.h"
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -31,11 +32,16 @@ struct PublishedFGState {
 BoundedDiagnosticHistory<TransitionRecord, 256> g_History;
 BoundedDiagnosticHistory<PublishedFGState, 2> g_PublishedState;
 
-template <typename... Args>
 void Record(const char* boundary, const char* name, uint32_t status, void* ptrA, void* ptrB,
-            const char* format, Args... args) {
+            const char* format, ...) __attribute__((format(printf, 6, 7)));
+
+void Record(const char* boundary, const char* name, uint32_t status, void* ptrA, void* ptrB,
+            const char* format, ...) {
     TransitionRecord record{ce::hook_clock::TickCount64(), boundary, name, status, ptrA, ptrB};
-    std::snprintf(record.details, sizeof(record.details), format, args...);
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(record.details, sizeof(record.details), format, args);
+    va_end(args);
     g_History.Append(record);
 }
 

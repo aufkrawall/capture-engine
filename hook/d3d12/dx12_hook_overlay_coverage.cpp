@@ -93,6 +93,7 @@ struct ExactPresentVerdict {
 };
 
 thread_local OverlayPresentScope t_overlayPresentScope;
+thread_local ce::dx12_overlay_policy::FFXCallbackOutputCoverage t_ffxCallbackOutput;
 thread_local ce::post_process_present::Scope t_postProcessScope;
 
 std::atomic<uint32_t> s_overlayRouteMaskSinceAccount{0};
@@ -364,6 +365,7 @@ void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain) {
     if (scope.depth++ > 0) {
         return;
     }
+    t_ffxCallbackOutput.BeginPresent();
     scope.swapchain = pSwapChain;
     scope.accountCalls = 0;
     scope.inheritCoverageIfNoDraw = false;
@@ -401,6 +403,7 @@ void DX12_EndOverlayPresentScope() {
     } else {
         NoteUnaccountedPhysicalPresent(scope.swapchain);
     }
+    t_ffxCallbackOutput.EndPresent();
     scope.swapchain = nullptr;
     scope.accountCalls = 0;
 }
@@ -495,6 +498,18 @@ HookLogImportant(
     used ? byOriginator : "none");
 }
 
+
+void NoteDX12FFXCallbackOverlayOutput(void* output) {
+    t_ffxCallbackOutput.Stage(reinterpret_cast<uintptr_t>(output));
+}
+
+bool DX12PresentAlreadyCoveredByFFXCallback(ID3D12Resource* output, IDXGISwapChain* swapchain) {
+    if (!t_ffxCallbackOutput.Covers(reinterpret_cast<uintptr_t>(output))) {
+        return false;
+    }
+    AccountPresentForOverlayCoverageVerdict(true, false, "FFXCallbackOutputAlreadyDrawn", swapchain);
+    return true;
+}
 
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route, bool frameAttributed) {
 static std::atomic<bool> s_lastDrawFrameAttributed{false};

@@ -646,9 +646,13 @@ void RefreshStateLocked(SessionState& state, const char* trigger, bool emitLogs)
             LogTransitionIfNeeded(previousSnapshot, previousPlan, snapshot, plan, trigger);
         }
     }
-    if (buildResult.sessionChanged || !hadPrevious || previousPlan.route != plan.route ||
-        previousPlan.transport != plan.transport || previousPlan.selectedQueueRole != plan.selectedQueueRole ||
-        previousPlan.backendMode != plan.backendMode) {
+    if (!hadPrevious || buildResult.runtimeChanged || buildResult.swapchainChanged || buildResult.queueChanged ||
+        snapshot.effectiveFGActive != previousSnapshot.effectiveFGActive ||
+        snapshot.startupPhase != previousSnapshot.startupPhase || snapshot.authority != previousSnapshot.authority ||
+        snapshot.overlayMode != previousSnapshot.overlayMode ||
+        snapshot.primaryGameQueue.ptr != previousSnapshot.primaryGameQueue.ptr ||
+        previousPlan.route != plan.route || previousPlan.transport != plan.transport ||
+        previousPlan.selectedQueueRole != plan.selectedQueueRole || previousPlan.backendMode != plan.backendMode) {
         RecordPublishedFGState(snapshot, plan);
     }
     CommitState(state, snapshot, plan);

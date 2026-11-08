@@ -543,26 +543,8 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
 
         }
 
-        // Flush any pending deferred signal immediately so GPU work from the
-        // previous frame completes before SL reconfigures.
-        UINT64 deferredVal = dx12_hook_g_deferredSignalValue.load(std::memory_order_acquire);
-        if (deferredVal != 0 && dx12_hook_g_State.fence) {
-            ID3D12CommandQueue* sigQueue = dx12_hook_g_deferredSignalQueue.load(std::memory_order_acquire);
-            if (!sigQueue)
-                sigQueue = gameQueue;
-            if (sigQueue) {
-                HRESULT hr = sigQueue->Signal(dx12_hook_g_State.fence, deferredVal);
-                if (SUCCEEDED(hr)) {
-                    int allocIdx = dx12_hook_g_deferredSignalAllocIdx.load(std::memory_order_acquire);
-                    dx12_hook_g_State.currentFenceValue = deferredVal;
-                    if (allocIdx >= 0 && allocIdx < (int)dx12_hook_g_State.fenceValues.size())
-                        dx12_hook_g_State.fenceValues[allocIdx] = deferredVal;
-                }
-            }
-            dx12_hook_g_deferredSignalValue.store(0, std::memory_order_release);
-            dx12_hook_g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
-            dx12_hook_g_deferredSignalQueue.store(nullptr, std::memory_order_release);
-        }
+        // Finish earlier overlay work on the queue that submitted it.
+        DX12_FlushDeferredSignal();
     }
 }
 skipOverlayDraw = false;

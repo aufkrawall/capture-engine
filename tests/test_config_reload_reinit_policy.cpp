@@ -121,7 +121,7 @@ TEST(ConfigReloadReinitPolicyTest, Dx12OverlayCleanupRetiresInsteadOfWaitingOnTh
     const std::string retirement = ReadSource("hook/d3d12/dx12_hook_overlay_retirement.cpp");
     const size_t prepare = retirement.find("void PrepareOverlayGpuRetirement()");
     ASSERT_NE(prepare, std::string::npos);
-    EXPECT_NE(retirement.find("queue->Signal(state.fence, value)", prepare), std::string::npos);
+    EXPECT_NE(retirement.find("DX12_FlushDeferredSignalWithInfo(nullptr)", prepare), std::string::npos);
 }
 
 // The Vulkan layer had the same shape and got it right; keep it that way so the

@@ -520,10 +520,6 @@ void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
     dx12_hook_g_State.syncInit = false;
     dx12_hook_g_State.syncDevice = nullptr;
     dx12_hook_g_State.cachedSC3 = nullptr;
-    // Discard any pending deferred Signal — fence is being released
-    dx12_hook_g_deferredSignalValue.store(0, std::memory_order_release);
-    dx12_hook_g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
-    dx12_hook_g_deferredSignalQueue.store(nullptr, std::memory_order_release);
     ResetStartupOverlayBackendActivationStage();
 
     // Clean up piggyback state

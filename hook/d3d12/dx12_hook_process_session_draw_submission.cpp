@@ -436,9 +436,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                         frameDesc.OutputWindow, currentProcessId,
                         presentContext.syncInterval, presentContext.presentFlags);
                 }
-                dx12_hook_g_deferredSignalQueue.store(eclQueue, std::memory_order_release);
-                dx12_hook_g_deferredSignalValue.store(next, std::memory_order_release);
-                dx12_hook_g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
+                StageDeferredOverlaySignal(eclQueue, next, idx);
             }
         } else if (fenceCompletion == ce::dx12_overlay_policy::OverlayFenceCompletion::kWaitOnCompletionFence) {
             // During FG on the game queue, signal a separate
@@ -507,9 +505,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
             // Game queue: defer fence Signal to next frame
             // (avoids NVIDIA driver stall between Signal and
             // Present).
-            dx12_hook_g_deferredSignalQueue.store(eclQueue, std::memory_order_release);
-            dx12_hook_g_deferredSignalValue.store(next, std::memory_order_release);
-            dx12_hook_g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
+            StageDeferredOverlaySignal(eclQueue, next, idx);
         }
     } else if (dx12_hook_s_WrappedPresentFocusLossContext.valid && !processHasForeground) {
         static std::atomic<int> s_focusImmediateNoFenceLogCount{0};
