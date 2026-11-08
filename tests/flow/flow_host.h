@@ -117,6 +117,8 @@ public:
     // Replaces the swapchain with one of `kind` on the same device and queue (an FSR swapchain's FFX
     // contexts go with it), as a game does when its frame generation setting changes runtime.
     bool UseSwapchain(SwapchainKind kind);
+    bool ReturnToNativeSwapchainThroughStreamline();
+    void AdvanceVirtualClock(int64_t microseconds) { advanceClock_(microseconds); }
 
     // ResizeBuffers to `format` at the same size, then SetColorSpace1(colorSpace), as a game does when it moves its
     // swapchain between SDR and HDR10 output at runtime.

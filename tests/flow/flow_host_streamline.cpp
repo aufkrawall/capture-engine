@@ -186,6 +186,18 @@ bool FlowGame::SetDLSSConstantOutputInterval(int64_t microseconds) {
     return true;
 }
 
+bool FlowGame::ReturnToNativeSwapchainThroughStreamline() {
+    void* function = nullptr;
+    if (!streamline_ ||
+        streamline_->getFeatureFunction(sl::kFeatureDLSS_G, "flowCreateNativeBelowRuntime", function) !=
+            sl::Result::eOk ||
+        !function)
+        return Fail("resolving flowCreateNativeBelowRuntime", E_NOINTERFACE);
+    using CreateBelowRuntime = bool (*)(bool (*)(void*), void*);
+    return reinterpret_cast<CreateBelowRuntime>(function)(
+        [](void* game) { return static_cast<FlowGame*>(game)->UseSwapchain(SwapchainKind::kNative); }, this);
+}
+
 HRESULT FlowGame::StreamlineCreateFactory(REFIID riid, void** factory) {
     return streamline_->createFactory1(riid, factory);
 }

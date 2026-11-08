@@ -324,6 +324,13 @@ uint32_t FlowCurrentMode() {
     return static_cast<uint32_t>(g_mode);
 }
 
+// Keep the runtime below an external creator on the stack while it forwards the game's native create.
+bool FlowCreateNativeBelowRuntime(bool (*createNative)(void*), void* context) {
+    const bool created = createNative(context);
+    Log(kModule, "external creator returned native swapchain success=%d", created ? 1 : 0);
+    return created;
+}
+
 // Test-host control (not a Streamline function): see g_constantOutputIntervalUs.
 void FlowSetConstantOutputInterval(int64_t microseconds) {
     g_constantOutputIntervalUs.store(microseconds, std::memory_order_relaxed);
@@ -344,6 +351,8 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&CreateProxySwapChainForHwnd);
     if (std::strcmp(name, "flowCurrentMode") == 0)
         return reinterpret_cast<void*>(&FlowCurrentMode);
+    if (std::strcmp(name, "flowCreateNativeBelowRuntime") == 0)
+        return reinterpret_cast<void*>(&FlowCreateNativeBelowRuntime);
     if (std::strcmp(name, "flowSetConstantOutputInterval") == 0)
         return reinterpret_cast<void*>(&FlowSetConstantOutputInterval);
     return nullptr;

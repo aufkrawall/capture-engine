@@ -97,4 +97,32 @@ TEST(FlowDLSS, NativeReturnRejectsDepartedEpochConfirmationAndReactivationRemain
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowDLSS, ActiveRecreationAfterNativeQueueReturnCoversTheFirstOutput) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(StreamlineGameOptions())) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.PostSLLifecycle().confirmedInEpoch) << game.LogDirectory();
+
+    for (const int64_t gapUs : {0, 300'000}) {
+        const auto previous = game.PostSLLifecycle();
+        // The intermediate game-queue swapchain never presents. The runtime stays ON throughout.
+        ASSERT_TRUE(game.ReturnToNativeSwapchainThroughStreamline()) << game.Error();
+        ASSERT_FALSE(game.PostSLLifecycle().callbacksEnabled) << game.LogDirectory();
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+        ASSERT_TRUE(game.DLSSFrameGenerationRunning());
+        ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+        game.AdvanceVirtualClock(gapUs);
+        const auto presentsBefore = game.PhysicalPresents();
+        ASSERT_TRUE(game.RenderFrame()) << game.Error();
+        EXPECT_GT(game.PhysicalPresents(), presentsBefore);
+        EXPECT_TRUE(game.PostSLLifecycle().confirmedInEpoch) << game.LogDirectory();
+        EXPECT_FALSE(game.TryConfirmPostSLEpoch(previous.epoch));
+        EXPECT_EQ(game.PublishedFG().multiplier, 2);
+        ExpectEveryPresentCoveredOnce(game);
+    }
+    ExpectNoDebugLayerErrors();
+}
+
 }  // namespace
