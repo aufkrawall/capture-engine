@@ -6,6 +6,7 @@
 #include "hook/metrics/performance_metrics.h"
 #include "hook/metrics/system_latency_frame_begin.h"
 #include "hook/present/present_callback_association.h"
+#include "hook/fg/fg_transition_trace.h"
 
 
 void* GetOrCreatePresentCallbackBridgeKey(ffxContext ffx_hook_context) {
@@ -172,6 +173,9 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
         }
     }
 
+    ce::fg_session::RecordFFXContextCreate(ffx_hook_context ? *ffx_hook_context : nullptr,
+                                           ffx_hook_desc ? GetEffectId(ffx_hook_desc->type) : 0, result,
+                                           parsedSwapChainCreate.recognized);
     return result;
 
 }
@@ -278,6 +282,8 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     bool disabledStartupArmingConfigure = false;
     bool appPresentCallbackProvided = false;
     bool alreadyBridgedPresentCallbackProvided = false;
+    void* bridgeKey = nullptr;
+    FFXPresentCallbackBridgeState previousBridgeState = {};
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(ffx_hook_desc);
         // Names the frame this thread presents next, so PC latency can follow it
@@ -305,11 +311,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
             DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration(), g_FGCompat.IsFSRFGApiActive(),
             g_FGCompat.HasDirectFFXApiConfirmation());
         DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(localConfig.swapChain);
-        void* bridgeKey = nullptr;
         if (ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(
                 true, localConfig.frameGenerationEnabled != 0,
                 appPresentCallbackProvided || alreadyBridgedPresentCallbackProvided)) {
             bridgeKey = GetOrCreatePresentCallbackBridgeKey(contextHandle);
+            previousBridgeState = DX12_ResolveFFXPresentCallbackBridge(bridgeKey);
             if (alreadyBridgedPresentCallbackProvided) {
                 retainedAlreadyBridgedPresentCallback = true;
                 if (!localConfig.presentCallbackUserContext) {
@@ -424,6 +430,15 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
         }
     }
     if (result != ffx_hook_FFX_API_RETURN_OK || !ffx_hook_desc) {
+        if (installedPresentCallbackBridge) {
+            if (previousBridgeState.installed) {
+                DX12_SetFFXPresentCallbackBridge(bridgeKey, previousBridgeState.originalCallback,
+                                                 previousBridgeState.originalUserContext);
+            } else {
+                DX12_ClearFFXPresentCallbackBridge(bridgeKey);
+            }
+        }
+        ce::fg_session::RecordFFXConfigure(contextHandle, false, nullptr, bridgeKey, result);
         return result;
     }
     // Before the FG-configure filter below: the swapchain context is only ever configured with RegisterUiResource.
@@ -678,6 +693,8 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
             parsed.enabled ? ce::fg_runtime::RuntimeMode::kFSRFG : ce::fg_runtime::RuntimeMode::kOff, parsed.enabled,
             true);
     }
+    ce::fg_session::RecordFFXConfigure(contextHandle, parsed.enabled,
+                                       reinterpret_cast<void*>(bridgedOriginalCallback), bridgeKey, result);
     return result;
 
 }

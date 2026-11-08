@@ -124,9 +124,16 @@ DWORD DX12_GetGamePresentThreadId();
 // Returns one retained reference to the real game queue. Streamline's official UI-tag overlay
 // recorder uses it only to initialize device-scoped PSO/font resources; the overlay draw itself
 // remains inside the app-provided command list and is never separately submitted on this queue.
+struct FFXPresentCallbackBridgeState {
+    ce::ffx_api::PresentCallback originalCallback = nullptr;
+    void* originalUserContext = nullptr;
+    bool installed = false;
+};
+
 ID3D12CommandQueue* DX12_AcquireOriginalGameQueueForOverlay();
 void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
                                       void* originalUserContext);
+FFXPresentCallbackBridgeState DX12_ResolveFFXPresentCallbackBridge(void* bridgeKey);
 bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey);
 bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey);
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);

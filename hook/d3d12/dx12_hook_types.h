@@ -320,12 +320,6 @@ struct CreateSwapchainQueueCaptureEvidence {
     char ffxModulePath[MAX_PATH] = {};
 };
 
-struct FFXPresentCallbackBridgeState {
-    ce::ffx_api::PresentCallback originalCallback = nullptr;
-    void* originalUserContext = nullptr;
-    bool installed = false;
-};
-
 struct DX12WrappedPresentFocusLossContext {
     bool valid = false;
     const char* presentName = nullptr;

@@ -607,7 +607,11 @@ extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDestroyContext(ffxContext* context, 
             g_swapchainContext = nullptr;
     } else {
         std::lock_guard<std::mutex> lock(g_configMutex);
-        g_config = {};
+        // Destroying an effect context stops generation, but the presentation swapchain remains
+        // alive and retains its provider-accepted present callback across context recreation.
+        g_config.enabled = false;
+        g_config.frameGenerationCallback = nullptr;
+        g_config.frameGenerationCallbackUserContext = nullptr;
     }
     delete base;
     *context = nullptr;
@@ -642,7 +646,7 @@ extern "C" FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const
         g_config.ui = ui.uiResource;
         return FFX_API_RETURN_OK;
     }
-    return FFX_API_RETURN_OK;
+    return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
 }
 
 extern "C" FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext*, ffxQueryDescHeader*) {

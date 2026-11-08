@@ -10,6 +10,7 @@
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_dxgi_format.h"
 #include "hook/sharpen/sharpen_request.h"
+#include "hook/fg/fg_transition_trace.h"
 
 static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGenerationPresent* desc) {
     if (!desc) {
@@ -524,6 +525,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     const auto bridge = DX12_ResolveFFXPresentCallbackBridge(userCtx);
     const auto originalCallback = bridge.originalCallback;
     void* originalUserContext = bridge.originalUserContext;
+    ce::fg_session::RecordFFXCallbackArrival(userCtx, desc ? desc->frameID : 0,
+                                             desc ? desc->isGeneratedFrame != 0 : false, bridge.installed, false);
 
     uint32_t result = 0;
     if (originalCallback) {

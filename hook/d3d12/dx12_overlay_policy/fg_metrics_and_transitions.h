@@ -411,7 +411,8 @@ inline bool ShouldEvaluateFFXPresentCallbackFallback(bool ffxPresentCallbackStal
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     bool evaluateFFXPresentCallbackFallback, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
     bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false, ULONGLONG stallDurationMs = 0,
-    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
+    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false,
+    bool swapchainAndQueueSafe = false) {
     (void)stallDurationMs;
     (void)progressResolvedOfficialFFXPresentPath;
     (void)progressResolvedStableOverlayProof;
@@ -420,14 +421,12 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         return false;
     }
 
-    // When a game explicitly disables native FSR FG while keeping the FFX
-    // context/callback bridge alive (GTA menu/suspend path), the runtime-owned
-    // presentation path can still reject unexpected normal DX12 overlay
-    // submissions. Keep drawing through the retained FFX callback until
-    // ownership actually unwinds instead of using callback proof as permission
-    // to wake the separate normal overlay path.
+    // When a game explicitly disables native FSR FG while keeping the FFX context/callback
+    // bridge alive, keep drawing through the retained FFX callback until that route ends.
+    // When the route ends or is not firing, and the current swapchain and queue are proven safe,
+    // allow the normal overlay fallback so the overlay remains continuous!
     if (explicitNativeFSROffPendingRuntimeOwnedTeardown) {
-        return false;
+        return swapchainAndQueueSafe;
     }
 
     // The normal DX12 overlay path is only safe after direct configure proof or

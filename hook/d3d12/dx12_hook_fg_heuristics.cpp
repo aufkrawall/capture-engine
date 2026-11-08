@@ -108,8 +108,10 @@ return true;
 
 
 bool IsFFXPresentCallbackStalled() {
+const bool explicitNativeFSROffPending =
+    dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
 if (!dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire)) {
-    return false;
+    return explicitNativeFSROffPending;
 }
 
 const ULONGLONG now = ce::hook_clock::TickCount64();
@@ -209,9 +211,14 @@ const bool currentFFXPresentCallbackProof = ce::dx12_overlay_policy::IsFFXPresen
 const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
     EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
 const ULONGLONG stallDurationMs = GetFFXPresentCallbackStallDurationMs();
+const bool swapchainAndQueueSafe =
+    progressProof.hasDevice && SUCCEEDED(progressProof.deviceHr) &&
+    (progressProof.swapchainQueueMatchesOriginalGameQueue || !dx12_hook_g_FGRuntimeOwnsSwapchain ||
+     dx12_hook_g_SwapchainQueue != nullptr);
 return ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     evaluateFFXCallbackFallback, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
-    currentFFXPresentCallbackProof, progressProof.proof, stallDurationMs, explicitNativeFSROffPending);
+    currentFFXPresentCallbackProof, progressProof.proof, stallDurationMs, explicitNativeFSROffPending,
+    swapchainAndQueueSafe);
 }
 
 

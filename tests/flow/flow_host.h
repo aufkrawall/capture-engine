@@ -134,6 +134,9 @@ public:
 
     // ffxConfigure(frameGenerationEnabled) on the FidelityFX swapchain, with or without a present callback.
     bool SetFSRFrameGeneration(bool enabled, bool presentCallback = true);
+    bool DestroyFSREffectContextOnly();
+    bool RecreateFSREffectContext();
+    bool SendRejectedFSRConfigure();
     bool DetachForeignFFXInputs();
     bool ReloadForeignFFXRuntime();
 

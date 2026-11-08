@@ -129,6 +129,8 @@ void RegisterUiResource(FidelityFXGame& ffx) {
 }
 
 void ConfigureFrameGeneration(FidelityFXGame& ffx, IDXGISwapChain3* swapchain) {
+    if (!ffx.frameGenerationContext)
+        return;
     ffxConfigureDescFrameGeneration configure{};
     configure.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
     configure.swapChain = swapchain;
@@ -264,6 +266,37 @@ bool FlowGame::SetFSRFrameGeneration(bool enabled, bool presentCallback) {
     return true;
 }
 
+bool FlowGame::DestroyFSREffectContextOnly() {
+    if (!fidelityfx_ || !fidelityfx_->frameGenerationContext)
+        return false;
+    const auto result = fidelityfx_->destroyContext(&fidelityfx_->frameGenerationContext, nullptr);
+    fidelityfx_->frameGenerationContext = nullptr;
+    fidelityfx_->enabled = false;
+    return result == FFX_API_RETURN_OK;
+}
+
+bool FlowGame::RecreateFSREffectContext() {
+    if (!fidelityfx_ || fidelityfx_->frameGenerationContext || !fidelityfx_->createContext)
+        return false;
+    ffxCreateContextDescFrameGeneration frameGeneration{};
+    frameGeneration.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
+    frameGeneration.displaySize = {width_, height_};
+    frameGeneration.maxRenderSize = {width_, height_};
+    frameGeneration.backBufferFormat = FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+    if (fidelityfx_->createContext(&fidelityfx_->frameGenerationContext, &frameGeneration.header, nullptr) != FFX_API_RETURN_OK)
+        return false;
+    return true;
+}
+
+bool FlowGame::SendRejectedFSRConfigure() {
+    if (!fidelityfx_ || !fidelityfx_->frameGenerationContext || !fidelityfx_->configure)
+        return false;
+    ffxConfigureDescHeader invalidHeader{};
+    invalidHeader.type = static_cast<ffxStructType_t>(0xFFFF0000);
+    const auto result = fidelityfx_->configure(&fidelityfx_->frameGenerationContext, &invalidHeader);
+    return result != FFX_API_RETURN_OK;
+}
+
 bool FlowGame::ReloadForeignFFXRuntime() {
     if (!fsrToolFFXInputs_ || !UseSwapchain(SwapchainKind::kNative))
         return false;
@@ -298,7 +331,9 @@ void FlowGame::SubmitFidelityFXFrame() {
     prepare.viewSpaceToMetersFactor = 1.0f;
     prepare.depth = ffxApiGetResourceDX12(depth_.Get(), FFX_API_RESOURCE_STATE_COMMON);
     prepare.motionVectors = ffxApiGetResourceDX12(motionVectors_.Get(), FFX_API_RESOURCE_STATE_COMMON);
-    ffx.dispatch(&ffx.frameGenerationContext, &prepare.header);
+    if (ffx.frameGenerationContext) {
+        ffx.dispatch(&ffx.frameGenerationContext, &prepare.header);
+    }
 }
 
 void FlowGame::DestroyFidelityFXContexts() {

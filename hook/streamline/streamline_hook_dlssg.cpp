@@ -2,6 +2,7 @@
 #include "hook/runtime/hook_clock.h"
 
 #include "streamline_bridge_v1_abi.h"
+#include "hook/fg/fg_transition_trace.h"
 
 namespace {
 
@@ -787,6 +788,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
                          adjustedOptions.numFramesToGenerate, result);
     }
 
+    ce::fg_session::RecordStreamlineDLSSGOptions(requestedEnabled, static_cast<uint32_t>(result));
     return result;
 
 }

@@ -3,6 +3,7 @@
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
+#include "hook/fg/fg_transition_trace.h"
 
 ProcessFrameFlow FrameProcessSession::TrackSwapchainAndSelectQueue() {
 if (processLogicalSwapchainReplacement) {
@@ -472,6 +473,8 @@ if (processLogicalSwapchainReplacement) {
         return ProcessFrameFlow::kReturn;
         }
         HookLog("DX12: ProcessFrame - new swapchain tracked (device=%p)", g_Device.load());
+        ce::fg_session::RecordSwapchainTransition("TrackedNewSwapchain", pSwapChain, g_Device.load(),
+                                                  g_CommandQueue.load(std::memory_order_acquire), 0);
     }
     if (exactPrewarmedPostSLHandoffSwapchainProof) {
         IDXGISwapChain* expectedSwapchain = pSwapChain;

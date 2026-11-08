@@ -7,6 +7,7 @@
 #include "common/crash/crash_first_chance.h"
 #include "freeze_watchdog.h"
 #include "main_fatal_diagnostic_arm.h"
+#include "hook/fg/fg_transition_trace.h"
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 
@@ -608,6 +609,8 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
         faultCandidate.threadId, faultCandidate.exceptionCode, reinterpret_cast<void*>(faultCandidate.instructionAddress),
         faultCandidate.confirmedFault ? 1 : 0, GetCurrentThreadId(), static_cast<unsigned long>(exitCode));
   }
+  const std::string dumpDir = GetCrashDumpDirectory();
+  ce::fg_session::WriteTransitionHistoryFile(dumpDir.c_str(), captureReason, exitCode);
   OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
 
   HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s scope=%s)",

@@ -1,5 +1,6 @@
 #include "ffx_hook_internal.h"
 #include "hook/metrics/performance_metrics.h"
+#include "hook/fg/fg_transition_trace.h"
 
 ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffxAllocationCallbacks* memCb) {
     const auto originalDestroy = ffx_hook_t_FfxDestroyContextOriginalOverride
@@ -48,16 +49,15 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffx
             ffx_hook_g_FrameGenerationRoutingByContext.erase(contextHandle);
         }
         if (!isVulkanContext) {
-            {
-                std::lock_guard<std::mutex> lock(ffx_hook_g_PresentCallbackBridgeMutex);
-                ffx_hook_g_PresentCallbackBridgeKeys.erase(contextHandle);
-            }
-            DX12_ClearFFXPresentCallbackBridge(contextHandle);
             // A known effect context (frame generation, upscaling) presents nothing: AMD keeps presenting what its
-            // swapchain context scheduled, and games destroy the FG context first. Tearing the presentation down
-            // here left the last FSR FG output without the topmost overlay (FG flow test FlowSwitch GTA-style);
-            // the swapchain context's destroy, or the last context's (dx12_hook_ffx.cpp), ends it.
+            // swapchain context scheduled, and games destroy the FG context first. Bind the bridge state to the
+            // presentation lifetime that can invoke it; only tearing the presentation swapchain down ends the bridge.
             if (isFGSwapchainContext || !isKnownContext) {
+                {
+                    std::lock_guard<std::mutex> lock(ffx_hook_g_PresentCallbackBridgeMutex);
+                    ffx_hook_g_PresentCallbackBridgeKeys.erase(contextHandle);
+                }
+                DX12_ClearFFXPresentCallbackBridge(contextHandle);
                 DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
             } else {
                 HookLog("FFX Hook: effect context %p destroyed; its swapchain's presentation stays registered",
@@ -116,5 +116,6 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffx
         HookLog("FFX Hook: Non-FG Context destroyed");
     }
 
+    ce::fg_session::RecordFFXContextDestroy(contextHandle, isKnownContext ? 0x0001 : 0, result, isFGSwapchainContext);
     return result;
 }

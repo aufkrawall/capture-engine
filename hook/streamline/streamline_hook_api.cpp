@@ -2,6 +2,7 @@
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "hook/streamline/streamline_ui_tag_log.h"
+#include "hook/fg/fg_transition_trace.h"
 
 #include "hook/ngx/rr_handoff_gate.h"
 
@@ -497,6 +498,7 @@ slResult Hooked_slReflexSleep(const void* streamline_hook_frame) {
             HookLogImportant("Streamline Hook: slReflexSleep forward failed result=%d frame=%p", result, streamline_hook_frame);
         }
     }
+    ce::fg_session::RecordStreamlineReflexOptions(0, static_cast<uint32_t>(result));
     return result;
 
 }
@@ -539,6 +541,7 @@ slResult Hooked_slReflexSetOptions(const slReflexOptions& streamline_hook_option
                              result, streamline_hook_options.mode, streamline_hook_options.frameLimitUs);
         }
     }
+    ce::fg_session::RecordStreamlineReflexOptions(streamline_hook_options.mode, static_cast<uint32_t>(result));
     return result;
 
 }

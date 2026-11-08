@@ -1,5 +1,6 @@
 #include "main_internal.h"
 #include "hook/metrics/perf_logger.h"
+#include "hook/fg/fg_transition_trace.h"
 
 #include <array>
 
@@ -96,6 +97,10 @@ void FinalizeSessionArtifactsBeforeTermination(const char* source, bool targetIs
     return;
   }
   PerfLogger::Get().FlushForTermination(source);
+  char sessionLogsDir[MAX_PATH] = {};
+  if (GetSessionLogsDirectory(sessionLogsDir, sizeof(sessionLogsDir))) {
+    ce::fg_session::WriteTransitionHistoryFile(sessionLogsDir, source);
+  }
 }
 
 BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode) {
