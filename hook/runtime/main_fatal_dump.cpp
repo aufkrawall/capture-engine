@@ -502,8 +502,8 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   const bool diagnosticArmed = ce::diagnostic_arm::IsArmed();
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
                                                               frameGenerationRuntimeActiveOrRecent, origin,
-                                                              followsUnresolvedFault, followsRenderThreadDialog,
-                                                              diagnosticArmed)) {
+                                                              followsUnresolvedFault, followsRenderThreadDialog) &&
+      !ce::crash_dump_policy::ShouldCaptureArmedTermination(diagnosticArmed, exitCode)) {
     // Only the FG fallback can suppress a dump the old policy would have taken,
     // so record that decision once instead of leaving a silent gap.
     if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
@@ -597,8 +597,9 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   char requesterModule[MAX_PATH + 64] = {};
   DescribeAddressModule(const_cast<void*>(terminationRequester), requesterModule, sizeof(requesterModule));
   HookLogImportant(
-      "FatalExitDump: Capturing pre-termination dump (source=%s code=0x%08lX exceptionAddr=%p crashLike=%d "
-      "fgRuntimeActiveOrRecent=%d origin=%s requester=%p requesterModule=%s reason=%s armed=%d)",
+      "FatalExitDump: Capturing pre-termination dump before crash-like process exit or active FG runtime exit "
+      "(source=%s code=0x%08lX exceptionAddr=%p crashLike=%d fgRuntimeActiveOrRecent=%d origin=%s requester=%p "
+      "requesterModule=%s reason=%s armed=%d)",
       source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress,
       crashLikeExit ? 1 : 0, frameGenerationRuntimeActiveOrRecent ? 1 : 0, DescribeTerminationOrigin(origin),
       terminationRequester, requesterModule, captureReason, diagnosticArmed ? 1 : 0);

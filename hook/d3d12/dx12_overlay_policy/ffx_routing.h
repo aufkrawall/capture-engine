@@ -220,11 +220,14 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
         return SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
     }
 
-    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && runtimeOwnsSwapchain) {
-        // While the FSR-owned swapchain is still the live present path, keep rendering
-        // through the runtime-owned swapchain queue. Routing the still-live FSR
-        // swapchain's backbuffers to the original game queue would be cross-queue
-        // execution (D3D12 error 907).
+    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && nativeFSRInternalNoCallbackCompositionLive &&
+        runtimeOwnsSwapchain) {
+        // Suspended native FSR on AMD's internal no-callback composition route:
+        // the FSR-owned swapchain is still the live present path and no
+        // callback bridge exists that could draw the overlay, so keep rendering
+        // through the runtime-owned swapchain queue exactly like the active
+        // no-callback case. Routing the still-live FSR swapchain's backbuffers
+        // to the original game queue would be cross-queue execution.
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
                                  : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
     }
