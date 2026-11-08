@@ -2,6 +2,13 @@
 #include "hook/fg/fg_presenter.h"
 #include "dx12_hook_main_shared.h"
 
+bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain* pSwapChain) {
+    return pSwapChain && dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(std::memory_order_acquire) == pSwapChain &&
+           dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire) == pSwapChain &&
+           DXGIShared::DoesFGRuntimeOwnSwapchain() && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+           HookHasExplicitStreamlineSetOptionsActivation() && !g_FGCompat.IsFSRFGApiActive() &&
+           !HookHasRuntimeOwnedNativeFGPresentPath();
+}
 
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source) {
     auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);

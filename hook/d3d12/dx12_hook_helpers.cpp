@@ -494,8 +494,8 @@ ID3D12DescriptorHeap* rtvHeap = nullptr;
     if (SUCCEEDED(deviceReason)) {
         // The adapter owns only device/format-scoped objects. Reuse it even when the Streamline proxy uses a
         // different queue, then create the new swapchain RTVs and allocator/fence set without recording or
-        // submitting an overlay draw. This completes before slDLSSGSetOptions(ON), so the first generated
-        // Present cannot race a backend shutdown/rebuild.
+        // submitting an overlay draw. Prepare the replacement before its first Present, including when
+        // Streamline leaves DLSS FG enabled across the swapchain recreation.
         dx12_hook_g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         dx12_hook_g_State.cachedWidth = desc.BufferDesc.Width;
@@ -531,7 +531,7 @@ ID3D12DescriptorHeap* rtvHeap = nullptr;
 }
 
 HookLogImportant(
-    "DX12: PostSL handoff prewarm %s before DLSS enable "
+    "DX12: PostSL handoff prewarm %s before first Present "
     "(source=%s sc=%p queue=%p device=%p fmt=%d buffers=%u elapsed=%llums init=%d sync=%d rtv=%p)",
     ready ? "READY" : "INCOMPLETE", context ? context : "unknown", swapChain, swapchainQueue, queueDevice,
     static_cast<int>(desc.BufferDesc.Format), desc.BufferCount,

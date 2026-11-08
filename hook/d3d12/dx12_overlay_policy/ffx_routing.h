@@ -382,19 +382,17 @@ inline bool CanReuseWarmDX12OverlayBackend(bool preserveRequested, bool adapterI
     return preserveRequested && adapterInitialized && deviceMatches && formatMatches;
 }
 
-// A fresh Streamline proxy has a short, uniquely safe preparation window: the authoritative proxy queue and
-// buffers already exist, but DLSS FG has not been enabled yet. If the overlay was live on the retiring route,
-// prepare the new swapchain-scoped RTV/synchronization objects in that window so its FG-off passthrough Present
-// and first PostSL Present both inherit a ready backend. Post-FSR handoffs have this proof through FSR history.
-// Repeated pure-DLSS activation has equivalent proof only after this process already completed a device-healthy
-// PostSL submit; first-ever pure-DLSS cold start retains its stricter initialization guards.
+// A fresh authoritative Streamline create supplies the replacement queue and buffers before the new chain
+// presents. Prepare its RTV/sync state here if the retiring overlay was live. A prior healthy PostSL submit
+// also allows preparation during a DLSS-to-DLSS replacement: the ON signal can outlive the old swapchain.
+// FSR history alone only permits the existing pre-enable preparation path.
 inline bool ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(bool freshAuthoritativeStreamlineHandoff, bool hadFSRFGPhase,
                                                            bool hadSuccessfulPostSLPhase, bool runtimeOwnsSwapchain,
                                                            bool streamlineFGRunning, bool overlayWasLive,
                                                            bool isDX12Swapchain) {
-    const bool hasPriorRuntimeRouteProof = hadFSRFGPhase || hadSuccessfulPostSLPhase;
+    const bool hasPriorRuntimeRouteProof = hadSuccessfulPostSLPhase || (hadFSRFGPhase && !streamlineFGRunning);
     return freshAuthoritativeStreamlineHandoff && hasPriorRuntimeRouteProof && runtimeOwnsSwapchain &&
-           !streamlineFGRunning && overlayWasLive && isDX12Swapchain;
+           overlayWasLive && isDX12Swapchain;
 }
 
 // "The overlay was live on the retiring route" for the prewarm above. The normal-route backend is only one of

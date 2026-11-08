@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject overlay during DLSS Frame Generation swapchain recreation:** prepare the replacement swapchain and rearm the overlay callback when DLSS Frame Generation stays enabled across a brief return to the game queue. This closes the overlay gap during the swapchain sequence observed with Ubisoft Connect active.
+
 - **Overlay during FSR-to-DLSS handoff:** signal each pending overlay fence on the queue that submitted the draw and retain that queue until signaling finishes. A completed Streamline OFF edge cannot tear down the fresh overlay when FSR later stops, avoiding a missed present during the handoff. An FSR callback that already drew a queued output keeps ownership of that output when it presents after FSR turns off.
 
 - **FSR frame generation teardown crash during save-load transitions:** resolved an access violation crash in `amd_fidelityfx_dx12.dll` (`0xC0000005`) that occurred when games (such as *Avatar: Frontiers of Pandora*) disabled FSR frame generation with an explicit null callback before destroying the effect context during save-load or menu transitions. Capture Engine previously synthesized a present-callback bridge on disabled configure packets without an application callback, forcing AMD's presentation swapchain proxy to retain a callback referencing the departing effect context and crashing when the destroyed context was dereferenced on subsequent presents.

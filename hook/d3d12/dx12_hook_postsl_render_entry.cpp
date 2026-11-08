@@ -138,9 +138,14 @@ bool immediatePostFSRExplicitStartupTakeover = false;
     immediatePostFSRExplicitStartupTakeover = !immediateSameQueueStartupTakeover &&
                                               explicitPostFSRSafeBootstrapStartupProof && processFrameRecentlySeen &&
                                               startupActivationPending;
+    // This callback is an actual output on the prepared replacement. Recent ProcessFrame traffic from
+    // the departing route says nothing about when this swapchain is ready to draw.
+    const bool prewarmedFinalOutput = startupActivationPending && !postSLActive &&
+                                      DXGIShared::IsPostSLFinalOutputPresentCallback() &&
+                                      DX12_HasPrewarmedActiveStreamlineHandoff(pSwapChain);
     if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
-            cachedSLFGActive, g_PostSLLifecycle.RouteActive(), processFrameRecentlySeen,
+            cachedSLFGActive, g_PostSLLifecycle.RouteActive(), processFrameRecentlySeen && !prewarmedFinalOutput,
             useTopLevelHandoffWrapperProgress, sameQueuePureDLSSColdStartSafe,
             explicitPostFSRSafeBootstrapStartupProof)) {
         if (immediatePostFSRExplicitStartupTakeover) {
@@ -204,7 +209,7 @@ bool immediatePostFSRExplicitStartupTakeover = false;
                 }
                 s_wrapperProgressActivationLogCount++;
                 dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
-            } else if (explicitEnablePureDLSSColdStartProof) {
+            } else if (prewarmedFinalOutput || explicitEnablePureDLSSColdStartProof) {
                 // Proof-gated no-blank engage: the current comeback was
                 // activated by an explicit slDLSSGSetOptions(ON) edge and
                 // CE retains the runtime-owned startup activation
@@ -217,8 +222,8 @@ bool immediatePostFSRExplicitStartupTakeover = false;
                 if (s_explicitEnableCountdownBypassLogCount < 10) {
                     HookLogImportant(
                         "DX12: PostSL synthetic startup bypassing pure-DLSS countdown after explicit "
-                        "slDLSSGSetOptions(ON) proof (cooldown=%d retainedStartupSwapchain=1)",
-                        cooldownLeft);
+                        "slDLSSGSetOptions(ON) proof (cooldown=%d prewarmedFinalOutput=%d)",
+                        cooldownLeft, prewarmedFinalOutput ? 1 : 0);
                 }
                 s_explicitEnableCountdownBypassLogCount++;
                 dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);

@@ -168,6 +168,9 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                                       PresentCallContext& ctx, bool* earlyReturn) {
     *earlyReturn = false;
     if (ctx.startupTopLevelCandidate) {
+        // This is a runtime output even though the large gap classifies it as top-level.
+        // Submit through PostSL on the prepared chain and keep the existing Present transport.
+        const bool prewarmedHandoff = DX12_HasPrewarmedActiveStreamlineHandoff(pSwapChain);
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
@@ -194,7 +197,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             ForwardedPresentRecord record(presentBypass != nullptr, "Streamline startup-handoff Present");
             bool exactStartupTransportDrawn = false;
-            if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
+            if (prewarmedHandoff || DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
                     ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, ctx.safePostFSRBootstrapPath, ctx.streamlineFGRunning,
                     ctx.startupTopLevelCandidate, ctx.postSLConfirmedRendering)) {
                 exactStartupTransportDrawn = DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(
@@ -228,10 +231,11 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                         ctx.postSLConfirmedRendering ? 1 : 0, ctx.postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)presentBypass, ctx.presentOwner, ctx.presentDepthVal, ctx.currentThreadId);
                 }
-                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, ctx.api == APIType::D3D12,
-                                                                   ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
-                                                                   ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
-                                                                   "startupHandoffNormalRoute");
+                if (!exactStartupTransportDrawn) {
+                    MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
+                        pSwapChain, ctx.api == APIType::D3D12, ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
+                        ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation, "startupHandoffNormalRoute");
+                }
                 const HRESULT hr =
                     record.Forward([&] { return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags); });
                 if (SUCCEEDED(hr)) {
@@ -243,6 +247,10 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, ctx.api, hr, "Present");
             }
         } else if (ctx.runtimeOwnedSwapchainActive) {
+            if (prewarmedHandoff) {
+                DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(pSwapChain,
+                                                                    "DetourPresent/prewarmed-handoff");
+            }
             static std::atomic<int> s_streamlineStartupHandoffNormalTransportAllowedLogCount{0};
             int allowedCount =
                 s_streamlineStartupHandoffNormalTransportAllowedLogCount.fetch_add(1, std::memory_order_relaxed) + 1;

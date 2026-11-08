@@ -176,10 +176,10 @@ if (SUCCEEDED(qiHr) && pQueue) {
         const bool retiringRouteOverlayLive = InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
             context, pQueue, currentSwapchainQueue, currentOriginalGameQueue);
         const bool hadSuccessfulPostSLPhase = dx12_hook_g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire);
+        const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool prewarmPostSL = ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(
             freshAuthoritativeStreamlineHandoff, dx12_hook_g_HadFSRFGPhase, hadSuccessfulPostSLPhase,
-            DXGIShared::DoesFGRuntimeOwnSwapchain(),
-            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiringRouteOverlayLive,
+            DXGIShared::DoesFGRuntimeOwnSwapchain(), streamlineFGRunning, retiringRouteOverlayLive,
             IsDX12Swapchain(pSwapChain));
         dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
         if (prewarmPostSL) {
@@ -188,8 +188,14 @@ if (SUCCEEDED(qiHr) && pQueue) {
                 dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain, std::memory_order_release);
                 HookLogImportant(
                     "[OVERLAY VISIBILITY] Armed exact prewarmed PostSL handoff backend for its first Present "
-                    "(swapchain=%p queue=%p hadFSR=%d priorPostSL=%d)",
-                    pSwapChain, pQueue, dx12_hook_g_HadFSRFGPhase ? 1 : 0, hadSuccessfulPostSLPhase ? 1 : 0);
+                    "(swapchain=%p queue=%p hadFSR=%d priorPostSL=%d slFG=%d)",
+                    pSwapChain, pQueue, dx12_hook_g_HadFSRFGPhase ? 1 : 0, hadSuccessfulPostSLPhase ? 1 : 0,
+                    streamlineFGRunning ? 1 : 0);
+                if (streamlineFGRunning && !HookOverlayObserverOnlyEnabled()) {
+                    // A temporary return to the game queue can retire PostSL while the DLSS signal
+                    // stays on. There will be no new ON edge to restore the callback.
+                    SetPostSLCallbackInstalled(true, "DX12: Prewarmed active Streamline handoff");
+                }
             }
         } else if (dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire)) {
             // Without the prewarmed identity nothing proves this proxy's queue ownership, so the post-FSR

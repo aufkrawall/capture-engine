@@ -528,6 +528,7 @@ return retiringRouteLive;
 
 
 void PublishPostSLRouteRetirementForNormalSwapchainReturn(const char* reason) {
+dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
 g_PostSLLifecycle.PublishRetirement([&] { SetPostSLCallbackInstalled(false, reason); });
 // Publish cancellation before waiting for an already-entered callback. The
 // callback compares this epoch before every GPU submission point, exits,

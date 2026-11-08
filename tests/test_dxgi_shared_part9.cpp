@@ -195,14 +195,24 @@ TEST(DXGISharedTest, FreshProvenStreamlineHandoffPrewarmsBeforeDLSSActivation) {
     EXPECT_TRUE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, false, true, true, false, true, true));
 
     // First-ever pure-DLSS cold start retains its stricter guards. A non-authoritative/reused queue,
-    // already-running DLSS, no live prior overlay, non-runtime ownership, or a non-DX12 swapchain cannot use this
-    // preparation window.
+    // no live prior overlay, non-runtime ownership, or a non-DX12 swapchain cannot use this preparation window.
+    // FSR history alone is insufficient when DLSS is already running.
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, false, false, true, false, true, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(false, true, false, true, false, true, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, false, false, true, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, true, true, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, false, false, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, false, true, false));
+}
+
+TEST(DXGISharedTest, FreshProvenStreamlineHandoffPrewarmsWhileDLSSRemainsActive) {
+    using ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshProvenHandoff;
+
+    // A native queue return can retire PostSL without a DLSS OFF signal. The subsequent
+    // authoritative Streamline create has a new backbuffer lifetime and prior healthy PostSL proof.
+    EXPECT_TRUE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(false, false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, false, true, true, true, false, true));
 }
 
 TEST(DXGISharedTest, ExactPrewarmedPostSLHandoffSurvivesItsFirstMatchingPresent) {

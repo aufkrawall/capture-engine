@@ -102,6 +102,7 @@ void DX12_NoteOverlayPresentOriginator(uint8_t originator);
 // Starts a new overlay-visibility lifetime for a swapchain (DXGI may reuse the address).
 void DX12_NoteOverlayVisibilitySwapchainCreated(IDXGISwapChain* pSwapChain);
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source);
+bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain* pSwapChain);
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
 void DX12_HookDeviceVTable(ID3D12Device* device);

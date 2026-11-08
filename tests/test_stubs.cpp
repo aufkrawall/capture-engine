@@ -51,6 +51,7 @@ bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain*, b
     return false;
 }
 }  // namespace DXGIShared
+bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain*) { return false; }
 
 // The scoped Vulkan FIFO backstop lives in the hook DLL's wrapper unit, which
 // the unit-test link does not compile; the DXGIShared present detours call it,

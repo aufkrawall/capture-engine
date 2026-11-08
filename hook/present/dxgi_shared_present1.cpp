@@ -235,6 +235,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
     EnterStage(CostStage::kStartupRouting);
     if (startupTopLevelCandidate) {
+        const bool prewarmedHandoff = DX12_HasPrewarmedActiveStreamlineHandoff(pSwapChain);
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
@@ -262,7 +263,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             ForwardedPresentRecord record(present1Bypass != nullptr, "Streamline startup-handoff Present1");
             bool exactStartupTransportDrawn = false;
-            if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
+            if (prewarmedHandoff || DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
                     api == APIType::D3D12, hadFSRFGPhase, safePostFSRBootstrapPath, streamlineFGRunning,
                     startupTopLevelCandidate, postSLConfirmedRendering)) {
                 exactStartupTransportDrawn = DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(
@@ -292,6 +293,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 return ReportForwardedPresentResult(pSwapChain, SyncInterval, Flags, api, hr, "Present1");
             }
         } else if (runtimeOwnedSwapchainActive) {
+            if (prewarmedHandoff) {
+                DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(pSwapChain,
+                                                                    "DetourPresent1/prewarmed-handoff");
+            }
             static std::atomic<int> s_streamlineStartupHandoffNormalTransportAllowedLogCount1{0};
             int allowedCount =
                 s_streamlineStartupHandoffNormalTransportAllowedLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;

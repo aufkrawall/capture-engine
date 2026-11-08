@@ -117,6 +117,7 @@ bool HookTryGetPreferredOverlayFGPublicationState(PreferredOverlayFGPublicationS
 void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const char* gate, const char* source);
 
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source);
+bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain* pSwapChain);
 
 bool HookIsPostSLOverlayActiveButUnconfirmed();
 
