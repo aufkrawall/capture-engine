@@ -13,9 +13,8 @@
   "limit": 800,
   "target": 750,
   "files": {
-    "hook/overlay/overlay_compat_detail/module_table.h": 820,
     "tests/test_dxgi_shared_part10.cpp": 801
   },
-  "count": 2,
-  "total": 1621
+  "count": 1,
+  "total": 801
 }
