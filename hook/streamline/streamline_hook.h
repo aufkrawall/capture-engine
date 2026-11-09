@@ -56,6 +56,9 @@ bool IsFGSignalFront();
 // ahead of the later explicit SetOptions enable.
 void OnAuthoritativeStreamlineStartupHandoff();
 
+// A verified native replacement can end presentation before a startup-held OFF reaches the runtime.
+bool ObserveNativeSwapchainReturnDuringHeldOff();
+
 // Release a slDLSSGSetOptions(OFF) held during startup-window churn once its protection ends. A held
 // OFF is the title's latest request (any SetOptions(ON) clears it) and is never discarded. Called
 // from DetourPresent/DetourPresent1: if the title has marked a frame since the hold, the OFF is left

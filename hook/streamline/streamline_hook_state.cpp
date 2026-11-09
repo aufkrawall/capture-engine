@@ -225,6 +225,28 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
     g_FGCompat.SetDLSSFGActive(active, active ? std::clamp(multiplier, 2, 4) : 0);
 }
 
+bool StreamlineHook::ObserveNativeSwapchainReturnDuringHeldOff() {
+    if (!streamline_hook_g_ConfirmedDLSSReflexSuspendPending.load(std::memory_order_acquire) ||
+        ShouldKeepPureObserverOnlyStreamlineBehavior()) {
+        return false;
+    }
+
+    uint32_t viewportKey;
+    {
+        std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);
+        if (!streamline_hook_g_SuppressedSetOptionsOffDuringStartup ||
+            !streamline_hook_g_ConfirmedDLSSReflexSuspendPending.load(std::memory_order_acquire) ||
+            !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+            return false;
+        }
+        viewportKey = streamline_hook_g_SuppressedOffViewportKey;
+        streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(true, std::memory_order_release);
+    }
+    // Presentation has returned to the game. Keep the held request for normal
+    // Streamline replay and apply the observed presentation state locally.
+    UpdateViewportRuntimeState(viewportKey, false, 0, 0, 0, "native swapchain return", true);
+    return !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+}
 
 void ApplyCombinedStreamlineRuntimeState(bool active,  int multiplier,  bool explicitSetOptionsEnableSignal, 
                                          const char* source) {

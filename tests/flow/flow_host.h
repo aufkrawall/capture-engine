@@ -119,6 +119,7 @@ public:
     // Replaces the swapchain with one of `kind` on the same device and queue (an FSR swapchain's FFX
     // contexts go with it), as a game does when its frame generation setting changes runtime.
     bool UseSwapchain(SwapchainKind kind);
+    bool ReturnToNativeSwapchainOnNewQueue();
     bool ReturnToNativeSwapchainThroughStreamline();
     void AdvanceVirtualClock(int64_t microseconds) { advanceClock_(microseconds); }
 
@@ -128,6 +129,7 @@ public:
 
     // slDLSSGSetOptions(eOn/eOff), as a game's menu toggle sends it; the proxy stays alive while off.
     bool SetDLSSFrameGeneration(bool enabled, uint32_t framesToGenerate = 1);
+    bool DisableStreamlineReflex();
 
     // Whether the (fake) DLSS-G runtime itself is in eOn - what reached it, not what the game asked for.
     bool DLSSFrameGenerationRunning();

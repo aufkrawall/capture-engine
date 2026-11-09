@@ -493,8 +493,18 @@ static std::atomic<int> s_postSLRenderCount{0};
 int renderNum = s_postSLRenderCount.fetch_add(1, std::memory_order_relaxed) + 1;
 s_postSLRenders.fetch_add(1, std::memory_order_relaxed);
 HRESULT postDevReason = dev->GetDeviceRemovedReason();
+const bool healthyOutput = SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue;
+const auto* previousSuccessfulPostSLSwapchain =
+    dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire);
+HWND outputWindow = nullptr;
+if (healthyOutput && previousSuccessfulPostSLSwapchain != pSwapChain) {
+    DXGI_SWAP_CHAIN_DESC outputDesc{};
+    if (SUCCEEDED(pSwapChain->GetDesc(&outputDesc))) {
+        outputWindow = outputDesc.OutputWindow;
+    }
+}
 const auto confirmedCurrentEpoch = g_PostSLLifecycle.ConfirmRender(entryLifecycleEpoch, [&] {
-    if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue) {
+    if (healthyOutput) {
         if (finalOutputCapture.basePresentedOutput) {
             // The overlay and any capture copy were ordered on this real suspended
             // output. Let the later ProcessFrame route distinguish that proof from
@@ -515,14 +525,14 @@ const auto confirmedCurrentEpoch = g_PostSLLifecycle.ConfirmRender(entryLifecycl
                 "(sc=%p queue=%p)",
                 pSwapChain, submittedQueue);
         }
-        IDXGISwapChain* previousSuccessfulPostSLSwapchain =
-            dx12_hook_g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain, std::memory_order_acq_rel);
         if (previousSuccessfulPostSLSwapchain != pSwapChain) {
+            g_DX12PostSLRuntime.lastSuccessfulWindow.store(outputWindow, std::memory_order_release);
             HookLogImportant(
                 "DX12: PostSL proved exact swapchain route %p on submitted queue %p "
                 "(previousSwapchain=%p epoch=%d)",
                 pSwapChain, submittedQueue, previousSuccessfulPostSLSwapchain, s_reactivationEpoch);
         }
+        dx12_hook_g_LastSuccessfulPostSLSwapchain.store(pSwapChain, std::memory_order_release);
 
         // The same COM identity may be rebound from the normal Present route
         // to a runtime proxy route. The newest successful submit is the useful

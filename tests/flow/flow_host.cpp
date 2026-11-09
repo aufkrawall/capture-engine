@@ -399,6 +399,18 @@ bool FlowGame::UseSwapchain(SwapchainKind kind) {
     return CreateSwapchain(kind);
 }
 
+bool FlowGame::ReturnToNativeSwapchainOnNewQueue() {
+    if (!error_.empty())
+        return false;
+    ReleaseSwapchain();
+    D3D12_COMMAND_QUEUE_DESC desc{};
+    const HRESULT hr = device_->CreateCommandQueue(&desc, IID_PPV_ARGS(queue_.ReleaseAndGetAddressOf()));
+    if (FAILED(hr))
+        return Fail("CreateCommandQueue for native return", hr);
+    queue_->SetName(L"FlowGame_NativeReturnQueue");
+    return CreateSwapchain(SwapchainKind::kNative);
+}
+
 bool FlowGame::SetBackBufferFormat(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace) {
     if (!error_.empty() || !swapchain_ || kind_ != SwapchainKind::kNative)
         return false;

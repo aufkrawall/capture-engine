@@ -565,6 +565,22 @@ queues observed by ECL cannot invalidate this direct dispatch proof. GetState-on
 queues and a different swapchain or Present queue retain their startup gates. The native branch reports
 `nativeFinalOutput=1` on immediate takeover. Hardware retest pending.
 
+### Native return during a held DLSS OFF (2026-11-09)
+
+The switch app with Steam Overlay and ReShade active (session `20261109_210851`) returned to a
+native swapchain on a new queue while the confirmed DLSS startup window held the game's OFF
+request. The game turned Reflex off and presented one native frame. CE treated the stale DLSS
+signal as current, skipped that Present as zero-ECL output, and published the old multiplier.
+The next Streamline replacement drew normally.
+
+`HandlePostSLRouteForNormalSwapchainReturn` checks the game-created flip-model replacement against
+the confirmed PostSL window and presentation queue. A successful replacement on the same HWND
+and a different direct queue, with a held OFF and confirmed game-owned Reflex OFF, ends the
+departed route locally through `ObserveNativeSwapchainReturnDuringHeldOff`. The vendor request
+continues through the normal held-OFF replay policy. The existing native-return proof rebinds the
+queue and rebuilds the overlay for the first Present, including when DXGI reuses a COM address.
+The WARP regression is `FlowSwitch.NativeReturnDuringHeldDLSSOffDrawsItsFirstOutput`.
+
 ### First Streamline passthrough after FSR teardown (2026-11-09)
 
 The DX12 switch app with Steam Overlay active (session `20261109_204334`) had two FSR-to-DLSS

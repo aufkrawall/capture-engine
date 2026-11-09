@@ -123,6 +123,43 @@ TEST(FlowSwitch, FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches) {
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowSwitch, NativeReturnDuringHeldDLSSOffDrawsItsFirstOutput) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(12)) << game.Error();
+    ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(3)) << game.Error();
+    ASSERT_TRUE(game.PostSLLifecycle().confirmedInEpoch) << game.LogDirectory();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.DLSSFrameGenerationRunning()) << "startup protection must hold the OFF request";
+    ASSERT_TRUE(game.DisableStreamlineReflex()) << game.Error();
+    EXPECT_TRUE(game.PostSLLifecycle().confirmedInEpoch);
+    ExpectPublished(game, 1, 2, "confirmed proxy before native replacement");
+    ASSERT_TRUE(game.ReturnToNativeSwapchainOnNewQueue()) << game.Error();
+    const auto before = game.Coverage();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    const auto after = game.Coverage();
+    EXPECT_EQ(after.presents - before.presents, 1u);
+    EXPECT_EQ(after.draws - before.draws, 1u) << game.LogDirectory();
+    ExpectPublished(game, 0, 1, "first native frame after a held DLSS OFF");
+
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(24)) << game.Error();
+    ExpectPublished(game, 1, 2, "DLSS FG re-enabled after the native frame");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowSwitch, InactiveFidelityFXWithAProxyDeviceViewKeepsTheOverlayAfterDLSS) {
     FlowGame game(CurrentTestName());
     GameOptions options;

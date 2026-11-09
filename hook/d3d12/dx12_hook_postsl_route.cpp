@@ -3,6 +3,7 @@
 #include "common/logging/log_meter.h"
 
 #include "hook/fg/fg_cost_probe.h"
+#include "hook/fg/fg_presenter.h"
 
 // C Linkage Exports for cross-module calls (e.g. from C clients or
 // GetProcAddress)
@@ -581,6 +582,33 @@ const bool originalQueueNormalSwapchainReturn =
 const bool gameCreatedSwapchain =
     !captureEvidence.callerFromThirdPartyOverlay && !captureEvidence.authoritativeFFXRuntimeCreator &&
     !captureEvidence.officialAMDFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator;
+bool gameSwapchainReplacedActiveStreamline = false;
+if (gameCreatedSwapchain && captureEvidence.callerAddress && captureEvidence.callerModulePath[0] &&
+    !captureEvidence.authoritativeXeFGRuntimeCreator && returnedSwapchain &&
+    g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kDLSSFG &&
+    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+    dx12_hook_g_StreamlineEnableCallsInFlight.load(std::memory_order_acquire) == 0 &&
+    g_PostSLLifecycle.RouteConfirmed() && !g_FGCompat.IsFSRFGApiActive() &&
+    !HookHasRuntimeOwnedNativeFGPresentPath() && !ce::fg_presenter::HasRuntimeOwnedOutputPresenter()) {
+    bool replacesConfirmedQueue = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        const auto* confirmedQueue = g_PostSLQueues.LastDeviceHealthyQueue();
+        replacesConfirmedQueue = confirmedQueue && confirmedQueue == dx12_hook_g_SwapchainQueue &&
+                                 confirmedQueue != returnedQueue;
+    }
+    DXGI_SWAP_CHAIN_DESC desc{};
+    // DXGI allows one flip-model swapchain per HWND. The successful native
+    // create on this window and a different queue proves the old output is gone.
+    if (replacesConfirmedQueue &&
+        dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire) &&
+        returnedQueue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT &&
+        SUCCEEDED(returnedSwapchain->GetDesc(&desc)) && desc.OutputWindow &&
+        (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL) &&
+        desc.OutputWindow == g_DX12PostSLRuntime.lastSuccessfulWindow.load(std::memory_order_acquire)) {
+        gameSwapchainReplacedActiveStreamline = StreamlineHook::ObserveNativeSwapchainReturnDuringHeldOff();
+    }
+}
 const bool gameSwapchainAfterExplicitDLSSOff =
     ce::dx12_overlay_policy::ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
         gameCreatedSwapchain, dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire),
@@ -621,11 +649,12 @@ const bool routeArmed = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memo
                         lastWorkingQueue != nullptr;
 const bool hasDistinctQueueProof =
     (lockedQueue && lockedQueue != returnedQueue) || (lastWorkingQueue && lastWorkingQueue != returnedQueue);
-const char* normalReturnProof = gameSwapchainAfterExplicitDLSSOff
-                                    ? "Game-created replacement swapchain validated normal return after "
-                                      "explicit DLSS off"
-                                    : "Original game queue validated normal swapchain return behind "
-                                      "Streamline stack";
+const char* normalReturnProof = "Original game queue validated normal swapchain return behind Streamline stack";
+if (gameSwapchainReplacedActiveStreamline) {
+    normalReturnProof = "Game-created replacement swapchain resolved held DLSS OFF after Reflex OFF";
+} else if (gameSwapchainAfterExplicitDLSSOff) {
+    normalReturnProof = "Game-created replacement swapchain validated normal return after explicit DLSS off";
+}
 if (!ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(
         normalSwapchainReturn, routeArmed, hasDistinctQueueProof || gameSwapchainAfterExplicitDLSSOff)) {
     HookLogImportant("%s: %s (queue=%p locked=%p lastWorking=%p routeArmed=%d) — no stale PostSL route to retire",

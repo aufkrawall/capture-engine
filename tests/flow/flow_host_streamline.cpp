@@ -98,6 +98,17 @@ bool FlowGame::SetDLSSFrameGeneration(bool enabled, uint32_t framesToGenerate) {
     return true;
 }
 
+bool FlowGame::DisableStreamlineReflex() {
+    if (!streamline_ || !streamline_->reflexSetOptions)
+        return Fail("disabling Reflex without Streamline", E_NOINTERFACE);
+    sl::ReflexOptions options{};
+    options.mode = sl::ReflexMode::eOff;
+    if (streamline_->reflexSetOptions(options) != sl::Result::eOk)
+        return Fail("slReflexSetOptions(Off)", E_FAIL);
+    streamline_->reflexLowLatency = false;
+    return true;
+}
+
 // Called once the device exists: binds it and resolves the DLSS-G feature functions (through CE's hooks,
 // which wrap what slGetFeatureFunction returns).
 bool FlowGame::BindStreamlineDevice() {

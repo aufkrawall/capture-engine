@@ -419,6 +419,7 @@ struct DX12PostSLRuntimeState {
     std::atomic<bool> explicitOffKeepAlive{false};
     std::atomic<bool> warmResumePreservationPending{false};
     std::atomic<IDXGISwapChain*> lastSuccessfulSwapchain{nullptr};
+    std::atomic<HWND> lastSuccessfulWindow{nullptr};
     std::atomic<bool> syntheticStartupTakeoverLogged{false};
     std::atomic<int> syntheticStartupWrapperProgressCount{0};
     std::atomic<bool> syntheticStartupWrapperOnlyDumpRequested{false};
