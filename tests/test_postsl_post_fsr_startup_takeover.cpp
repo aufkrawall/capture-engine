@@ -56,7 +56,10 @@ TEST(PostSLPostFSRStartupTakeoverTest, EntryPassesTheProofAndKeepsMakeBeforeBrea
 
     const size_t proof = entry.find("ce::dx12_overlay_policy::HasExplicitPostFSRSafeBootstrapStartupProof(");
     ASSERT_NE(proof, std::string::npos);
-    EXPECT_NE(entry.find("HookHasExplicitStreamlineSetOptionsActivation(), safePostFSRBootstrapPathForPostSL", proof),
+    const size_t explicitActivation =
+        entry.find("const bool explicitSetOptionsActivation = HookHasExplicitStreamlineSetOptionsActivation();");
+    EXPECT_LT(explicitActivation, proof);
+    EXPECT_NE(entry.find("explicitSetOptionsActivation, safePostFSRBootstrapPathForPostSL", proof),
               std::string::npos);
 
     const size_t advance = entry.find("ShouldSyntheticPostSLAdvanceDormantStartup(");

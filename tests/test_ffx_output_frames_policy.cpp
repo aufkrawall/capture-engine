@@ -161,17 +161,24 @@ TEST(FFXOutputFramesSourceTest, OutputsTakeTheFrameAtTheirFinalBatch) {
     const std::string topmost = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
     ASSERT_FALSE(topmost.empty());
     // AMD's first submission inside its Present advances the composing frame before that batch is recorded.
-    const size_t record = topmost.find("void RecordECLBatch(");
+    const size_t record = topmost.find("uintptr_t RecordECLBatch(");
     const size_t advance = topmost.find("AdvanceFFXComposingFrame(t_FFXForwardFrame", record);
-    const size_t store = topmost.find("g_FFXComposingFrame.Current()}", record);
+    const size_t store = topmost.find("submitSite, queue, g_FFXComposingFrame.Current(), relayed", record);
     ASSERT_NE(record, std::string::npos);
+    ASSERT_NE(store, std::string::npos);
     EXPECT_LT(advance, store);
     // The draw decision and the presented output both read the final batch's frame.
     const size_t append = topmost.find("bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(");
-    EXPECT_NE(topmost.find("ShouldDrawTopmostOnFFXOutput(frameOwner, ownershipGranted)", append), std::string::npos);
+    const size_t appendedBatch =
+        topmost.find("OutputAttributionForBatch(t_PresenterFrameTrace.count - 1, &output)", append);
+    const size_t draw = topmost.find("ShouldDrawTopmostOnFFXOutput(frameOwner, ownershipGranted)", append);
+    ASSERT_NE(draw, std::string::npos);
+    EXPECT_LT(appendedBatch, draw);
     const size_t observe = topmost.find("void DX12_ObserveNoCallbackFSRTopmostPresent(");
-    const size_t stash = topmost.find("StashPresentedOutput();", observe);
-    const size_t reset = topmost.find("ResetPresenterFrameTrace();", observe);
+    const size_t anchor = topmost.find("&anchorIndex);", observe);
+    const size_t stash = topmost.find("OutputAttributionForBatch(anchorIndex, &t_PresentedOutput)", anchor);
+    const size_t reset = topmost.find("ResetPresenterFrameTrace();", stash);
+    ASSERT_NE(reset, std::string::npos);
     EXPECT_LT(stash, reset);
 }
 
