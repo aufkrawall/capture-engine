@@ -58,9 +58,13 @@ public:
 
     void Submitted(size_t slot, uint64_t sequence) { sequences_[slot] = sequence; }
 
+    bool Reached(size_t slot, uint64_t sequence) const {
+        return slot < SlotCount && markers_ && static_cast<uint32_t>(sequence) != 0 &&
+               markers_[slot] == static_cast<uint32_t>(sequence);
+    }
+
     bool Completed(size_t slot, uint64_t sequence) const {
-        return sequence == 0 || (slot < SlotCount && markers_ && sequences_[slot] == sequence &&
-                                 markers_[slot] == static_cast<uint32_t>(sequence));
+        return sequence == 0 || (Reached(slot, sequence) && sequences_[slot] == sequence);
     }
 
     HRESULT Refresh(ID3D12Fence* fence) const {

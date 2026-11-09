@@ -415,4 +415,25 @@ TEST_F(GammaD3D12Test, AbandonedInlineRecordingDoesNotPoisonFenceRetirement) {
     ce::sharpen::CollectRuntimePostProcess(true);
 }
 
+TEST_F(GammaD3D12Test, FsrCallbackRecordingRetiresWithoutObservingTheRuntimeSubmission) {
+    auto frame = Frame(256, 0.1f);
+    ASSERT_TRUE(Drain());
+    ce::sharpen::CollectRuntimePostProcess(true);
+
+    auto list = List();
+    ce::sharpen::Request request;
+    request.gamma.destination = 0.0f;
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), frame.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm, true));
+    ASSERT_EQ(list->Close(), S_OK);
+    EXPECT_EQ(ce::sharpen::CollectRuntimePostProcess(true), 0u);
+
+    // FidelityFX can submit through a cached ExecuteCommandLists entry.
+    ID3D12CommandList* lists[] = {list.Get()};
+    queue_->ExecuteCommandLists(1, lists);
+    ASSERT_TRUE(Drain());
+    EXPECT_EQ(ce::sharpen::CollectRuntimePostProcess(true), 1u);
+    EXPECT_NEAR(Read(frame.Get())[0], ce::gamma::Convert(0.1f, request.gamma), 3e-6);
+}
+
 }  // namespace

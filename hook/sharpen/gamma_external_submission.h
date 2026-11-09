@@ -2,13 +2,15 @@
 
 #include <d3d12.h>
 
+#include <cstddef>
+
 #include "common/graphics/sharpen_policy.h"
 
 namespace ce::sharpen {
 
 bool RenderPresentedPostProcess(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* output,
                                  DXGI_FORMAT viewFormat, const Request& request, Route route, TargetEncoding encoding);
-// Embedded runtime batches use inline completion without a queue Signal.
+// Inline completion uses the GPU marker even when the runtime bypasses our submission hook.
 bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12Resource* output,
                               D3D12_RESOURCE_STATES state, const Request& request, TargetEncoding encoding,
                               bool inlineCompletion = false);
@@ -16,6 +18,6 @@ bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* l
 void NotifyRuntimePostProcessSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
 // Reclaims a pending slot when the caller recorded into `list` but failed before submitting it.
 void AbandonRuntimePostProcessCommandList(ID3D12CommandList* list);
-void CollectRuntimePostProcess(bool trim);
+size_t CollectRuntimePostProcess(bool trim);
 
 }  // namespace ce::sharpen

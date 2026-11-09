@@ -59,6 +59,23 @@ separate; it is documented in `config.ini.template` rather than worked around.
 
 ## Frame generation
 
+On the DX12 FidelityFX present callback, each post-process recording owns its
+scratch texture and descriptors until a GPU-written `MARKER_OUT` on the same
+command list completes. The marker proves completion even when the runtime
+submits through a cached `ExecuteCommandLists` entry. CE-owned embedded
+batches use the same marker and can explicitly abandon an unsubmitted list.
+Other borrowed-list routes that observe submission retire through their exact
+queue's fence. See `hook/sharpen/gamma_external_submission.cpp` and
+`tests/test_gamma_d3d12.cpp`.
+
+In an Avatar DLSS-to-FSR save-load run with Ubisoft Connect and ReShade, the
+FSR callback still drew the overlay after the effect contexts were recreated.
+The post-process pool grew to at least 640 full-resolution resource slots
+before `DXGI_ERROR_DEVICE_HUNG` and a subsequent access violation. The GPU
+completion regression reproduces the unretired resources with WARP by
+submitting without calling the queue observer. The session had no minidump or
+DRED data to identify the exact GPU command that hung.
+
 Every displayed frame is filtered, generated frames included. Filtering only
 some of them would appear as a sharpness pulse at the generation cadence - at
 2x, every other frame; at 4x MFG, one in four - which reads far worse than
