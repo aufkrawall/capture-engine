@@ -5,6 +5,7 @@
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "common/platform/ansi_path.h"
 #include "common/crash/crash_first_chance.h"
+#include "common/crash/pre_termination_dump_attempt.h"
 #include "freeze_watchdog.h"
 #include "hook/fg/fg_transition_trace.h"
 
@@ -34,13 +35,11 @@ std::atomic<Terminate_t> g_OriginalTerminate{nullptr};
 
 std::atomic<Purecall_t> g_OriginalPurecall{nullptr};
 
-std::atomic<bool> g_PreTerminationDumpAttempted{false};
+static ce::crash_dump_policy::PreTerminationDumpAttempt g_PreTerminationDump;
 
 std::once_flag g_FatalTerminationDumpHookOnce;
 
 thread_local bool t_InMiniDumpWriteDumpHook = false;
-
-thread_local bool t_InFatalTerminationDumpHook = false;
 
 void* ResolveModuleExport(const char* moduleName, const char* functionName) {
   HMODULE module = GetModuleHandleA(moduleName);
@@ -478,7 +477,9 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   if (!callerAddress) {
     callerAddress = __builtin_return_address(0);
   }
-  const bool alreadyAttempted = g_PreTerminationDumpAttempted.load(std::memory_order_acquire);
+  if (!targetIsCurrentProcess || g_PreTerminationDump.Started()) {
+    return false;
+  }
   const bool frameGenerationRuntimeActiveOrRecent = IsFrameGenerationRuntimeActiveForTerminationDump();
   const void* terminationRequester = callerAddress;
   const ce::crash_dump_policy::TerminationOrigin origin =
@@ -490,27 +491,25 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   EXCEPTION_RECORD pendingFaultRecord = {};
   CONTEXT pendingFaultContext = {};
   const bool pendingFault =
-      targetIsCurrentProcess && !exceptionRecord &&
+      !exceptionRecord &&
       ce::crash_first_chance::CopyFaultForCurrentThread(&pendingFaultRecord, &pendingFaultContext);
-  const bool insideExceptionDispatch =
-      targetIsCurrentProcess && !alreadyAttempted && ce::crash_first_chance::IsCurrentThreadInsideExceptionDispatch();
+  const bool insideExceptionDispatch = ce::crash_first_chance::IsCurrentThreadInsideExceptionDispatch();
   const bool followsUnresolvedFault =
       ce::crash_dump_policy::IsTerminationFollowingUnresolvedFault(exitCode, insideExceptionDispatch, pendingFault);
-  const bool followsRenderThreadDialog =
-      targetIsCurrentProcess && g_RenderWatchdog.TerminationFollowsRenderThreadDialog();
+  const bool followsRenderThreadDialog = g_RenderWatchdog.TerminationFollowsRenderThreadDialog();
   const bool diagnosticArmed = ce::crash_first_chance::IsDiagnosticArmEnabled();
-  if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
+  if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(true, exitCode, false,
                                                               frameGenerationRuntimeActiveOrRecent, origin,
                                                               followsUnresolvedFault, followsRenderThreadDialog,
                                                               diagnosticArmed)) {
     // Only the FG fallback can suppress a dump the old policy would have taken,
     // so record that decision once instead of leaving a silent gap.
-    if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
+    if (frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
         origin == ce::crash_dump_policy::TerminationOrigin::kPrimaryModule &&
         !ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode) && !diagnosticArmed) {
       LogSuppressedPreTerminationDump(source, exitCode, callerAddress, terminationRequester);
     }
-    if (targetIsCurrentProcess && !alreadyAttempted &&
+    if (!g_PreTerminationDump.Started() &&
         exitCode != ce::crash_dump_policy::kProcessIsTerminatingExitCode &&
         exitCode != ce::crash_dump_policy::kExternalDumpStormTerminationExitCode) {
       ce::fg_session::WriteTransitionHistoryFile(GetCrashDumpDirectory().c_str(), source, exitCode);
@@ -518,16 +517,11 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
     return false;
   }
 
-  if (t_InFatalTerminationDumpHook) {
+  if (!g_PreTerminationDump.TryStart()) {
     return false;
   }
-
-  if (!ce::crash_dump_policy::TryClaimPreTerminationDump(g_PreTerminationDumpAttempted)) {
-    return false;
-  }
+  const auto complete = ce::make_scope_guard([] { g_PreTerminationDump.Complete(); });
   const bool crashLikeExit = ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode);
-
-  t_InFatalTerminationDumpHook = true;
 
   LogFatalExitCallerStack(source, exitCode, callerAddress);
 
@@ -577,7 +571,7 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
            static_cast<unsigned long>(exitCode));
 
   ce::crash_first_chance::FaultCandidate faultCandidate{};
-  const bool hasCandidate = targetIsCurrentProcess &&
+  const bool hasCandidate =
       ce::crash_first_chance::FindBestFaultCandidate(&faultCandidate, GetCurrentThreadId(), exitCode);
 
   char captureReason[160] = {};
@@ -611,10 +605,6 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
         faultCandidate.threadId, faultCandidate.exceptionCode, reinterpret_cast<void*>(faultCandidate.instructionAddress),
         faultCandidate.onTerminatingThread ? 1 : 0, GetCurrentThreadId(), static_cast<unsigned long>(exitCode));
   }
-  const std::string dumpDir = GetCrashDumpDirectory();
-  ce::fg_session::WriteTransitionHistoryFile(dumpDir.c_str(), captureReason, exitCode);
-  OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
-
   HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s scope=%s)",
                    source ? source : "unknown", dumpHint, diagnosticArmed || crashLikeExit || followsUnresolvedFault ? "assert" : "rich");
   // This thread waits for the helper, so `pointers` (on this stack) stays valid
@@ -646,8 +636,21 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
                    wroteDump ? "captured" : "failed", source ? source : "unknown",
                    static_cast<unsigned long>(exitCode), dumpHint);
 
-  t_InFatalTerminationDumpHook = false;
+  // The minidump takes priority over the supplementary trace on a fatal exit.
+  ce::fg_session::WriteTransitionHistoryFile(GetCrashDumpDirectory().c_str(), captureReason, exitCode);
   return wroteDump;
+}
+
+void InitializePreTerminationDumpCoordination() {
+  if (!g_PreTerminationDump.Initialize())
+    HookLogImportant("FatalExitDump: Windows address wait unavailable for competing native self-termination");
+}
+
+NTSTATUS ForwardNativeSelfTermination(NtTerminateProcess_t forward, HANDLE process, NTSTATUS status) {
+  return g_PreTerminationDump.ForwardExit(10'000, [&] { return forward(process, status); }, [&] {
+    HookLogImportant("FatalExitDump: Native self-termination waited for another exit path and timed out (code=0x%08lX)",
+                     static_cast<unsigned long>(status));
+  });
 }
 
 void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context) {

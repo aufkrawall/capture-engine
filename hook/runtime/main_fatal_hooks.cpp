@@ -152,11 +152,9 @@ NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatu
                                     nullptr, nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalNtTerminateProcess.load(std::memory_order_acquire);
-  if (original) {
-    return original(ProcessHandle, ExitStatus);
-  }
-
-  return ::NtTerminateProcess(ProcessHandle, ExitStatus);
+  const auto forward = original ? original : &::NtTerminateProcess;
+  return targetIsCurrentProcess ? ForwardNativeSelfTermination(forward, ProcessHandle, ExitStatus)
+                                : forward(ProcessHandle, ExitStatus);
 }
 
 void __cdecl HookedInvalidParameterNoInfoNoReturn() {
@@ -238,6 +236,7 @@ void TryInstallFatalTerminationDumpHooks() {
     // path, where the loader lock may already be held by the teardown in
     // progress.
     CacheTerminationOriginModuleBounds();
+    InitializePreTerminationDumpCoordination();
     bool patchedAny = false;
     auto patchRaise = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;

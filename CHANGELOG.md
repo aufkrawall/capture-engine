@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Missing crash dumps during concurrent game termination:** let the active crash dump finish before another thread forwards a native self-termination request. Capture Engine writes the minidump before the supplementary frame-generation trace.
+
 - **DX12 sharpening and gamma with native FSR Frame Generation:** recycle completed FidelityFX callback resources using GPU completion markers, including when a runtime submits through a cached command-queue entry. This prevents completed frames from accumulating GPU allocations across play and save loads.
 
 - **DirectX 12 startup crash with an inactive FidelityFX swapchain:** keep sharpening, capture, and overlay submissions on the native swapchain’s present queue when a game such as The Witcher 3 recreates its FSR effect context during startup. The retained output can also draw during a handoff from FSR to DLSS.

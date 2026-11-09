@@ -274,6 +274,8 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 void RegisterCrashDumpEnvironmentHooksForHook();
 
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess, PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord, void* callerAddress = nullptr);
+NTSTATUS ForwardNativeSelfTermination(NtTerminateProcess_t forward, HANDLE process, NTSTATUS status);
+void InitializePreTerminationDumpCoordination();
 // Records the primary image's bounds while the loader is quiet, so classifying a
 // termination request needs no loader call on the termination path itself.
 void CacheTerminationOriginModuleBounds();

@@ -5,14 +5,17 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "common/crash/crash_diagnostic_arm.h"
 #include "common/crash/crash_dump_policy.h"
 #include "common/crash/crash_first_chance.h"
 #include "common/crash/crash_handler_internal.h"
+#include "common/crash/pre_termination_dump_attempt.h"
 #include "hook/fg/fg_transition_trace.h"
 
 std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
@@ -21,6 +24,7 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
     int exitCode = 3;
     bool nested = false;
     bool candidate = false;
+    bool competingExit = false;
     std::string sessionDir;
 
     for (int i = 1; i < argc; ++i) {
@@ -32,6 +36,8 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
             nested = true;
         } else if (std::strcmp(argv[i], "--candidate-fault") == 0) {
             candidate = true;
+        } else if (std::strcmp(argv[i], "--competing-exit") == 0) {
+            competingExit = true;
         } else if (std::strncmp(argv[i], "--session-dir=", 14) == 0) {
             sessionDir = argv[i] + 14;
         }
@@ -61,15 +67,32 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
     }
 
     const bool armed = ce::crash_first_chance::IsDiagnosticArmEnabled();
-    std::atomic<bool> attempted{false};
+    ce::crash_dump_policy::PreTerminationDumpAttempt attempt;
+    if (!attempt.Initialize())
+        return 101;
+    std::thread peer;
     unsigned dumpWrites = 0;
     const auto captureIfNeeded = [&] {
         if (sessionDir.empty() ||
             !ce::crash_dump_policy::ShouldCapturePreTerminationDump(
-                true, static_cast<DWORD>(exitCode), attempted.load(), true,
+                true, static_cast<DWORD>(exitCode), attempt.Started(), true,
                 ce::crash_dump_policy::TerminationOrigin::kPrimaryModule, false, false, armed) ||
-            !ce::crash_dump_policy::TryClaimPreTerminationDump(attempted)) {
+            !attempt.TryStart()) {
             return true;
+        }
+        const auto complete = ce::make_scope_guard([&] { attempt.Complete(); });
+        if (competingExit) {
+            std::promise<bool> sawActiveDump;
+            auto active = sawActiveDump.get_future();
+            peer = std::thread([&, sawActiveDump = std::move(sawActiveDump)]() mutable {
+                bool blocked = false;
+                attempt.ForwardExit(0, [] {}, [&] { blocked = true; });
+                sawActiveDump.set_value(blocked);
+                attempt.ForwardExit(5000, [&] { TerminateProcess(GetCurrentProcess(), static_cast<UINT>(exitCode)); },
+                                    [] { ExitProcess(102); });
+            });
+            if (!active.get())
+                ExitProcess(103);
         }
 
         const HMODULE dbgHelp = LoadLibraryExW(L"dbghelp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -86,7 +109,11 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
                                sessionDir.c_str(), "fatal_exit_child_probe", static_cast<DWORD>(exitCode));
     };
     if (!captureIfNeeded() || (nested && !captureIfNeeded())) {
-        return 100;
+        ExitProcess(100);
+    }
+    if (peer.joinable()) {
+        peer.join();
+        return 104;  // The peer should have terminated the process.
     }
 
     ExitProcess(static_cast<UINT>(exitCode));
@@ -127,7 +154,7 @@ std::filesystem::path CreateTestSessionDir(const char* name) {
 }
 
 bool LaunchChildProbe(const std::filesystem::path& sessionDir, int exitCode, bool nested, bool candidate,
-                      DWORD* outExitCode, DWORD* outPid = nullptr) {
+                      DWORD* outExitCode, DWORD* outPid = nullptr, bool competingExit = false) {
     wchar_t selfPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, selfPath, MAX_PATH);
 
@@ -138,6 +165,9 @@ bool LaunchChildProbe(const std::filesystem::path& sessionDir, int exitCode, boo
     }
     if (candidate) {
         cmd += L" --candidate-fault";
+    }
+    if (competingExit) {
+        cmd += L" --competing-exit";
     }
 
     STARTUPINFOW si{};
@@ -406,7 +436,7 @@ TEST(FatalExitDumpTest, ChildProbeUnarmedProducesNoDump) {
     std::filesystem::remove_all(sessionDir, ec);
 }
 
-TEST(FatalExitDumpTest, ChildProbeArmedProducesOneReadableDumpAndTransitionTrace) {
+TEST(FatalExitDumpTest, CompetingExitPreservesOneReadableDumpAndTransitionTrace) {
     const ScopedMarkerEnvironment markerEnvironment;
     const auto sessionDir = CreateTestSessionDir("child_armed");
 
@@ -419,7 +449,8 @@ TEST(FatalExitDumpTest, ChildProbeArmedProducesOneReadableDumpAndTransitionTrace
 
     DWORD exitCode = 0;
     DWORD pid = 0;
-    ASSERT_TRUE(LaunchChildProbe(sessionDir, 3, /*nested=*/false, /*candidate=*/true, &exitCode, &pid));
+    ASSERT_TRUE(LaunchChildProbe(sessionDir, 3, /*nested=*/false, /*candidate=*/true, &exitCode, &pid,
+                                 /*competingExit=*/true));
     EXPECT_EQ(exitCode, 3u);
 
     // Exactly one dump created!
@@ -472,9 +503,22 @@ TEST(FatalExitDumpTest, ChildProbeArmedNestedHooksProduceOnlyOneDump) {
     ASSERT_TRUE(LaunchChildProbe(sessionDir, 3, /*nested=*/true, /*candidate=*/false, &exitCode, &pid));
     EXPECT_EQ(exitCode, 3u);
 
-    // Nested call attempt is guarded by atomic attempt guard: still exactly 1 dump!
+    // Nested call attempt observes the completed dump.
     EXPECT_EQ(CountDumpFiles(sessionDir), 1u);
 
     std::error_code ec;
     std::filesystem::remove_all(sessionDir, ec);
+}
+
+TEST(FatalExitDumpTest, ReturningNativeExitReleasesItsReservation) {
+    ce::crash_dump_policy::PreTerminationDumpAttempt attempt;
+    ASSERT_TRUE(attempt.Initialize());
+    attempt.ForwardExit(0, [&] {
+        EXPECT_FALSE(attempt.Started());
+        EXPECT_FALSE(attempt.TryStart());
+        attempt.ForwardExit(0, [] {}, [] { ADD_FAILURE() << "Native forwarding reentered on its owner thread"; });
+    }, [] { ADD_FAILURE() << "The native exit should own the idle reservation"; });
+    EXPECT_TRUE(attempt.TryStart());
+    attempt.Complete();
+    EXPECT_FALSE(attempt.TryStart());
 }

@@ -44,6 +44,16 @@ older dump, read the first-chance recorder directly: `x capture_hook_x64!*crash_
 20261026_165613/_175321, see `third-party-dll-loading.md`). The frames above the fault are usually not in such a
 dump, so `k` stops at the fault.
 
+The pre-termination dump owner and the `NtTerminateProcess` forwarder share
+a single interlocked state (`common/crash/pre_termination_dump_attempt.h`).
+Competing native self-terminations wait for the owner's dump and trace to finish,
+with a bounded timeout if the owner is stuck. The minidump is attempted before
+the supplementary FG trace. An Avatar save-load crash reached the dump decision
+on one thread while another thread entered the termination path, then exited
+with a zero-byte FG trace and no helper launch log. The concurrent child probe
+in `tests/test_fatal_exit_dump.cpp` checks that the second thread can terminate
+only after a readable minidump has been published.
+
 Stack overflows (`0xC00000FD`) get a verdict in `crash.log` before any dump: `StackOverflow attribution:` -
 frames unwound with the images' own unwind data, the repeating cycle at the fault, `CE frames=N` over the whole
 walk, and the outermost frames, each as `<export name>+offset` (the name the image was linked as, so a renamed
