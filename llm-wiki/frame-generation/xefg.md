@@ -41,7 +41,12 @@ on which module's stack a Present came from:
 3. **The queue follows `ResizeBuffers1`.** XeFG rebinds its native chain to its internal queue there (the SDK
    ignores the caller's queues); CE records the queue before forwarding (`NoteRuntimeOwnedSwapchainPresentQueue`,
    also on the reconcile-only detour).
-4. **Status `XeFG Nx`** (overlay type 4, `RuntimeMode::kXeFG`): presenter registered and `SetEnabled(1)`. The factor
+4. **Status `XeFG Nx`** (overlay type 4, `RuntimeMode::kXeFG`): presenter registered and enabled. If CE has
+   observed no accepted `SetEnabled` call for the presenting context, it uses `GetLastPresentStatus` replies the
+   application already requests. In the Witcher 3 `witcherfsrfg` session, a foreign owner held the setter entry
+   while the status reports showed two queued frames and generation enabled. CE drew on the runtime output
+   chain but published no XeFG status. An accepted setter takes precedence over late reports of earlier Presents.
+   The factor
    is the measured output/application cadence (`CadenceTracker`, outputs per Present, application frames per
    `SetPresentId`); `SetNumInterpolatedFrames + 1` only until one is measured, and always its ceiling: a hitch leaves a
    window with more outputs than present IDs (`application=25.7 output=85.9` read 3x, `20261104_210842`). Native NVAPI/Streamline latency reports

@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **XeFG status in the inject overlay:** the overlay reports active XeFG in The Witcher 3 and other games where another component owns the XeFG enable hook. Capture Engine reads the runtime’s last-present status when it has not observed an enable call.
+
 - **False freeze reports during game startup:** ordinary startup dialogs, including the Heroes of the Storm launch dialog, no longer trigger freeze dumps without evidence that presentation stalled. Recognized graphics error dialogs can still trigger a dump immediately.
 
 - **Inject overlay during DLSS Frame Generation swapchain recreation:** prepare the replacement swapchain and rearm the overlay callback when DLSS Frame Generation stays enabled across a brief return to the game queue. This closes the overlay gap during the swapchain sequence observed with Ubisoft Connect active.

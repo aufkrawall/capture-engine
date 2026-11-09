@@ -53,6 +53,21 @@ TEST(FlowXeFG, Present1TogglesKeepTheOverlayOnEveryOutput) {
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowXeFG, PublishesGenerationWhenAnotherComponentOwnsSetEnabled) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ExpectPublished(game, 0, 1, "XeFG before generation");
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1, /*statusOnly=*/true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(180)) << game.Error();
+    ExpectPublished(game, kXeFGStatusType, 2, "XeFG on through last-present status");
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(false, 1, /*statusOnly=*/true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+    ExpectPublished(game, 0, 1, "XeFG off through last-present status");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // XeFG's presenter is pacing-critical: with generation on, CE must not block it on the overlay's GPU work, and the
 // deferred Signal must still prove every overlay slot (ResetAllocatorForDraw would skip the overlay otherwise, which
 // the coverage check would catch). 20261104_144527: the wait cost 2.4-13 ms per output.

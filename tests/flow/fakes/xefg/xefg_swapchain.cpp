@@ -415,13 +415,17 @@ extern "C" __declspec(dllexport) Result xefgSwapChainD3D12GetSwapChainPtr(Handle
     return SUCCEEDED(ContextOf(handle)->proxy->QueryInterface(riid, swapchain)) ? kSuccess : kErrorInvalidArgument;
 }
 
-extern "C" __declspec(dllexport) Result xefgSwapChainSetEnabled(Handle handle, uint32_t enabled) {
+extern "C" __declspec(dllexport) Result ceFlowXeFGSetEnabledDirect(Handle handle, uint32_t enabled) {
     if (!handle)
         return kErrorInvalidArgument;
     std::lock_guard<std::mutex> lock(ContextOf(handle)->settingsMutex);
     ContextOf(handle)->settings.enabled = enabled != 0;
     Log(kModule, "SetEnabled(%u)", enabled);
     return kSuccess;
+}
+
+extern "C" __declspec(dllexport) Result xefgSwapChainSetEnabled(Handle handle, uint32_t enabled) {
+    return ceFlowXeFGSetEnabledDirect(handle, enabled);
 }
 
 extern "C" __declspec(dllexport) Result xefgSwapChainSetNumInterpolatedFrames(Handle handle, uint32_t frames) {

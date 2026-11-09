@@ -35,6 +35,7 @@ struct XeFGGame {
     xell_api::Handle latency = nullptr;
     uint32_t presentId = 0;
     bool sendPresentIds = true;
+    xefg_api::PFN_GetLastPresentStatus pollStatus = nullptr;
 };
 
 namespace {
@@ -116,17 +117,25 @@ bool FlowGame::CreateXeFGSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComPtr<IDX
     if (x.getSwapchain(x.context, __uuidof(IDXGISwapChain1), &proxy) != xefg_api::kSuccess || !proxy)
         return Fail("xefgSwapChainD3D12GetSwapChainPtr", E_NOINTERFACE);
     swapchain->Attach(static_cast<IDXGISwapChain1*>(proxy));
-    x.setEnabled(x.context, 0);
     return true;
 }
 
-bool FlowGame::SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames) {
+bool FlowGame::SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames, bool statusOnly) {
     if (!xefg_ || !xefg_->context || kind_ != SwapchainKind::kXeFG)
         return Fail("SetXeFGFrameGeneration without an XeFG swapchain", E_NOINTERFACE);
     if (xefg_->setInterpolatedFrames &&
         xefg_->setInterpolatedFrames(xefg_->context, interpolatedFrames) != xefg_api::kSuccess)
         return Fail("xefgSwapChainSetNumInterpolatedFrames", E_INVALIDARG);
-    if (xefg_->setEnabled(xefg_->context, enabled ? 1 : 0) != xefg_api::kSuccess)
+    auto setEnabled = xefg_->setEnabled;
+    if (statusOnly) {
+        // Stand in for another component calling a cached implementation without entering CE's setter.
+        setEnabled = Resolve<xefg_api::PFN_SetEnabled>(xefg_->xefg, "ceFlowXeFGSetEnabledDirect");
+        xefg_->pollStatus =
+            Resolve<xefg_api::PFN_GetLastPresentStatus>(xefg_->xefg, "xefgSwapChainGetLastPresentStatus");
+        if (!setEnabled || !xefg_->pollStatus)
+            return Fail("resolving status-only XeFG test exports", E_NOINTERFACE);
+    }
+    if (setEnabled(xefg_->context, enabled ? 1 : 0) != xefg_api::kSuccess)
         return Fail("xefgSwapChainSetEnabled", E_FAIL);
     return true;
 }
@@ -153,6 +162,10 @@ bool FlowGame::SetXeLLFrameCap(uint32_t minimumIntervalUs) {
 void FlowGame::SubmitXeFGFrame() {
     if (!xefg_ || !xefg_->context)
         return;
+    if (xefg_->pollStatus) {
+        xefg_api::PresentStatus status{};
+        xefg_->pollStatus(xefg_->context, &status);
+    }
     const uint32_t frame = ++xefg_->presentId;
     xefg_->xellSleep(xefg_->latency, frame);
     xefg_->xellAddMarker(xefg_->latency, frame, xell_api::kSimulationStart);

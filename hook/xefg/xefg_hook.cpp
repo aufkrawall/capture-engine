@@ -35,6 +35,7 @@ struct ContextState {
     uint32_t initFlags = 0;
     uint32_t maxInterpolatedFrames = 0;
     bool enabled = false;  // the SDK's default: generation off until SetEnabled(1)
+    bool enableCallObserved = false;
     uint32_t interpolatedFrames = 1;
     int32_t uiComposition = kUiCompositionDisabled;
     void* latencyContext = nullptr;
@@ -234,6 +235,7 @@ Result Detour_SetEnabled(Handle handle, uint32_t enabled) {
         if (result >= kSuccess) {
             changed = context.enabled != (enabled != 0);
             context.enabled = enabled != 0;
+            context.enableCallObserved = true;
         }
         PublishStateLocked();
     }
@@ -308,6 +310,22 @@ Result Detour_GetLastPresentStatus(Handle handle, PresentStatus* status) {
     }
     const Result result = original(handle, status);
     if (result >= kSuccess && status) {
+        // An earlier component can own SetEnabled's entry. The provider's last-present report is then
+        // our enable evidence. Once CE sees an accepted setter on this context, a late report of a
+        // previous Present cannot override that newer intent.
+        if (handle && handle == g_presentingContext.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(g_contextsMutex);
+            const auto it = g_contexts.find(handle);
+            const bool enabled = status->isFrameGenEnabled != 0;
+            if (it != g_contexts.end() && it->second.initialized && !it->second.enableCallObserved &&
+                it->second.enabled != enabled &&
+                handle == g_presentingContext.load(std::memory_order_relaxed)) {
+                it->second.enabled = enabled;
+                PublishStateLocked();
+                HookLogImportant("XeFG: recovered generation=%d from last present status (context=%p frames=%u)",
+                                 enabled, handle, status->framesPresented);
+            }
+        }
         static ce::log_meter::ChangeGate s_gate;
         if (const auto verdict = s_gate.Observe(
                 ce::log_meter::FieldKey(status->framesPresented, status->frameGenResult, status->isFrameGenEnabled))) {
