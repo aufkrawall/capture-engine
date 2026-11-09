@@ -284,8 +284,7 @@ TEST(DXGISharedSourceTest, RepeatedPureDLSSHandoffUsesOnlyPriorHealthyPostSLProo
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty()) << source.string();
 
-    const size_t successfulSubmit =
-        text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)");
+    const size_t successfulSubmit = text.find("if (healthyOutput)");
     const size_t latch = text.find("dx12_hook_g_HadSuccessfulPostSLPhase.exchange(true", successfulSubmit);
     const size_t handoffLoad = text.find("dx12_hook_g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire)");
     const size_t prewarmDecision = text.find("ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(", handoffLoad);

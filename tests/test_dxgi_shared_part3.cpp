@@ -302,21 +302,30 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     ASSERT_NE(postSLRender, std::string::npos);
     const size_t postSubmitHealth = text.find("HRESULT postDevReason = dev->GetDeviceRemovedReason();", postSLRender);
     const size_t healthySuccessfulSubmit =
-        text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)", postSubmitHealth);
+        text.find("const bool healthyOutput = SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue;",
+                  postSubmitHealth);
+    const size_t confirmedRenderTransaction = text.find("g_PostSLLifecycle.ConfirmRender(", healthySuccessfulSubmit);
+    const size_t healthyOutputGuard = text.find("if (healthyOutput)", confirmedRenderTransaction);
     const size_t successfulSubmitSequence =
-        text.find("++dx12_hook_s_PostSLSuccessfulSubmitSequence;", healthySuccessfulSubmit);
+        text.find("++dx12_hook_s_PostSLSuccessfulSubmitSequence;", healthyOutputGuard);
+    const size_t exactPostSLWindow = text.find("lastSuccessfulWindow.store(outputWindow", successfulSubmitSequence);
     const size_t exactPostSLProof =
-        text.find("dx12_hook_g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain", successfulSubmitSequence);
+        text.find("dx12_hook_g_LastSuccessfulPostSLSwapchain.store(pSwapChain", exactPostSLWindow);
     const size_t confirmedPostSL =
         text.find("});\nif (!confirmedCurrentEpoch)", exactPostSLProof);
     ASSERT_NE(postSubmitHealth, std::string::npos);
     ASSERT_NE(healthySuccessfulSubmit, std::string::npos);
+    ASSERT_NE(confirmedRenderTransaction, std::string::npos);
+    ASSERT_NE(healthyOutputGuard, std::string::npos);
     ASSERT_NE(successfulSubmitSequence, std::string::npos);
+    ASSERT_NE(exactPostSLWindow, std::string::npos);
     ASSERT_NE(exactPostSLProof, std::string::npos);
     ASSERT_NE(confirmedPostSL, std::string::npos);
     EXPECT_LT(postSubmitHealth, healthySuccessfulSubmit);
-    EXPECT_LT(healthySuccessfulSubmit, successfulSubmitSequence);
-    EXPECT_LT(successfulSubmitSequence, exactPostSLProof);
+    EXPECT_LT(healthySuccessfulSubmit, confirmedRenderTransaction);
+    EXPECT_LT(healthyOutputGuard, successfulSubmitSequence);
+    EXPECT_LT(successfulSubmitSequence, exactPostSLWindow);
+    EXPECT_LT(exactPostSLWindow, exactPostSLProof);
     EXPECT_LT(exactPostSLProof, confirmedPostSL)
         << "the OFF callback must not observe confirmation before exact proxy ownership proof";
 }
@@ -511,7 +520,7 @@ TEST(DXGISharedSourceTest, NormalCommandSubmitCannotRetireExactOffKeepAliveWitho
 
     const size_t warmResumeArm =
         text.find("dx12_hook_g_PostSLWarmResumePreservationPending.store(callbackAlreadyInstalled &&");
-    const size_t successfulPostSLSubmit = text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain");
+    const size_t successfulPostSLSubmit = text.find("if (healthyOutput)");
     const size_t warmResumeCompletion =
         text.find("dx12_hook_g_PostSLWarmResumePreservationPending.exchange(false", successfulPostSLSubmit);
     ASSERT_NE(warmResumeArm, std::string::npos);

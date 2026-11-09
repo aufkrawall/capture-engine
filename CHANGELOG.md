@@ -6,7 +6,7 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **Inject overlay when leaving DLSS Frame Generation during rapid switches:** draw the first native DX12 frame when the game replaces the confirmed Streamline output while its OFF request is still held. This fixes the brief blank seen with Steam Overlay and ReShade active.
+- **Inject overlay when leaving DLSS Frame Generation during rapid switches:** draw on the first native DX12 frame and report FG off when the game replaces the confirmed Streamline output while its OFF request is still held. This fixes the brief blank seen with Steam Overlay and ReShade active.
 
 - **Inject overlay during rapid FSR-to-DLSS switches:** draw on the replacement Streamline swapchain's first passthrough frame when its overlay backend and presentation queue are ready. This closes the brief gap seen in the DX12 FG switch test with Steam Overlay active.
 
