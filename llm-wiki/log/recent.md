@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-11-09 - Concurrent DXGI Present installers
+
+- In a DX12 switch-app reproduction with ReShade, the WARP bootstrap installed the below-chain body hooks while the first real swapchain installer fell back to the entry prepend. The WER dump showed the entry trampoline returning through CE's body patch and repeatedly entering `DetourPresent` until stack exhaustion.
+- `InstallPresentInlineHooks` holds the shared DXGI hook lock through route selection, patching, and publication. The same lock covers vtable ownership and the runtime-wrap handoff. A partial install retries the missing method using the established entry or body strategy.
+- The initiating Steam + ReShade session had only the body hooks and lost the device during a DLSS Present before accepting the OFF request. That device loss is distinct from the reproduced recursive stack.
+
 ### 2026-11-08 - Deferred D3D12 overlay fence ownership during FSR handoff
 
 - The Talos-style WARP flow faulted in `PrepareOverlayGpuRetirement` at the deferred queue's virtual `Signal` call. The symbolized x64 minidump showed `CleanupRTVs` running during the fresh Streamline swapchain handoff after the FSR queue had been released.

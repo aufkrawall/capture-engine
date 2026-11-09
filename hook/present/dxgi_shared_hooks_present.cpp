@@ -164,6 +164,16 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 
     InstallSetColorSpace1InlineHook(pSwapChain, "present-bootstrap");
 
+    // The WARP bootstrap and a real swapchain can arrive together. Hold the same lock
+    // as the vtable installer and runtime-wrap handoff from route selection through
+    // publication so a refused body patch cannot fall back over a peer's successful one.
+    std::lock_guard<std::mutex> installLock(g_SharedMutex);
+    if (s_presentInlineInstallComplete.load(std::memory_order_acquire) ||
+        s_presentWrapperOnlyAfterRuntimeWrap.load(std::memory_order_acquire)) {
+        HookLog("InstallPresentInlineHooks: Inline hooks already installed");
+        return true;
+    }
+
     void* presentAddr = GetPresentAddress(pSwapChain);
     void* present1Addr = GetPresent1Address(pSwapChain);
 
@@ -214,11 +224,6 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    if (s_presentInlineInstallComplete.load(std::memory_order_acquire) ||
-        s_presentWrapperOnlyAfterRuntimeWrap.load(std::memory_order_acquire)) {
-        HookLog("InstallPresentInlineHooks: Inline hooks already installed");
-        return true;
-    }
     {
         const PresentMethodViews views = GetPresentMethodViews();
         if (CoversPresentMethod(views) || CoversPresent1Method(views)) {
@@ -313,16 +318,12 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     // therefore decided nothing but who was first, and CE being first is what breaks the other
     // overlay (Cyberpunk + Steam, 20260816_154722).
     const bool belowChainViewExists = IsPresentInterceptedBelowForeignChain();
-    // x86 too since 2026-10-17 (InstallDeepHookImplX86): without it CE owned the x86
-    // entry and Steam's later DXGI hook skipped it (BioShock Infinite 20261017_000225).
-    constexpr bool bodyHooksSupported = true;
-    // A late overlay can save CE's entry patch before its load notification is serviced.
-    // Reserve native entries at bootstrap instead of trying to repair that saved chain later.
-    const bool reserveForLateOverlays = ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays(
+    using ce::dxgi_present_hook::PresentInlineHookRoute;
+    const auto route = ce::dxgi_present_hook::SelectPresentInlineHookRoute(
+        dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr, belowChainViewExists,
         IsAddressInsideSystemDXGI(presentAddr) && (!present1Addr || IsAddressInsideSystemDXGI(present1Addr)),
-        bodyHooksSupported, dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr);
-    if (reserveForLateOverlays || ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount) ||
-        belowChainViewExists) {
+        ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount));
+    if (route != PresentInlineHookRoute::kEntryPrepend) {
         const PFN_Present previousPresent = dxgi_shared_oPresent;
         const PFN_Present1 previousPresent1 = dxgi_shared_oPresent1;
         dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
@@ -336,8 +337,9 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         // The widest entry-patch form CE recognizes when it cannot see one: placing the body
         // hook deeper than the foreign patch is always safe, placing it inside one never is.
         const int observedEntryPatchSize =
-            reserveForLateOverlays ? ce::dxgi_present_hook::kReservedEntryBytes
-                                   : ce::dxgi_present_hook::ObservedEntryPatchSpan(entryUsesE9);
+            route == PresentInlineHookRoute::kReserveNativeEntry
+                ? ce::dxgi_present_hook::kReservedEntryBytes
+                : ce::dxgi_present_hook::ObservedEntryPatchSpan(entryUsesE9);
         HookLogImportant(
             "InstallPresentInlineHooks: reserving the Present entry for third-party overlays (loaded=%zu) "
             "(%s at %p -> %p, loadedOverlay=%s lastLoadedOverlay=%s foreignJumpVisibleNow=%d fgInterposer=%d) — CE "
@@ -628,6 +630,11 @@ namespace DXGIShared {
 bool ShouldRetryPresentInlineHookInstall() {
     if (s_presentInlineInstallComplete.load(std::memory_order_acquire) ||
         s_presentWrapperOnlyAfterRuntimeWrap.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
+    if (s_presentInlineInstallComplete.load(std::memory_order_relaxed) ||
+        s_presentWrapperOnlyAfterRuntimeWrap.load(std::memory_order_relaxed)) {
         return false;
     }
     // Before the first attempt no entry is known and nothing is covered, so this retries too.

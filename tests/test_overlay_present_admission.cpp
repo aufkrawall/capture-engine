@@ -2,12 +2,23 @@
 #include "hook/present/dxgi_present_hook_policy.h"
 
 TEST(DXGISharedTest, NativePresentEntriesAreReservedBeforeAnOverlayLoads) {
-    using ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays;
-    EXPECT_TRUE(ShouldReserveEntryForLateOverlays(true, true, false));
-    EXPECT_FALSE(ShouldReserveEntryForLateOverlays(false, true, false));
-    EXPECT_FALSE(ShouldReserveEntryForLateOverlays(true, false, false));
-    EXPECT_FALSE(ShouldReserveEntryForLateOverlays(true, true, true));
+    using ce::dxgi_present_hook::PresentInlineHookRoute;
+    using ce::dxgi_present_hook::SelectPresentInlineHookRoute;
+    EXPECT_EQ(SelectPresentInlineHookRoute(false, false, true, false), PresentInlineHookRoute::kReserveNativeEntry);
+    EXPECT_EQ(SelectPresentInlineHookRoute(false, false, false, false), PresentInlineHookRoute::kEntryPrepend);
+    EXPECT_EQ(SelectPresentInlineHookRoute(false, false, false, true), PresentInlineHookRoute::kBelowForeignEntry);
     EXPECT_EQ(ce::dxgi_present_hook::kReservedEntryBytes, 14);
+}
+
+TEST(DXGISharedTest, PartialPresentInstallKeepsTheEstablishedRoute) {
+    using ce::dxgi_present_hook::PresentInlineHookRoute;
+    using ce::dxgi_present_hook::SelectPresentInlineHookRoute;
+    // A new overlay arrived after one entry prepend succeeded. A body hook would
+    // send that method's predecessor straight back into CE's detour.
+    EXPECT_EQ(SelectPresentInlineHookRoute(true, false, true, true), PresentInlineHookRoute::kEntryPrepend);
+    // A second installer sees the first installer's body hook even if the new
+    // swapchain appears to belong to a different overlay or frontend.
+    EXPECT_EQ(SelectPresentInlineHookRoute(false, true, false, false), PresentInlineHookRoute::kBelowForeignEntry);
 }
 
 TEST(DXGISharedTest, NativeEntryReservationPreservesIndependentFrontendVTableInterception) {
@@ -21,7 +32,7 @@ TEST(DXGISharedTest, NativeEntryReservationPreservesIndependentFrontendVTableInt
 TEST(DXGISharedSourceTest, NativeEntryReservationPrecedesTheOrdinaryPrepend) {
     const auto source = ce::test_source::ReadFile(
         std::filesystem::current_path() / "hook/present/dxgi_shared_hooks_present.cpp");
-    const size_t reserve = source.find("ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays(");
+    const size_t reserve = source.find("ce::dxgi_present_hook::SelectPresentInlineHookRoute(");
     ASSERT_NE(reserve, std::string::npos);
     EXPECT_NE(source.find("IsAddressInsideSystemDXGI(presentAddr)"), std::string::npos);
     EXPECT_NE(source.find("IsAddressInsideSystemDXGI(present1Addr)"), std::string::npos);

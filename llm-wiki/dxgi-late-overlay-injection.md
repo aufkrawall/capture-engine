@@ -78,7 +78,7 @@ For the wider hook-chain, shutdown, FG and interposer contracts, see
   has not been measured inside RTSS. `owner=<no jump>` was a diagnostic limitation:
   the ownership primitive returns no target for an intact CE patch or a never-owned entry.
   The probe now decodes E9/FF 25 directly when that output is null.
-- Fix: `ShouldReserveEntryForLateOverlays` selects the existing body-hook installation
+- Fix: `SelectPresentInlineHookRoute` selects the existing body-hook installation
   at bootstrap for native system-DXGI Present/Present1 (x86 too since 2026-10-17), even with
   zero loaded overlays. Reserve at least 14 entry bytes (x86: 6) so every recognized foreign
   patch remains outside CE's body patch. CE therefore never enters the later overlay's saved

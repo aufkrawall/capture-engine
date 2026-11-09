@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DirectX Present crash during startup or frame-generation switching:** serialize hook installation when the first game swapchain and the bootstrap swapchain arrive together. Capture Engine keeps one forwarding route for Present and Present1, preventing recursive calls and a stack overflow.
+
 - **Inject overlay when leaving DLSS Frame Generation during rapid switches:** draw on the first native DX12 frame and report FG off when the game replaces the confirmed Streamline output while its OFF request is still held. This fixes the brief blank seen with Steam Overlay and ReShade active.
 
 - **Inject overlay during rapid FSR-to-DLSS switches:** draw on the replacement Streamline swapchain's first passthrough frame when its overlay backend and presentation queue are ready. This closes the brief gap seen in the DX12 FG switch test with Steam Overlay active.
