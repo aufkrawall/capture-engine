@@ -382,8 +382,15 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         const bool exactPrewarmedStreamlineHandoff =
             pSwapChain != nullptr &&
             dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(std::memory_order_acquire) == pSwapChain;
+        // Effect teardown can leave a queued Present on FFX's native chain while the DLSS
+        // recovery guard is armed. Stage 2b uses the recorded queue for this exact output.
+        // Keep the original-game proof separate so this Present cannot retire DLSS recovery.
+        const bool exactFFXOutputQueue =
+            ce::fg_presenter::PresenterFor(pSwapChain) == ce::fg_presenter::Presenter::kFFXSwapchain &&
+            ce::fg_presenter::OutputQueue(pSwapChain) != nullptr;
         const auto recoveryRoute = ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
-            true, actualFGActive, streamlineFGRunning, postFSRNormalRouteOwnershipProven, postSLKeepAliveArmed,
+            true, actualFGActive, streamlineFGRunning, postFSRNormalRouteOwnershipProven || exactFFXOutputQueue,
+            postSLKeepAliveArmed,
             postSLCallbackReady, hasPostSLRenderQueue,
             lastSuccessfulPostSLSwapchain != nullptr && pSwapChain == lastSuccessfulPostSLSwapchain,
             exactPrewarmedStreamlineHandoff);

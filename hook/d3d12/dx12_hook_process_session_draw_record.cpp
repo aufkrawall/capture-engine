@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "hook/d3d12/dx12_api_label.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
@@ -215,11 +216,14 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
             // Use offscreen compositing to avoid explicit barriers on
             // the backbuffer entirely.  Cleared on clean swapchain
             // transition.
+            // A final native FFX Present can arrive while this recovery flag is armed.
+            // Its backbuffer is in PRESENT on the recorded output queue, so draw directly.
             const bool usePostFSROffscreenCopy =
-                dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG;
-            bool useOffscreenCopy = usePostFSROffscreenCopy;
+                dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG &&
+                !(ce::fg_presenter::PresenterFor(pSwapChain) == ce::fg_presenter::Presenter::kFFXSwapchain &&
+                  ce::fg_presenter::OutputQueue(pSwapChain) == gameQueue);
 
-            if (useOffscreenCopy) {
+            if (usePostFSROffscreenCopy) {
                 offscreenCompositeRequired = true;
                 const char* offscreenReason = "post-FSR DLSS";
                 if (!bb) {

@@ -334,6 +334,13 @@ that cross-queue backbuffer access (`0x887A002B` in the game's breadcrumbs), and
 The FFX output cannot establish the original game queue. The WARP regression destroys and recreates the effect
 before any enabled configure, keeps the native FFX output, and checks post-processing and device health.
 
+A final queued FFX output can reach the inactive-DLSS recovery guard after an OFF edge. The guard admits the
+registered native FFX output on its own queue while retaining the separate original-game proof for the later
+application handoff. That final output uses a direct draw with explicit PRESENT transitions. The handoff's
+offscreen copy path would attempt to promote the backbuffer to COPY_DEST after reading it as COPY_SOURCE
+in the same command list. `FlowSwitch.TalosStyleRuntimeSwitchesKeepTheOverlay` checks coverage and device health
+at this boundary.
+
 ## Validation pending (hardware)
 
 Native XeFG (a game that ships it), Talos + OptiScaler `FGOutput=XeFG` (`FGXeFGDebugView` marks generated frames),
