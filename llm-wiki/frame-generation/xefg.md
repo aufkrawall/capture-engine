@@ -319,6 +319,13 @@ draw above CE there while they draw (no missed outputs when they stop). GTA with
 no-UI route if OptiScaler registers no UI resource there too; if it registers a real one, the UI-resource handover
 applies. Same AMD runtime and same-batch append that GTA validated on 2026-10-03 (`20261003_120641`).
 
+The Witcher 3 session `witcherfsrfg` showed that a wrapped FFX descriptor queue can expose a different device
+interface from its replacement backbuffers, while CE's cached original game queue refers to a different queue.
+The FFX proxy route resolves the descriptor's own native queue through the interposers' COM queries at registration
+and keeps the existing target-device validation. This also covers no-UI startup and suspension without a GPU copy.
+The session did not establish an AMD final-batch anchor through the foreign ECL forwarding layer. Hardware retest
+should distinguish the proxy-backbuffer baseline from the post-composition route.
+
 ## Validation pending (hardware)
 
 Native XeFG (a game that ships it), Talos + OptiScaler `FGOutput=XeFG` (`FGXeFGDebugView` marks generated frames),

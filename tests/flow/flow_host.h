@@ -59,6 +59,7 @@ struct GameOptions {
     SwapchainKind swapchain = SwapchainKind::kNative;
     FSRUiResource fsrUi = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
+    bool fsrWrappedGameQueue = false;  // the descriptor queue has two native-interface proxy layers
     // kFidelityFX: the game's FidelityFX image is loaded but unused; frame generation runs on a second image of the
     // same name from a tool's folder, its exports read from its own export table so that none of CE's
     // GetProcAddress or import routes sees them (OptiScaler with FGOutput=FSRFG, 20261023_221541).
@@ -283,6 +284,7 @@ private:
     FSRUiResource fsrUi_ = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
     bool xefgFromSwapchain_ = false;
+    bool fsrWrappedGameQueue_ = false;
     bool fsrToolRuntimeCopy_ = false;
     bool fsrToolFFXInputs_ = false;
     ComPtr<IDXGIFactory4> nativeFactory_;

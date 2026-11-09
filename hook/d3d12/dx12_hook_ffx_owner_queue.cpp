@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_device_identity.h"
+#include "dx12_queue_identity.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/sharpen_dxgi_format.h"
@@ -34,14 +35,29 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
                                                         ID3D12CommandQueue* presentationQueue, bool onlyWhenMissing,
                                                         bool recoveredOriginalGameQueue,
                                                         bool hasProtectedInnerPresentQueue, const char* source) {
-    if (!context || !swapChain || !presentationQueue ||
-        presentationQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+    if (!context || !swapChain || !presentationQueue) {
         return false;
     }
 
+    auto nativeQueue = ce::dx12_queue_identity::AcquireNativeQueue(presentationQueue);
+    if (!nativeQueue) {
+        static ce::log_meter::ChangeGate s_unresolvedQueue;
+        if (s_unresolvedQueue.Observe(ce::log_meter::FieldKey(presentationQueue)))
+            HookLogImportant("DX12: Native-FSR proxy queue could not be resolved (proxy=%p descriptorQueue=%p)",
+                             swapChain, presentationQueue);
+        return false;
+    }
+    const auto queueDesc = nativeQueue->GetDesc();
+    if (queueDesc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+        return false;
+    }
+    ID3D12CommandQueue* const descriptorView = presentationQueue;
+    const bool unwrapped = nativeQueue.Get() != presentationQueue;
+    presentationQueue = nativeQueue.Get();
     ID3D12Device* descriptorDevice = nullptr;
     presentationQueue->GetDevice(IID_PPV_ARGS(&descriptorDevice));
-    const bool streamlineWrappedQueue = descriptorDevice && StreamlineHook::IsAcceptedD3D12Device(descriptorDevice);
+    const bool streamlineWrappedQueue =
+        !unwrapped && descriptorDevice && StreamlineHook::IsAcceptedD3D12Device(descriptorDevice);
     ID3D12CommandQueue* underlyingGameQueue =
         streamlineWrappedQueue ? DX12_AcquireOriginalGameQueueForOverlay() : nullptr;
 
@@ -95,12 +111,13 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
     }
     HookLogImportant(
         "DX12: Captured native-FSR swapchain presentation queue (context=%p proxy=%p descriptorQueue=%p "
-        "descriptorDevice=%p streamlineWrapped=%d recoveredOriginal=%d underlyingGameQueue=%p "
+        "descriptorView=%p unwrapped=%d descriptorDevice=%p streamlineWrapped=%d recoveredOriginal=%d "
+        "underlyingGameQueue=%p "
         "underlyingDevice=%p nodeMask=%u) — source=%s; direct overlay work uses the exact descriptor/recovered "
         "owner queue, or the validated underlying game queue for a proven Streamline wrapper",
-        context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0,
+        context, swapChain, presentationQueue, descriptorView, unwrapped, descriptorDevice, streamlineWrappedQueue ? 1 : 0,
         recoveredOriginalGameQueue ? 1 : 0, underlyingGameQueue, underlyingDevice,
-        presentationQueue->GetDesc().NodeMask, source && source[0] ? source : "unknown");
+        queueDesc.NodeMask, source && source[0] ? source : "unknown");
     if (underlyingDevice) {
         underlyingDevice->Release();
     }

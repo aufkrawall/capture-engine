@@ -14,7 +14,9 @@
 #include <ffx_framegeneration.h>
 #include <dx12/ffx_api_framegeneration_dx12.h>
 
+#include "hook/d3d12/dx12_queue_identity.h"
 #include "tests/flow/flow_host.h"
+#include "tests/flow/queue_dispatch_probe.h"
 
 namespace ce::flow {
 
@@ -220,7 +222,13 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
     create.hwnd = window_;
     create.desc = &swapchainDesc;
     create.dxgiFactory = nativeFactory_.Get();
-    create.gameQueue = queue_.Get();
+    ComPtr<ID3D12CommandQueue> innerQueue;
+    ComPtr<ID3D12CommandQueue> outerQueue;
+    if (fsrWrappedGameQueue_) {
+        innerQueue.Attach(new FFXQueueView(queue_.Get(), ce::dx12_queue_identity::kReShadeNative));
+        outerQueue.Attach(new FFXQueueView(innerQueue.Get(), ce::dx12_queue_identity::kStreamlineNative));
+    }
+    create.gameQueue = outerQueue ? outerQueue.Get() : queue_.Get();
     if (ffx.createContext(&ffx.swapchainContext, &create.header, nullptr) != FFX_API_RETURN_OK || !ffxSwapchain)
         return Fail("ffxCreateContext(frame generation swapchain)", E_FAIL);
     swapchain->Attach(ffxSwapchain);

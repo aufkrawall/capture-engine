@@ -172,4 +172,28 @@ public:
     }
 };
 
+// A graphics proxy may expose a different device view from the native resources it forwards.
+class FFXQueueView final : public QueueDispatchProbe {
+public:
+    FFXQueueView(ID3D12CommandQueue* underlying, REFIID nativeInterface)
+        : QueueDispatchProbe(underlying), underlying_(underlying), nativeInterface_(nativeInterface) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
+        if (id == nativeInterface_)
+            return underlying_->QueryInterface(__uuidof(ID3D12CommandQueue), out);
+        return QueueDispatchProbe::QueryInterface(id, out);
+    }
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID, void** out) override {
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    void STDMETHODCALLTYPE ExecuteCommandLists(UINT count, ID3D12CommandList* const* lists) override {
+        Submit(count, lists, 3);
+    }
+
+private:
+    ID3D12CommandQueue* underlying_;  // retained by QueueDispatchProbe
+    GUID nativeInterface_;
+};
+
 }  // namespace ce::flow

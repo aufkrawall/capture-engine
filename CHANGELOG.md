@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **FSR Frame Generation inject overlay:** keep the overlay visible through FSR activation and suspension in The Witcher 3 with stacked graphics proxies. Capture Engine resolves the underlying queue from the FidelityFX swapchain descriptor and checks that it owns the target device before drawing.
+
 - **XeFG status in the inject overlay:** the overlay reports active XeFG in The Witcher 3 and other games where another component owns the XeFG enable hook. Capture Engine reads the runtime’s last-present status when it has not observed an enable call.
 
 - **False freeze reports during game startup:** ordinary startup dialogs, including the Heroes of the Storm launch dialog, no longer trigger freeze dumps without evidence that presentation stalled. Recognized graphics error dialogs can still trigger a dump immediately.

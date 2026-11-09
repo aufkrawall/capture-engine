@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "hook/d3d12/dx12_queue_identity.h"
 #include "tests/flow/fakes/fake_clock.h"
 #include "tests/flow/fakes/fake_dxgi_forwarders.h"
 #include "tests/flow/fakes/fake_runtime_log.h"
@@ -543,7 +544,10 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
     if (!desc.swapchain || !desc.desc || !desc.dxgiFactory || !desc.gameQueue)
         return FFX_API_RETURN_ERROR_PARAMETER;
     ComPtr<ID3D12Device> device;
-    desc.gameQueue->GetDevice(IID_PPV_ARGS(&device));
+    // Model a provider that forwards its device work through to the native runtime.
+    const auto nativeGameQueue = ce::dx12_queue_identity::AcquireNativeQueue(desc.gameQueue);
+    if (!nativeGameQueue || FAILED(nativeGameQueue->GetDevice(IID_PPV_ARGS(&device))) || !device)
+        return FFX_API_RETURN_ERROR_PARAMETER;
     auto* swapchainContext = new SwapchainContext();
     D3D12_COMMAND_QUEUE_DESC queueDesc{};
     device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&swapchainContext->presentQueue));

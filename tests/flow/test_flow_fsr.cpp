@@ -88,6 +88,13 @@ TEST(FlowFSR, TogglesWithoutAPresentCallbackOrUiResourceKeepTheOverlay) {
     ToggleFSR(game, false, FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy, FinalBatchRoute::kOwnsTheOutputs);
 }
 
+TEST(FlowFSR, AStackOfQueueProxiesKeepsTheOverlayOnStartupAndGeneratedOutputs) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
+    options.fsrWrappedGameQueue = true;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
 // Talos + OptiScaler (session 20261024_015207): AMD presented the first outputs after each enable from the game
 // thread, and Steam's and OptiScaler's start-up messages submitted after AMD's composition and then stopped. The route
 // proven on the game thread or anchored on such a message left 7 outputs without the overlay; every output must keep
