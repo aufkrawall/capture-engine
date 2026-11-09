@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject overlay after switching from DLSS to FSR in a menu:** keep drawing while FidelityFX presents with frame generation off, even when a graphics proxy returns a different view of the backbuffer's DirectX 12 device. Capture Engine verifies that the backbuffer and its owner queue share the same device and clears the previous DLSS FG status during the handoff.
+
 - **Missing crash dumps during concurrent game termination:** let the active crash dump finish before another thread forwards a native self-termination request. Capture Engine writes the minidump before the supplementary frame-generation trace.
 
 - **DX12 sharpening and gamma with native FSR Frame Generation:** recycle completed FidelityFX callback resources using GPU completion markers, including when a runtime submits through a cached command-queue entry. This prevents completed frames from accumulating GPU allocations across play and save loads.

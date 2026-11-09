@@ -1,5 +1,17 @@
 # Frame Generation Switching
 
+During protected official FidelityFX startup, the game can present indefinitely
+through the FidelityFX proxy while sending only disabled configure packets. In
+the Avatar menu run after a DLSS-to-FSR switch, the proxy backbuffer failed the
+native descriptor queue's strict COM identity test. The inner swapchain stayed
+tracking-only, so no route drew the overlay. The owner binding now caches a
+same-device proof for each retained pair of device views, and the suspend
+renderer creates command objects through the verified submit queue's view.
+Quiescing PostSL also clears its preferred display status. FidelityFX can
+own presentation before enabled configure or callback proof of generation.
+`FlowSwitch.InactiveFidelityFXWithAProxyDeviceViewKeepsTheOverlayAfterDLSS`
+models the mismatched COM views, disabled interval and subsequent activation.
+
 > FFX create-breakpoint lifetime (2026-09-30): `ffx_hook_create_breakpoint.cpp` snapshots the
 > current binding under its mutex, then acquires `ffx_export_lifetime.h::ModulePin` outside it.
 > Suspension freezes retargeting first; retargeting validates the snapshot again before restoring.

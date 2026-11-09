@@ -348,6 +348,10 @@ dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_
 ResetPostSLLifecycleForTransition("DX12: protected official FFX startup", true, true);
 ReleaseStreamlineStartupActivationSwapchain("DX12: protected official FFX startup");
 StreamlineHook::OnAuthoritativeFFXTakeover();
+// The departing PostSL callback no longer publishes. Presentation ownership
+// moves now, while active FSR requires a subsequent configure or callback.
+HookUpdatePreferredOverlayFGPublicationState(false, ce::fg_runtime::RuntimeMode::kOff,
+                                             "DX12: protected official FFX startup");
 dx12_hook_g_SLOffHeuristicGrace.store(0, std::memory_order_release);
 dx12_hook_g_SLOffSwapchainReinitGrace.store(0, std::memory_order_release);
 DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);

@@ -60,10 +60,6 @@ inline std::atomic<uint64_t> g_LastFfxConfigureForwardQpc{0};
 
 inline std::atomic<uint64_t> g_FfxConfigureFrame{0};
 
-inline std::mutex g_NativeFSRSwapchainQueueBindingMutex;
-
-inline std::unordered_map<void*, NativeFSRSwapchainQueueBinding> g_NativeFSRSwapchainQueueBindings;
-
 inline std::mutex g_FFXProxyPresentHookMutex;
 
 inline void* g_FFXProxySwapchain = nullptr;             // game-facing proxy object (identity/diagnostics only)
@@ -131,8 +127,7 @@ void ReleaseFFXUiCompositeInfra();
 DXGI_FORMAT FFXUiCompositeRtvFormat(DXGI_FORMAT texFormat);
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxState, uint32_t flags);
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason);
-AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy, ID3D12Resource* target,
-                                                                        bool acceptDeviceView = false);
+AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy, ID3D12Resource* target);
 bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* commandList);
 bool SubmitNativeFSROwnerQueueOverlayCommandLists(ID3D12CommandQueue* queue, ID3D12CommandList* preceding,
                                                   ID3D12CommandList* commandList);

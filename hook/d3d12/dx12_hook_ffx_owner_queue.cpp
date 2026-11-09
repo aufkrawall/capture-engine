@@ -8,9 +8,34 @@
 #include "hook/overlay/overlay_gpu_timing.h"
 #include "common/logging/log_meter.h"
 
+#include <array>
+
 namespace DXGIShared {
 bool IsStreamlineModuleHandle(HMODULE moduleHandle);
 }
+
+namespace {
+using ce::dx12_device_identity::Relation;
+using Microsoft::WRL::ComPtr;
+
+struct OwnerDeviceProof {
+    ComPtr<ID3D12Device> targetView;
+    ComPtr<ID3D12Device> queueView;
+    Relation relation = Relation::kUnknown;
+};
+
+struct NativeFSRSwapchainQueueBinding {
+    void* context = nullptr;
+    ID3D12CommandQueue* descriptorQueue = nullptr;
+    ID3D12CommandQueue* underlyingGameQueue = nullptr;
+    bool descriptorQueueUsesAcceptedStreamlineDevice = false;
+    bool recoveredOriginalGameQueue = false;
+    std::array<OwnerDeviceProof, 2> deviceProofs = {};
+};
+
+std::mutex g_NativeFSRSwapchainQueueBindingMutex;
+std::unordered_map<void*, NativeFSRSwapchainQueueBinding> g_NativeFSRSwapchainQueueBindings;
+}  // namespace
 
 static std::atomic<bool> g_BelowForeignChainFSRTopmostSubmitProven{false};
 static std::atomic<bool> g_BelowForeignChainFSRTopmostRouteArmed{false};
@@ -92,7 +117,7 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
             }
             return false;
         }
-        replacedBinding = binding;
+        replacedBinding = std::move(binding);
         binding = {context, presentationQueue, underlyingGameQueue, streamlineWrappedQueue, recoveredOriginalGameQueue};
     }
     if (replacedBinding.descriptorQueue || replacedBinding.underlyingGameQueue) {
@@ -221,7 +246,7 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
         for (auto it = g_NativeFSRSwapchainQueueBindings.begin(); it != g_NativeFSRSwapchainQueueBindings.end();) {
             if (!context || it->second.context == context) {
                 if (it->second.descriptorQueue || it->second.underlyingGameQueue) {
-                    releasedBindings.push_back({it->first, it->second});
+                    releasedBindings.push_back({it->first, std::move(it->second)});
                 }
                 it = g_NativeFSRSwapchainQueueBindings.erase(it);
             } else {
@@ -250,38 +275,8 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
     ce::dx12_ffx_suspend_overlay::RetireAllForNativeFSRTeardown(reason);
 }
 
-// `acceptDeviceView` also takes another interface of the target's device (a probe that writes private data, so only
-// for once-per-request callers such as screenshots, never a per-frame path).
-static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target, ID3D12Device** queueDeviceOut,
-                                    bool acceptDeviceView) {
-    if (queueDeviceOut) {
-        *queueDeviceOut = nullptr;
-    }
-    if (!queue || !target) {
-        return false;
-    }
-    ID3D12Device* queueDevice = nullptr;
-    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !queueDevice) {
-        return false;
-    }
-    bool matches = IsResourceOwnedByDevice(target, queueDevice);
-    if (!matches && acceptDeviceView) {
-        ID3D12Device* targetDevice = nullptr;
-        if (SUCCEEDED(target->GetDevice(IID_PPV_ARGS(&targetDevice))) && targetDevice) {
-            matches = ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(targetDevice, queueDevice));
-            targetDevice->Release();
-        }
-    }
-    if (queueDeviceOut) {
-        *queueDeviceOut = queueDevice;
-    } else {
-        queueDevice->Release();
-    }
-    return matches;
-}
-
 AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy,
-                                                                              ID3D12Resource* target, bool acceptDeviceView) {
+                                                                      ID3D12Resource* target) {
     if (!proxy || !target) {
         return {};
     }
@@ -301,16 +296,55 @@ AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwap
             binding.underlyingGameQueue->AddRef();
         }
     }
+    ID3D12CommandQueue* const registeredUnderlyingQueue = binding.underlyingGameQueue;
     if (binding.descriptorQueueUsesAcceptedStreamlineDevice && !binding.underlyingGameQueue) {
         // Some integrations create the FFX context before the first real Present establishes CE's original
         // queue. Resolve it lazily once available; the target-device check below still has final authority.
         binding.underlyingGameQueue = DX12_AcquireOriginalGameQueueForOverlay();
     }
 
-    ID3D12Device* descriptorDevice = nullptr;
-    ID3D12Device* underlyingDevice = nullptr;
-    const bool exactMatches = QueueDeviceOwnsResource(binding.descriptorQueue, target, &descriptorDevice, acceptDeviceView);
-    const bool underlyingMatches = QueueDeviceOwnsResource(binding.underlyingGameQueue, target, &underlyingDevice, acceptDeviceView);
+    ComPtr<ID3D12Device> targetDevice;
+    if (FAILED(target->GetDevice(IID_PPV_ARGS(&targetDevice))))
+        targetDevice.Reset();
+    ComPtr<ID3D12Device> descriptorDevice;
+    ComPtr<ID3D12Device> underlyingDevice;
+    bool refreshedProof = false;
+    const auto ownsTarget = [&](ID3D12CommandQueue* queue, ComPtr<ID3D12Device>& device, OwnerDeviceProof& proof) {
+        if (!targetDevice || !queue || FAILED(queue->GetDevice(IID_PPV_ARGS(&device))) || !device)
+            return false;
+        if (device.Get() == targetDevice.Get())
+            return true;
+        // An interposer can return a different COM view for the same device.
+        // Probe the device pair once, off the registry lock. Retained views
+        // prevent an address reused by a different device from matching it.
+        if (proof.targetView.Get() != targetDevice.Get() || proof.queueView.Get() != device.Get()) {
+            const auto relation = ce::dx12_device_identity::Compare(targetDevice.Get(), device.Get());
+            proof = {targetDevice, device, relation};
+            refreshedProof = true;
+            static ce::log_meter::ChangeGate deviceProofLog;
+            if (const auto verdict = deviceProofLog.Observe(
+                    ce::log_meter::FieldKey(proxy, queue, targetDevice.Get(), device.Get(), relation))) {
+                HookLogImportant(
+                    "DX12: Native-FSR owner device proof proxy=%p queue=%p targetView=%p queueView=%p result=%s%s",
+                    proxy, queue, targetDevice.Get(), device.Get(), ce::dx12_device_identity::Describe(relation),
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
+        }
+        return ce::dx12_device_identity::IsOneDevice(proof.relation);
+    };
+    const bool exactMatches = ownsTarget(binding.descriptorQueue, descriptorDevice, binding.deviceProofs[0]);
+    const bool underlyingMatches =
+        !exactMatches && ownsTarget(binding.underlyingGameQueue, underlyingDevice, binding.deviceProofs[1]);
+    if (refreshedProof) {
+        std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
+        const auto it = g_NativeFSRSwapchainQueueBindings.find(proxy);
+        if (it != g_NativeFSRSwapchainQueueBindings.end() && it->second.context == binding.context &&
+            it->second.descriptorQueue == binding.descriptorQueue &&
+            it->second.underlyingGameQueue == registeredUnderlyingQueue) {
+            // Release the displaced proof after unlocking.
+            it->second.deviceProofs.swap(binding.deviceProofs);
+        }
+    }
     const auto route = ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(
         exactMatches, binding.descriptorQueueUsesAcceptedStreamlineDevice, underlyingMatches);
 
@@ -351,16 +385,10 @@ AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwap
             "DX12: Native-FSR owner queue route=%s proxy=%p target=%p descriptorQueue=%p descriptorDevice=%p "
             "exactMatches=%d streamlineWrapped=%d underlyingQueue=%p underlyingDevice=%p underlyingMatches=%d "
             "recoveredOriginal=%d selected=%p",
-            routeName, proxy, target, descriptorQueueForLog, descriptorDevice, exactMatches ? 1 : 0,
-            binding.descriptorQueueUsesAcceptedStreamlineDevice ? 1 : 0, underlyingQueueForLog, underlyingDevice,
+            routeName, proxy, target, descriptorQueueForLog, descriptorDevice.Get(), exactMatches ? 1 : 0,
+            binding.descriptorQueueUsesAcceptedStreamlineDevice ? 1 : 0, underlyingQueueForLog, underlyingDevice.Get(),
             underlyingMatches ? 1 : 0, binding.recoveredOriginalGameQueue ? 1 : 0, selectedQueue);
 
-    }
-    if (descriptorDevice) {
-        descriptorDevice->Release();
-    }
-    if (underlyingDevice) {
-        underlyingDevice->Release();
     }
     // GPU timestamps only mean anything against a calibration pair from the
     // queue that executed them; this is the queue that runs the callback list.

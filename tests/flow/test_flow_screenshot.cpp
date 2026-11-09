@@ -4,7 +4,7 @@
 // back buffer and the queue gave two interfaces of one device. The device-view scenarios reproduce that shape.
 
 #include "tests/flow/flow_test_support.h"
-#include "tests/flow/queue_device_view_probe.h"
+#include "tests/flow/device_view_answers.h"
 
 #include "common/ipc/shared_defs.h"
 
@@ -103,43 +103,6 @@ void SetOverlayInScreenshots(FlowGame& game, bool include) {
     memory->overlayConfig.screenshotIncludeOverlay = include;
     memory->EndWriteOverlayConfig();
 }
-
-// An interposer's device view of the game's device, answering ID3D12DeviceChild::GetDevice on every object sharing
-// `child`'s vtable while it lives.
-using GetDeviceFunction = HRESULT(STDMETHODCALLTYPE*)(void*, REFIID, void**);
-ID3D12Device* g_deviceView = nullptr;
-HRESULT STDMETHODCALLTYPE AnswerWithDeviceView(void*, REFIID id, void** out) {
-    return g_deviceView->QueryInterface(id, out);
-}
-
-class DeviceViewAnswers {
-public:
-    DeviceViewAnswers(ID3D12DeviceChild* child, ID3D12Device* native) {
-        view_.Attach(new QueueDeviceViewProbe(native));
-        g_deviceView = view_.Get();
-        constexpr size_t kGetDeviceSlot = 7;  // IUnknown 3, ID3D12Object 4
-        slot_ = &(*reinterpret_cast<void***>(child))[kGetDeviceSlot];
-        DWORD protection = 0;
-        VirtualProtect(static_cast<void*>(slot_), sizeof(void*), PAGE_READWRITE, &protection);
-        original_ = *slot_;
-        *slot_ = reinterpret_cast<void*>(&AnswerWithDeviceView);
-        VirtualProtect(static_cast<void*>(slot_), sizeof(void*), protection, &protection);
-    }
-    ~DeviceViewAnswers() {
-        DWORD protection = 0;
-        VirtualProtect(static_cast<void*>(slot_), sizeof(void*), PAGE_READWRITE, &protection);
-        *slot_ = original_;
-        VirtualProtect(static_cast<void*>(slot_), sizeof(void*), protection, &protection);
-        g_deviceView = nullptr;
-    }
-    DeviceViewAnswers(const DeviceViewAnswers&) = delete;
-    DeviceViewAnswers& operator=(const DeviceViewAnswers&) = delete;
-
-private:
-    ComPtr<QueueDeviceViewProbe> view_;
-    void** slot_ = nullptr;
-    void* original_ = nullptr;
-};
 
 GameOptions StreamlineGameOptions() {
     GameOptions options;

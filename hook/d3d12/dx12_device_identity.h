@@ -52,11 +52,12 @@ inline Relation Compare(ID3D12Object* left, ID3D12Object* right) {
     Microsoft::WRL::ComPtr<IUnknown> leftIdentity;
     Microsoft::WRL::ComPtr<IUnknown> rightIdentity;
     if (SUCCEEDED(left->QueryInterface(IID_PPV_ARGS(&leftIdentity))) &&
-        SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) && leftIdentity.Get() == rightIdentity.Get()) {
+        SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) && leftIdentity &&
+        leftIdentity.Get() == rightIdentity.Get()) {
         return Relation::kSameObject;
     }
 
-    // Only reached when the identities differ, which is once per screenshot request at most: never on a frame path.
+    // When used on a frame path, callers cache the result for the retained pair of device views.
     static std::mutex probeMutex;
     static std::atomic<uint64_t> nextProbe{1};
     std::lock_guard<std::mutex> lock(probeMutex);

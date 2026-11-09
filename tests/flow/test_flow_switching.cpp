@@ -3,6 +3,7 @@
 // presented frame across each switch, with the published state following the runtime.
 
 #include "tests/flow/flow_test_support.h"
+#include "tests/flow/device_view_answers.h"
 
 namespace {
 
@@ -81,6 +82,43 @@ TEST(FlowSwitch, TalosStyleRuntimeSwitchesKeepTheOverlay) {
 TEST(FlowSwitch, GTAStyleRuntimeSwitchesKeepTheOverlay) {
     FlowGame game(CurrentTestName());
     SwitchRuntimesWithFrameGenerationOn(game, false, FSRUiResource::kPlaceholder);
+}
+
+TEST(FlowSwitch, InactiveFidelityFXWithAProxyDeviceViewKeepsTheOverlayAfterDLSS) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    options.fsrWrappedGameQueue = true;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ExpectPublished(game, 1, 2, "DLSS FG on");
+
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kFidelityFX)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, /*presentCallback=*/true)) << game.Error();
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    ASSERT_EQ(game.RetainGameSwapchain()->GetBuffer(0, IID_PPV_ARGS(&buffer)), S_OK);
+    Microsoft::WRL::ComPtr<ID3D12Device> native;
+    ASSERT_EQ(game.RetainGameQueue()->GetDevice(IID_PPV_ARGS(&native)), S_OK);
+    {
+        DeviceViewAnswers proxyDevice(buffer.Get(), native.Get(), /*allowCommandListCreation=*/false);
+        Microsoft::WRL::ComPtr<ID3D12Device> reported;
+        ASSERT_EQ(buffer->GetDevice(IID_PPV_ARGS(&reported)), S_OK);
+        ASSERT_NE(reported.Get(), native.Get());
+        buffer.Reset();
+
+        // Menus can present through FidelityFX for many frames before enabling FG.
+        ASSERT_TRUE(game.RenderFrames(24)) << game.Error();
+        ExpectPublished(game, 0, 1, "FSR swapchain presenting with FG off");
+    }
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(24)) << game.Error();
+    ExpectPublished(game, 2, 2, "FSR FG on");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
 }
 
 // Reproduction and fix for the 2,424 consecutive presents without overlay after FSR off:

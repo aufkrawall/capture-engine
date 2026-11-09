@@ -368,14 +368,6 @@ struct FFXUiCompositeTimelineEntry {
     void* queue;              // the queue used for submission
 };
 
-struct NativeFSRSwapchainQueueBinding {
-    void* context = nullptr;
-    ID3D12CommandQueue* descriptorQueue = nullptr;
-    ID3D12CommandQueue* underlyingGameQueue = nullptr;
-    bool descriptorQueueUsesAcceptedStreamlineDevice = false;
-    bool recoveredOriginalGameQueue = false;
-};
-
 struct AcquiredNativeFSROwnerQueue {
     ID3D12CommandQueue* queue = nullptr;
     ce::dx12_overlay_policy::NativeFSROwnerQueueRoute route =

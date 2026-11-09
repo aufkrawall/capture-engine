@@ -118,8 +118,8 @@ RenderOutcome RenderWithOutcome(const RenderRequest& request) {
     constexpr D3D12_FORMAT_SUPPORT1 kRequiredFormatSupport = static_cast<D3D12_FORMAT_SUPPORT1>(
         static_cast<UINT>(D3D12_FORMAT_SUPPORT1_RENDER_TARGET) |
         static_cast<UINT>(D3D12_FORMAT_SUPPORT1_BLENDABLE));
-    if (FAILED(backBufferDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &formatSupport,
-                                                     sizeof(formatSupport))) ||
+    if (FAILED(queueDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &formatSupport,
+                                                sizeof(formatSupport))) ||
         (formatSupport.Support1 & kRequiredFormatSupport) != kRequiredFormatSupport) {
         static std::atomic<int> s_formatRejectLogCount{0};
         const int logCount = s_formatRejectLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -134,13 +134,14 @@ RenderOutcome RenderWithOutcome(const RenderRequest& request) {
     }
 
     auto& state = states[request.proxySwapChain];
-    if (state && !state->Matches(backBufferDevice.Get(), request.presentationQueue, rtvFormat,
+    if (state && !state->Matches(queueDevice.Get(), request.presentationQueue, rtvFormat,
                                  request.inlineCompletionMarker)) {
         RetireState(state, "device/queue/format change");
     }
     auto createState = [&]() -> bool {
         auto replacement = std::make_unique<RendererState>();
-        if (!replacement->Initialize(request.proxySwapChain, backBufferDevice.Get(), request.presentationQueue,
+        // Allocate the command objects through the device view of their actual submit queue.
+        if (!replacement->Initialize(request.proxySwapChain, queueDevice.Get(), request.presentationQueue,
                                      rtvFormat, request.hdr, request.inlineCompletionMarker)) {
             return false;
         }
@@ -154,7 +155,7 @@ RenderOutcome RenderWithOutcome(const RenderRequest& request) {
     } else {
         state->UpdateHdr(request.hdr);
     }
-    state->SetValidatedQueueDevice(backBufferDevice.Get(), queueDevice.Get());
+    state->SetValidatedTargetDevice(backBufferDevice.Get());
 
     const auto result =
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,

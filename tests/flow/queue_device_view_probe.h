@@ -10,7 +10,8 @@ inline std::atomic<uint32_t> g_deviceViewProbeObjects{0};
 
 class QueueDeviceViewProbe final : public ID3D12Device {
 public:
-    explicit QueueDeviceViewProbe(ID3D12Device* native) : native_(native) { ++g_deviceViewProbeObjects; }
+    explicit QueueDeviceViewProbe(ID3D12Device* native, bool allowCommandListCreation = true)
+        : native_(native), allowCommandListCreation_(allowCommandListCreation) { ++g_deviceViewProbeObjects; }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
         if (!out) return E_POINTER;
         *out = nullptr;
@@ -71,6 +72,10 @@ public:
         ID3D12PipelineState *initial_pipeline_state,
         REFIID riid,
         void **command_list) override {
+        if (!allowCommandListCreation_) {
+            *command_list = nullptr;
+            return E_NOINTERFACE;
+        }
         return native_->CreateCommandList(node_mask, type, command_allocator, initial_pipeline_state, riid,
             command_list);
     }
@@ -313,6 +318,7 @@ private:
     ~QueueDeviceViewProbe() { --g_deviceViewProbeObjects; }
     std::atomic<ULONG> references_{1};
     Microsoft::WRL::ComPtr<ID3D12Device> native_;
+    bool allowCommandListCreation_;
 };
 
 class DeviceViewQueueProbe final : public QueueDispatchProbe {

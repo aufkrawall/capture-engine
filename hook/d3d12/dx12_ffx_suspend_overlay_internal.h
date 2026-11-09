@@ -197,18 +197,15 @@ public:
     bool Matches(ID3D12Device* candidateDevice, ID3D12CommandQueue* candidateQueue, DXGI_FORMAT candidateFormat,
                  bool candidateInlineCompletionMarker) const {
         return queue.Get() == candidateQueue && format == candidateFormat &&
-               inlineCompletionMarker == candidateInlineCompletionMarker &&
-               (device.Get() == candidateDevice || validatedTargetDevice_.Get() == candidateDevice ||
-                ce::dx12_device_identity::IsOneDevice(ce::dx12_device_identity::Compare(device.Get(), candidateDevice)));
+               inlineCompletionMarker == candidateInlineCompletionMarker && device.Get() == candidateDevice;
     }
 
     bool HasValidatedQueueDevice(ID3D12Device* targetDevice, ID3D12Device* queueDevice) const {
-        return validatedTargetDevice_.Get() == targetDevice && validatedQueueDevice_.Get() == queueDevice;
+        return validatedTargetDevice_.Get() == targetDevice && device.Get() == queueDevice;
     }
-    void SetValidatedQueueDevice(ID3D12Device* targetDevice, ID3D12Device* queueDevice) {
-        if (!HasValidatedQueueDevice(targetDevice, queueDevice)) {
+    void SetValidatedTargetDevice(ID3D12Device* targetDevice) {
+        if (validatedTargetDevice_.Get() != targetDevice) {
             validatedTargetDevice_ = targetDevice;
-            validatedQueueDevice_ = queueDevice;
         }
     }
 
@@ -539,7 +536,6 @@ private:
     ComPtr<IDXGISwapChain> proxyLifetime;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12Device> validatedTargetDevice_;
-    ComPtr<ID3D12Device> validatedQueueDevice_;
     ComPtr<ID3D12CommandQueue> queue;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool hdr = false;
