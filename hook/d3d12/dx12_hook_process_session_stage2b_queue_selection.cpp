@@ -22,6 +22,8 @@ ProcessFrameFlow FrameProcessSession::SelectFrameQueue() {
 // (g_SwapchainQueue = FSR's queue) — submitting on origGame causes
 // cross-queue resource access without synchronization → DEVICE_REMOVED.
 gameQueue = nullptr;
+const auto presenter = ce::fg_presenter::PresenterFor(pSwapChain);
+const bool ffxOutputChain = presenter == ce::fg_presenter::Presenter::kFFXSwapchain;
 {
     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
     bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
@@ -36,7 +38,7 @@ gameQueue = nullptr;
     // A swapchain a frame-generation runtime presents itself (XeFG, ce::fg_presenter) is an output chain like a
     // present interposer's: its back buffers belong to the queue the runtime presents on.
     runtimeOwnedOutputChain =
-        ce::fg_presenter::IsRuntimeOwnedOutputPresenter(ce::fg_presenter::PresenterFor(pSwapChain));
+        ce::fg_presenter::IsRuntimeOwnedOutputPresenter(presenter);
     ID3D12CommandQueue* const interposerOutputQueue = runtimeOwnedOutputChain
                                                           ? ce::fg_presenter::OutputQueue(pSwapChain)
                                                           : DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
@@ -91,6 +93,23 @@ gameQueue = nullptr;
                 HasResolvedOfficialFFXStartupPath() ? 1 : 0, logCount + 1);
         }
         return ProcessFrameFlow::kReturn;
+    } else if (ffxOutputChain) {
+        // Destroying the effect can clear startup protection while the output swapchain is still alive.
+        // The normal transaction may resume on that chain, but all of its backbuffer work still belongs
+        // on the queue that created it. The game's previous swapchain queue can be on the same device.
+        gameQueue = ce::fg_presenter::OutputQueue(pSwapChain);
+        static ce::log_meter::ChangeGate s_ffxOutputQueueGate;
+        if (const auto verdict = s_ffxOutputQueueGate.Observe(
+                ce::log_meter::FieldKey(pSwapChain, gameQueue, dx12_hook_g_SwapchainQueue))) {
+            HookLogImportant(
+                "DX12: Retained FidelityFX output queue for backbuffer work (sc=%p outputQueue=%p cachedScQueue=%p)%s",
+                pSwapChain, gameQueue, dx12_hook_g_SwapchainQueue,
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        if (!gameQueue) {
+            NoteDX12OverlayCoverageGate("ffx-output-queue-unavailable");
+            return ProcessFrameFlow::kReturn;
+        }
     } else {
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             dx12_hook_g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, dx12_hook_g_HadFSRFGPhase, dx12_hook_g_SwapchainQueue != nullptr,
@@ -326,10 +345,8 @@ if (!gameQueue) {
 // During FG transitions, g_SwapchainQueue and g_CommandQueue can both
 // get polluted by SL/FSR internal queues (via CreateSwapChainForHwnd
 // and ECL hooks respectively).
-// A chain a frame-generation runtime presents itself (XeFG) is not the game's: its queue is the runtime's, and
-// taking it here would leave the game's own queue unhooked once the game presents natively again.
-if (!dx12_hook_g_OriginalGameQueue &&
-    !ce::fg_presenter::IsRuntimeOwnedOutputPresenter(ce::fg_presenter::PresenterFor(pSwapChain))) {
+// A chain a frame-generation runtime presents itself uses the runtime's queue, even when interpolation is off.
+if (!dx12_hook_g_OriginalGameQueue && !runtimeOwnedOutputChain && !ffxOutputChain) {
     dx12_hook_g_OriginalGameQueue = gameQueue;
     dx12_hook_g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
     gameQueue->AddRef();  // prevent queue from being freed during FG transitions

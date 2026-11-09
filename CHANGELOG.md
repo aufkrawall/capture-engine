@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DirectX 12 startup crash with an inactive FidelityFX swapchain:** keep sharpening, capture, and overlay submissions on the native swapchain’s present queue when a game such as The Witcher 3 recreates its FSR effect context during startup.
+
 - **FSR Frame Generation inject overlay:** keep the overlay visible through FSR activation and suspension in The Witcher 3 with stacked graphics proxies. Capture Engine resolves the underlying queue from the FidelityFX swapchain descriptor and checks that it owns the target device before drawing.
 
 - **XeFG status in the inject overlay:** the overlay reports active XeFG in The Witcher 3 and other games where another component owns the XeFG enable hook. Capture Engine reads the runtime’s last-present status when it has not observed an enable call.

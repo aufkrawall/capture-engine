@@ -147,6 +147,29 @@ TEST(FlowSwitch, EffectContextRecreateWhileSwapchainAlivePreservesOverlay) {
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowSwitch, DisabledStartupEffectRecreationKeepsTheFidelityFXOutputQueue) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(20)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kFidelityFX)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, /*presentCallback=*/false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(2)) << game.Error();
+
+    // Recreate the effect before the first enabled configure. AMD's native swapchain
+    // and its present queue survive the resize and the effect-context lifetime.
+    ASSERT_TRUE(game.DestroyFSREffectContextOnly()) << game.Error();
+    ASSERT_TRUE(game.RecreateFSREffectContext()) << game.Error();
+    const auto before = game.PostProcess();
+    ASSERT_TRUE(game.RenderFrames(20)) << game.Error();
+    const auto after = game.PostProcess();
+    EXPECT_GT(after.corrected + after.routeApplied, before.corrected + before.routeApplied);
+    EXPECT_EQ(after.failed + after.routeFailed, before.failed + before.routeFailed);
+    ExpectPublished(game, 0, 1, "FSR disabled on the retained output");
+    ExpectNoDebugLayerErrors();
+}
+
 // Save-load teardown regression: both switch directions followed by temporary FG suspension,
 // context recreation, and foreign Present wrapper.
 TEST(FlowSwitch, SaveLoadHandoffAndSuspensionKeepsOverlay) {

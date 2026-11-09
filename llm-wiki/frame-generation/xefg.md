@@ -326,6 +326,14 @@ and keeps the existing target-device validation. This also covers no-UI startup 
 The session did not establish an AMD final-batch anchor through the foreign ECL forwarding layer. Hardware retest
 should distinguish the proxy-backbuffer baseline from the post-composition route.
 
+The Witcher 3 launch session `20261109_030020` exposed a separate queue lifetime bug. The game recreated a disabled
+effect context during startup while the native FFX swapchain and its presentation queue remained live. After CE
+cleared provisional FFX startup, ProcessFrame took the preceding swapchain's queue for RCAS. The driver rejected
+that cross-queue backbuffer access (`0x887A002B` in the game's breadcrumbs), and the game trapped with
+`0x80000003`. Normal backbuffer work admitted on the retained FFX output now uses that output's recorded queue.
+The FFX output cannot establish the original game queue. The WARP regression destroys and recreates the effect
+before any enabled configure, keeps the native FFX output, and checks post-processing and device health.
+
 ## Validation pending (hardware)
 
 Native XeFG (a game that ships it), Talos + OptiScaler `FGOutput=XeFG` (`FGXeFGDebugView` marks generated frames),
