@@ -140,6 +140,24 @@ TEST(FFXTopmostBatchPolicyTest, AnchorNeedsARuntimeBatchAndFallsBackToTheLastBat
     EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(nullptr, 0, true)));
 }
 
+TEST(FFXTopmostBatchPolicyTest, RelayedCompositionOutranksSubmissionsInsidePresent) {
+    constexpr uintptr_t presentSite = 0x2000;
+    const PresenterBatch batches[] = {
+        {0x1000, 0xA0, true, true},
+        {0x1000, 0xA0, true, true},
+        {presentSite, 0xA0, true, true},
+    };
+    size_t index = 0;
+    const auto anchor = ChooseTopmostAnchorBatch(batches, 3, true, presentSite, &index);
+    EXPECT_EQ(anchor.callSite, 0x1000u);
+    EXPECT_EQ(anchor.queueIdentity, 0xA0u);
+    EXPECT_EQ(anchor.ordinal, 2u);
+    EXPECT_EQ(index, 1u);
+    EXPECT_TRUE(SameFinalECLBatchSignature(anchor, ChooseTopmostAnchorBatch(batches, 2, true, presentSite)));
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(batches, 3, true)));
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(batches + 2, 1, true, presentSite)));
+}
+
 TEST(FFXTopmostBatchPolicyTest, AppCallbackTopmostRouteStartsWithNonVisibleProbe) {
     EXPECT_FALSE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/false));
     EXPECT_TRUE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/true));

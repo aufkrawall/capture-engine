@@ -46,16 +46,6 @@ uint64_t NextPresenterLifetime() {
     return lifetime ? lifetime : g_presenterLifetime.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
-// Submits `list` from the game's module, as an overlay hooked into the Present chain (Steam's) submits before the real
-// Present: the call site lies outside this runtime's image (GameOptions::fsrPresentChainOverlayOutputs).
-void ExecuteAsPresentChainOverlay(ID3D12CommandQueue* queue, ID3D12CommandList* list) {
-    using Execute = void (*)(ID3D12CommandQueue*, ID3D12CommandList*);
-    static const Execute execute = reinterpret_cast<Execute>(
-        GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_ExecutePresentChainOverlay"));
-    if (execute)
-        execute(queue, list);
-}
-
 struct FrameGenerationConfig {
     bool enabled = false;
     FfxApiPresentCallbackFunc presentCallback = nullptr;
@@ -415,11 +405,16 @@ private:
 
     // `scheduled`: an output of the presenter thread (a passthrough frame presents on the game thread).
     HRESULT PresentOutput(UINT syncInterval, UINT flags, uint64_t frame, bool scheduled) {
-        // A Present-chain overlay submits inside the Present call, so before the output is reported as presented.
-        if (scheduled)
-            SubmitPresentChainOverlay();
+        using PresentThroughOverlay = HRESULT (*)(IDXGISwapChain*, UINT, UINT, ID3D12CommandQueue*, ID3D12CommandList*);
+        static const auto presentThroughOverlay = reinterpret_cast<PresentThroughOverlay>(
+            GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_PresentThroughOverlay"));
+        auto* overlayList = scheduled && presentThroughOverlay ? PreparePresentChainOverlay() : nullptr;
         NoteRuntimeOutputFrame(this, presenterLifetime_, frame);
-        const HRESULT hr = real_->Present(syncInterval, flags);
+        const HRESULT hr = presentThroughOverlay && (overlayList || relayOutputSubmissions_)
+                               ? presentThroughOverlay(real_, syncInterval, flags, presentQueue_.Get(), overlayList)
+                               : real_->Present(syncInterval, flags);
+        if (overlayList)
+            WaitForQueue(presentQueue_.Get());
         CountPhysicalPresent();
         if (!scheduled)
             return hr;
@@ -433,21 +428,20 @@ private:
 
     // The scenario's Present-chain overlay draws on the composed output for a number of outputs after an enable, then
     // has nothing more to show and stops submitting (Steam's start-up message, session 20261024_015207).
-    void SubmitPresentChainOverlay() {
+    ID3D12CommandList* PreparePresentChainOverlay() {
         uint32_t left = overlayOutputsLeft_.load(std::memory_order_acquire);
         if (left == 0 || !overlayOutputsLeft_.compare_exchange_strong(left, left - 1, std::memory_order_acq_rel))
-            return;
+            return nullptr;
         ID3D12Resource* output = realBuffers_[real_->GetCurrentBackBufferIndex()].Get();
         overlayAllocator_->Reset();
         overlayList_->Reset(overlayAllocator_.Get(), nullptr);
         Transition(overlayList_.Get(), output, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
         Transition(overlayList_.Get(), output, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
         overlayList_->Close();
-        ExecuteAsPresentChainOverlay(presentQueue_.Get(), overlayList_.Get());
-        WaitForQueue(presentQueue_.Get());
         if (left == 1)
             Log(kModule, "proxy %p: the Present-chain overlay stopped drawing (frame %llu)", this,
                 static_cast<unsigned long long>(framesPresented_));
+        return overlayList_.Get();
     }
 
     void BeginList() {
@@ -458,7 +452,13 @@ private:
     void SubmitList() {
         list_->Close();
         ID3D12CommandList* lists[] = {list_.Get()};
-        presentQueue_->ExecuteCommandLists(1, lists);
+        using ExecuteRelayedBatch = void (*)(ID3D12CommandQueue*, ID3D12CommandList*);
+        static const auto executeRelayed = reinterpret_cast<ExecuteRelayedBatch>(
+            GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_ExecuteRelayedBatch"));
+        if (relayOutputSubmissions_ && executeRelayed)
+            executeRelayed(presentQueue_.Get(), lists[0]);
+        else
+            presentQueue_->ExecuteCommandLists(1, lists);
         WaitForQueue(presentQueue_.Get());
     }
 
@@ -484,6 +484,7 @@ private:
     ComPtr<ID3D12CommandAllocator> overlayAllocator_;
     ComPtr<ID3D12GraphicsCommandList> overlayList_;
     std::atomic<uint32_t> overlayOutputsLeft_{0};  // set on the game thread, counted down on the presenter thread
+    const bool relayOutputSubmissions_ = ScenarioCount("CE_FLOW_FFX_RELAY_OUTPUT_SUBMISSIONS") != 0;
     uint32_t passthroughFramesLeft_ = 0;           // the game thread's
     bool wasGenerating_ = false;                   // the game thread's
     ComPtr<ID3D12Fence> fence_;

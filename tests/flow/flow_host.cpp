@@ -26,10 +26,17 @@ extern "C" __declspec(dllexport) uint64_t CEFlowGame_NewRuntimePresenterLifetime
     return g_runtimePresenterLifetimes.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
-// A fake runtime's stand-in for an overlay hooked into the Present chain: its submission's call site is this module.
-extern "C" __declspec(dllexport) void CEFlowGame_ExecutePresentChainOverlay(ID3D12CommandQueue* queue,
-                                                                            ID3D12CommandList* list) {
+// A fake queue proxy forwards the batch from outside the runtime image.
+extern "C" __declspec(dllexport) void CEFlowGame_ExecuteRelayedBatch(ID3D12CommandQueue* queue,
+                                                                    ID3D12CommandList* list) {
     queue->ExecuteCommandLists(1, &list);
+}
+
+extern "C" __declspec(dllexport) [[clang::disable_tail_calls]] HRESULT CEFlowGame_PresentThroughOverlay(
+    IDXGISwapChain* swapchain, UINT sync, UINT flags, ID3D12CommandQueue* queue, ID3D12CommandList* list) {
+    if (list)
+        queue->ExecuteCommandLists(1, &list);
+    return swapchain->Present(sync, flags);
 }
 
 namespace ce::flow {
@@ -241,6 +248,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
                                 std::to_string(options.fsrPassthroughFramesAfterEnable).c_str());
         SetEnvironmentVariableA("CE_FLOW_FFX_PRESENT_CHAIN_OVERLAY_OUTPUTS",
                                 std::to_string(options.fsrPresentChainOverlayOutputs).c_str());
+        SetEnvironmentVariableA("CE_FLOW_FFX_RELAY_OUTPUT_SUBMISSIONS", options.fsrRelayOutputSubmissions ? "1" : nullptr);
     }
     if (options.streamline && !BeginStreamline())
         return false;

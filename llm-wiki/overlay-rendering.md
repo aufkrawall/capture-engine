@@ -230,6 +230,20 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Each published display sample also retains the runtime `PresentStart` selected by the same process/thread-aware reducer. The PC-latency marker path uses that association as its causal upper bound, so a newer marker submitted while an older DLSS-G frame is still queued cannot be paired with the older frame merely because its eventual screen timestamp is later. Samples without an association retain the timestamp-only fallback behavior.
 - Measured on this hardware (144 Hz VRR, NVIDIA): `VSyncDPCMultiPlane` reports `FlipEntryCount=0` and `VSyncDPC` reports `FlipFenceId=0`, so the usable completions arrive on `HSyncDPCMultiPlane` and `MMIOFlipMultiPlaneOverlay`. Stale-risk/unverified: a display path that emits neither - only `VSyncDPCMultiPlane` with a zero entry count - would need the `InterruptTargetPresentId` route, which is deliberately not implemented because it can double-count against the submit-sequence route.
 
+### FidelityFX submissions through a queue proxy (2026-11-09)
+
+The Witcher 3 with Steam, ReShade and Streamline kept using the no-UI-resource backbuffer route under
+FSR FG. The final-batch observer saw two or three submissions per output without an immediate return
+address in the runtime image. The display stream reached about 83 FPS while the graph rebuilt at
+about 41 FPS on the proxy prework thread.
+
+`dx12_hook_ffx_topmost_batch.cpp` uses the native queue from the authoritative FFX swapchain takeover
+to recover the runtime return address when a forwarding layer hides the immediate submitter. The
+runtime return address at the physical Present excludes submissions made from inside the Present chain.
+Direct runtime batches retain precedence. The learned signature reports `anchor=runtime-via-queue-proxy`.
+`FlowFSR.RelayedCompositionKeepsTheOverlayAtOutputRateWhenAForeignOverlayStops` exercises the handoff
+through a forwarding layer and the last frame of a foreign overlay. Hardware retest pending.
+
 ## PC latency source hierarchy
 
 - `[Overlay] show_system_latency=true` adds one independent row. A fresh marker-enhanced sample renders as `PC Latency~`, the no-marker path renders as `Latency est.`, and an unavailable sample renders as `PC Latency --`; the labels deliberately do not imply an exact end-to-end instrument reading. When frame generation is configured and known but not actively producing extra displayed frames, the label adds `(FG idle)` (`PC Latency~ (FG idle)` or `Latency est. (FG idle)`) to disclose that the generator is not active instead of attributing no-FG latency to frame generation.

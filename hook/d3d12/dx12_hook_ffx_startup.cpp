@@ -414,6 +414,7 @@ bool stagedQueueActivatedOwnership = false;
 ID3D12CommandQueue* liveSwapchainQueueAfterApply = nullptr;
 bool fgRuntimeOwnsAfterApply = false;
 if (capturedQueue) {
+    DX12_SetFFXNativeOutputQueue(capturedQueue);
     stagedQueueActivatedOwnership = DX12_SetSwapchainQueue(capturedQueue, false, true);
     {
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);

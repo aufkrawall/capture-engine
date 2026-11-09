@@ -107,6 +107,14 @@ TEST(FlowFSR, PresenterMigrationAndAPresentChainOverlayThatStopsLeaveNoOutputUnc
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 
+TEST(FlowFSR, RelayedCompositionKeepsTheOverlayAtOutputRateWhenAForeignOverlayStops) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
+    options.fsrRelayOutputSubmissions = true;
+    options.fsrPresentChainOverlayOutputs = 120;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
 // OptiScaler feeding DLSS-G inputs to FSR FG registers a UI resource without a resource every frame.
 TEST(FlowFSR, TogglesWithoutAPresentCallbackAndAnEmptyUiResourceDrawEveryOutputAfterComposition) {
     FlowGame game(CurrentTestName());

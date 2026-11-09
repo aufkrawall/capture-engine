@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "dx12_queue_identity.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/sharpen_dxgi_format.h"
@@ -15,6 +16,7 @@ struct ObservedECLBatch {
     uintptr_t callSite = 0;
     ID3D12CommandQueue* queue = nullptr;
     uint64_t composingFrame = 0;
+    bool relayed = false;
 };
 
 struct PresenterFrameTrace {
@@ -23,6 +25,8 @@ struct PresenterFrameTrace {
     bool overflow = false;
     bool appendSucceeded = false;
     bool overlayDrawn = false;
+    bool directRuntimeBatchSeen = false;
+    bool relayedBatchSeen = false;
     uintptr_t targetOrdinalCallSite = 0;
     uint32_t targetOrdinal = 0;
 };
@@ -54,6 +58,8 @@ std::atomic<bool> g_TopmostBatchOwnershipGranted{false};
 std::atomic<uint64_t> g_TopmostBatchSubmitCount{0};
 // The route tracks a live FFX presentation (g_TopmostBatchSwapChain set), readable without the mutex.
 std::atomic<bool> g_TopmostBatchRouteTracked{false};
+// Identity only. The swapchain binding owns the queue, and ECL holds a live receiver.
+std::atomic<ID3D12CommandQueue*> g_FFXNativeOutputQueue{nullptr};
 
 // AMD frame generation swapchain frames (policy and the AMD ordering they rely on: ffx_output_frames.h).
 std::atomic<uint64_t> g_FFXProxyFrame{0};
@@ -109,21 +115,58 @@ void ResetPresenterFrameTrace() {
     t_PresenterFrameTrace.overflow = false;
     t_PresenterFrameTrace.appendSucceeded = false;
     t_PresenterFrameTrace.overlayDrawn = false;
+    t_PresenterFrameTrace.directRuntimeBatchSeen = false;
+    t_PresenterFrameTrace.relayedBatchSeen = false;
     t_PresenterFrameTrace.targetOrdinalCallSite = 0;
     t_PresenterFrameTrace.targetOrdinal = 0;
 }
 
-void RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
+bool IsInRuntimeImage(uintptr_t address, uintptr_t base, uintptr_t end) {
+    return address >= base && address < end;
+}
+
+uintptr_t FindRuntimeReturnAddress(uintptr_t base, uintptr_t end) {
+    void* frames[20] = {};
+    const USHORT count = CaptureStackBackTrace(1, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        const auto address = reinterpret_cast<uintptr_t>(frames[i]);
+        if (IsInRuntimeImage(address, base, end))
+            return address;
+    }
+    return 0;
+}
+
+uintptr_t RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
     if (t_FFXForwardFrame != 0 && !t_FFXForwardBoundaryNoted) {
         t_FFXForwardBoundaryNoted = true;
         AdvanceFFXComposingFrame(t_FFXForwardFrame, /*atFirstSubmission=*/true);
     }
-    if (t_PresenterFrameTrace.count < t_PresenterFrameTrace.batches.size()) {
-        t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count++] = {
-            reinterpret_cast<uintptr_t>(callSite), queue, g_FFXComposingFrame.Current()};
-    } else {
+    const auto immediateSite = reinterpret_cast<uintptr_t>(callSite);
+    if (t_PresenterFrameTrace.count == t_PresenterFrameTrace.batches.size()) {
         t_PresenterFrameTrace.overflow = true;
+        return immediateSite;
     }
+    uintptr_t runtimeBase = 0, runtimeEnd = 0;
+    uintptr_t submitSite = immediateSite;
+    bool relayed = false;
+    if (DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd)) {
+        if (IsInRuntimeImage(immediateSite, runtimeBase, runtimeEnd)) {
+            t_PresenterFrameTrace.directRuntimeBatchSeen = true;
+        } else if (!t_PresenterFrameTrace.directRuntimeBatchSeen &&
+                   queue == g_FFXNativeOutputQueue.load(std::memory_order_acquire) &&
+                   t_FFXForwardFrame == 0) {
+            // The queue proxy can be the immediate caller even for AMD's own submission.
+            // Only unwind on the verified output queue and only until a direct batch is seen.
+            if (const uintptr_t runtimeSite = FindRuntimeReturnAddress(runtimeBase, runtimeEnd)) {
+                submitSite = runtimeSite;
+                relayed = true;
+                t_PresenterFrameTrace.relayedBatchSeen = true;
+            }
+        }
+    }
+    t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count++] = {
+        submitSite, queue, g_FFXComposingFrame.Current(), relayed};
+    return submitSite;
 }
 
 // The batch whose composing frame names the output: the presenting runtime's own last one. An overlay hooked into the
@@ -134,8 +177,8 @@ size_t AttributionBatchIndex() {
     uintptr_t runtimeEnd = 0;
     if (DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd)) {
         for (size_t i = t_PresenterFrameTrace.count; i-- > 0;) {
-            const uintptr_t callSite = t_PresenterFrameTrace.batches[i].callSite;
-            if (callSite >= runtimeBase && callSite < runtimeEnd) {
+            const auto& batch = t_PresenterFrameTrace.batches[i];
+            if (!batch.relayed && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd)) {
                 return i;
             }
         }
@@ -143,18 +186,18 @@ size_t AttributionBatchIndex() {
     return t_PresenterFrameTrace.count - 1;
 }
 
-bool CurrentOutputAttribution(DX12FFXOutputAttribution* out) {
-    if (!out || t_PresenterFrameTrace.overflow || t_PresenterFrameTrace.count == 0) {
+bool OutputAttributionForBatch(size_t index, DX12FFXOutputAttribution* out) {
+    if (!out || t_PresenterFrameTrace.overflow || index >= t_PresenterFrameTrace.count) {
         return false;
     }
-    out->frame = t_PresenterFrameTrace.batches[AttributionBatchIndex()].composingFrame;
+    out->frame = t_PresenterFrameTrace.batches[index].composingFrame;
     out->record = g_FFXFrameOwners.Lookup(out->frame);
     out->topmostDrawn = t_PresenterFrameTrace.overlayDrawn;
     return out->frame != 0;
 }
 
-void StashPresentedOutput() {
-    t_PresentedOutputValid = CurrentOutputAttribution(&t_PresentedOutput);
+bool CurrentOutputAttribution(DX12FFXOutputAttribution* out) {
+    return t_PresenterFrameTrace.count != 0 && OutputAttributionForBatch(AttributionBatchIndex(), out);
 }
 
 bool SubmitOverlayInsideObservedBatch(ID3D12CommandQueue* queue, ID3D12CommandList* postProcessList,
@@ -216,12 +259,15 @@ void ReplaceRetainedPresentationObjects(IDXGISwapChain* swapChain, ID3D12Command
 
 }  // namespace
 
+void DX12_SetFFXNativeOutputQueue(ID3D12CommandQueue* queue) {
+    const auto nativeQueue = ce::dx12_queue_identity::AcquireNativeQueue(queue);
+    g_FFXNativeOutputQueue.store(nativeQueue.Get(), std::memory_order_release);
+}
+
 bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     ID3D12CommandQueue* queue, UINT commandListCount, ID3D12CommandList* const* commandLists,
     ExecuteCommandListsPtr original, const void* callSite) {
-    RecordECLBatch(queue, callSite);
-
-    const uintptr_t currentCallSite = reinterpret_cast<uintptr_t>(callSite);
+    const uintptr_t currentCallSite = RecordECLBatch(queue, callSite);
     const uintptr_t currentQueueIdentity = reinterpret_cast<uintptr_t>(queue);
     const ce::dx12_overlay_policy::FinalECLBatchSignature target = {
         g_TargetCallSite.load(std::memory_order_acquire),
@@ -263,7 +309,8 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     // frame's outputs while the game's prework already retired the baseline for the next one.
     const bool ownershipGranted = g_TopmostBatchOwnershipGranted.load(std::memory_order_acquire);
     DX12FFXOutputAttribution output;
-    const uint64_t outputFrame = CurrentOutputAttribution(&output) ? output.frame : 0;
+    const uint64_t outputFrame =
+        OutputAttributionForBatch(t_PresenterFrameTrace.count - 1, &output) ? output.frame : 0;
     const ce::dx12_overlay_policy::FFXFrameOwnerRecord frameOwner = output.record;
     const bool renderOverlay = ce::dx12_overlay_policy::ShouldDrawTopmostOnFFXOutput(frameOwner, ownershipGranted);
     if (ownershipGranted != renderOverlay) {
@@ -344,19 +391,21 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     uintptr_t runtimeEnd = 0;
     const bool runtimeImageKnown = DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd);
     ce::dx12_overlay_policy::FinalECLBatchSignature observed = {};
-    size_t batchesAfterAnchor = 0;
+    size_t anchorIndex = t_PresenterFrameTrace.count;
     if (routeEligible && swapChain && traceUsable) {
         std::array<ce::dx12_overlay_policy::PresenterBatch, kMaxObservedECLBatches> batches = {};
         for (size_t i = 0; i < t_PresenterFrameTrace.count; ++i) {
             const ObservedECLBatch& batch = t_PresenterFrameTrace.batches[i];
             batches[i] = {batch.callSite, reinterpret_cast<uintptr_t>(batch.queue),
-                          runtimeImageKnown && batch.callSite >= runtimeBase && batch.callSite < runtimeEnd};
+                          runtimeImageKnown && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd),
+                          batch.relayed};
         }
+        const uintptr_t runtimePresentSite =
+            t_PresenterFrameTrace.relayedBatchSeen && !t_PresenterFrameTrace.directRuntimeBatchSeen &&
+                    runtimeImageKnown ? FindRuntimeReturnAddress(runtimeBase, runtimeEnd) : 0;
         observed = ce::dx12_overlay_policy::ChooseTopmostAnchorBatch(batches.data(), t_PresenterFrameTrace.count,
-                                                                     runtimeImageKnown);
-        for (size_t i = t_PresenterFrameTrace.count; i-- > 0 && batches[i].callSite != observed.callSite;) {
-            ++batchesAfterAnchor;
-        }
+                                                                     runtimeImageKnown, runtimePresentSite,
+                                                                     &anchorIndex);
     }
     const bool anchorFound = ce::dx12_overlay_policy::IsValidFinalECLBatchSignature(observed);
     if (!routeEligible || !swapChain || !traceUsable || !anchorFound) {
@@ -366,9 +415,10 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
             if (logCount < 10 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: No-callback FSR final-batch trace unusable (sc=%p batches=%zu overflow=%d "
-                    "runtimeBatch=%d runtimeImage=%p log=%d); UI-resource baseline remains active",
+                    "runtimeBatch=%d relayed=%d runtimeImage=%p log=%d); proxy overlay baseline remains active",
                     swapChain, t_PresenterFrameTrace.count, t_PresenterFrameTrace.overflow ? 1 : 0,
-                    anchorFound ? 1 : 0, reinterpret_cast<void*>(runtimeBase), logCount + 1);
+                    anchorFound ? 1 : 0, t_PresenterFrameTrace.relayedBatchSeen ? 1 : 0,
+                    reinterpret_cast<void*>(runtimeBase), logCount + 1);
             }
         }
         g_TopmostBatchRouteReady.store(false, std::memory_order_release);
@@ -383,12 +433,13 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
         if (!routeEligible || !swapChain) {
             ReplaceRetainedPresentationObjects(nullptr, nullptr);
         }
-        StashPresentedOutput();
+        t_PresentedOutputValid = CurrentOutputAttribution(&t_PresentedOutput);
         ResetPresenterFrameTrace();
         return;
     }
 
     auto* const anchorQueue = reinterpret_cast<ID3D12CommandQueue*>(observed.queueIdentity);
+    const size_t batchesAfterAnchor = t_PresenterFrameTrace.count - anchorIndex - 1;
     const bool presentationChanged = ce::dx12_overlay_policy::IsNewTopmostPresentation(
         swapChain != g_TopmostBatchSwapChain, anchorQueue != g_TopmostBatchQueue,
         g_TargetPresenterThreadId.load(std::memory_order_acquire) != GetCurrentThreadId());
@@ -437,12 +488,13 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
                 "topmost append requires two identical consecutive Presents",
                 stableFrames >= 2 ? "STABLE" : "learning", swapChain, anchorQueue,
                 reinterpret_cast<void*>(observed.callSite), observed.ordinal, t_PresenterFrameTrace.count,
-                batchesAfterAnchor, runtimeImageKnown ? "runtime-image" : "last-batch",
+                batchesAfterAnchor, t_PresenterFrameTrace.batches[anchorIndex].relayed ? "runtime-via-queue-proxy"
+                                         : runtimeImageKnown ? "runtime-image" : "last-batch",
                 static_cast<unsigned long>(GetCurrentThreadId()), stableFrames,
                 t_PresenterFrameTrace.appendSucceeded ? 1 : 0);
         }
     }
-    StashPresentedOutput();
+    t_PresentedOutputValid = OutputAttributionForBatch(anchorIndex, &t_PresentedOutput);
     ResetPresenterFrameTrace();
 }
 

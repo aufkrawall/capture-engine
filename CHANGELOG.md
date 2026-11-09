@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Frame-time graph animation with FSR Frame Generation:** draw the graph at generated-output cadence when a DirectX 12 queue proxy forwards FidelityFX's composition. The overlay follows the runtime's output batch even while another overlay submits work during Present.
+
 - **Inject overlay after restoring a DX12 game with DLSS Frame Generation:** let the first DLSS output draw the overlay when it presents on the same verified native queue and swapchain that already drew it before activation. This removes the startup gap seen after restoring The Witcher 3.
 
 - **Inject overlay after switching from DLSS to FSR in a menu:** keep drawing while FidelityFX presents with frame generation off, even when a graphics proxy returns a different view of the backbuffer's DirectX 12 device. Capture Engine verifies that the backbuffer and its owner queue share the same device and clears the previous DLSS FG status during the handoff.
