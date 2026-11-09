@@ -8,6 +8,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include "hook/runtime/freeze_monitoring_window.h"
 #include "hook/runtime/resident_worker.h"
@@ -56,15 +57,10 @@ inline bool DialogWindowCanBlockPresentation(HWND dialog, HWND presentationWindo
     return dialog != nullptr && (presentationWindow == nullptr || dialog != presentationWindow);
 }
 
-// A same-process #32770 window is useful diagnostic evidence, but it is not by
-// itself evidence of a freeze: third-party overlays create ordinary dialogs in
-// the game process while presentation continues. Preserve early startup dumps
-// before a render loop exists and immediate known-critical error dialogs, then
-// require the normal render heartbeat to be stale before calling any other
-// persistent dialog a freeze.
-inline bool ShouldCapturePersistentDialogDump(bool criticalDialog, bool renderLoopObserved,
-                                              double heartbeatElapsedSeconds, double freezeTimeoutSeconds) {
-    return criticalDialog || !renderLoopObserved || heartbeatElapsedSeconds >= freezeTimeoutSeconds;
+// A dialog title is diagnostic context for a presentation freeze. Only a recognized
+// fatal error can request a dump on its own, including before the first Present.
+inline bool IsCriticalPresentationDialog(std::string_view title) {
+    return title.find("ERR_GFX_STATE") != std::string_view::npos;
 }
 
 // A freeze the application explains itself.

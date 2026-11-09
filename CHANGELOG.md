@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **False freeze reports during game startup:** ordinary startup dialogs, including the Heroes of the Storm launch dialog, no longer trigger freeze dumps without evidence that presentation stalled. Recognized graphics error dialogs can still trigger a dump immediately.
+
 - **Inject overlay during DLSS Frame Generation swapchain recreation:** prepare the replacement swapchain and rearm the overlay callback when DLSS Frame Generation stays enabled across a brief return to the game queue. This closes the overlay gap during the swapchain sequence observed with Ubisoft Connect active.
 
 - **Overlay during FSR-to-DLSS handoff:** signal each pending overlay fence on the queue that submitted the draw and retain that queue until signaling finishes. A completed Streamline OFF edge cannot tear down the fresh overlay when FSR later stops, avoiding a missed present during the handoff. An FSR callback that already drew a queued output keeps ownership of that output when it presents after FSR turns off.

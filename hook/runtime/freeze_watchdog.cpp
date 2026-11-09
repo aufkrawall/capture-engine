@@ -103,12 +103,6 @@ std::string DescribeDialog(const DialogInfo& info) {
     return description;
 }
 
-std::string GetDialogIdentity(const DialogInfo& info) {
-    if (info.title[0] != '\0') {
-        return info.title;
-    }
-    return "#32770";
-}
 }  // namespace
 
 FreezeWatchdog::FreezeWatchdog() noexcept : worker_(&HookIsShuttingDown), processId_(GetCurrentProcessId()) {
@@ -553,19 +547,9 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
 
 void FreezeWatchdog::WatchdogThread(uint64_t run) {
     const auto checkInterval = std::chrono::milliseconds(500);
-    constexpr double kDialogDumpDelaySeconds = 5.0;
-    constexpr double kDialogStartupWindowSeconds = 90.0;
-    constexpr uint64_t kDialogDumpDedupWindowMicros = 10'000'000;
     uint64_t lastLogTime = 0;
-    uint64_t dialogSeenSince = 0;
-    DWORD dialogThreadId = 0;
+    HWND observedDialog = nullptr;
     std::string dialogDescription;
-    std::string dialogIdentity;
-    bool dialogDumpWritten = false;
-    bool healthyDialogSuppressionLogged = false;
-    bool freezeDumpSuppressionLogged = false;
-    uint64_t lastDialogDumpTime = 0;
-    std::string lastDialogDumpIdentity;
 
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
 
@@ -610,43 +594,24 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
         uint64_t lastBeat = lastHeartbeat_.load(std::memory_order_acquire);
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double elapsed = (now - lastBeat) / 1'000'000.0;
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double sinceStartup = (now - startupTime_.load(std::memory_order_acquire)) / 1'000'000.0;
         DialogInfo dialogInfo = {};
-        bool hasDialog = FindBlockingDialogWindow(
+        const bool hasDialog = FindBlockingDialogWindow(
             processId_, presentationWindow_.load(std::memory_order_acquire), dialogInfo);
-        if (hasDialog) {
-            std::string currentDialogDescription = DescribeDialog(dialogInfo);
-            std::string currentDialogIdentity = GetDialogIdentity(dialogInfo);
-            if (dialogSeenSince == 0 || dialogIdentity != currentDialogIdentity) {
-                dialogSeenSince = now;
-                dialogThreadId = dialogInfo.threadId;
-                dialogDescription = currentDialogDescription;
-                dialogIdentity = currentDialogIdentity;
-                dialogDumpWritten = false;
-                healthyDialogSuppressionLogged = false;
-                freezeDumpSuppressionLogged = false;
-                HookLogImportant("FreezeWatchdog: Detected %s (hwnd=%p tid=%lu)", dialogDescription.c_str(),
-                                 dialogInfo.hwnd, dialogThreadId);
-            } else if (dialogThreadId != dialogInfo.threadId || dialogDescription != currentDialogDescription) {
-                HookLog("FreezeWatchdog: Dialog state changed to %s (hwnd=%p tid=%lu)",
-                        currentDialogDescription.c_str(), dialogInfo.hwnd, dialogInfo.threadId);
-                dialogThreadId = dialogInfo.threadId;
-                dialogDescription = currentDialogDescription;
+        const bool criticalDialog =
+            hasDialog && ce::freeze_watchdog_policy::IsCriticalPresentationDialog(dialogInfo.title);
+        if (dialogInfo.hwnd != observedDialog) {
+            observedDialog = dialogInfo.hwnd;
+            dialogDescription = hasDialog ? DescribeDialog(dialogInfo) : std::string{};
+            if (hasDialog) {
+                HookLogImportant("FreezeWatchdog: Observed %s (hwnd=%p tid=%lu critical=%d)",
+                                 dialogDescription.c_str(), dialogInfo.hwnd, dialogInfo.threadId, criticalDialog);
+            } else {
+                HookLog("FreezeWatchdog: Observed dialog cleared");
             }
-        } else if (dialogSeenSince != 0) {
-            HookLog("FreezeWatchdog: Blocking dialog cleared");
-            dialogSeenSince = 0;
-            dialogThreadId = 0;
-            dialogDescription.clear();
-            dialogIdentity.clear();
-            dialogDumpWritten = false;
-            healthyDialogSuppressionLogged = false;
-            freezeDumpSuppressionLogged = false;
         }
         if (hasDialog && ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
-                             true, dialogDescription.find("ERR_GFX_STATE") != std::string::npos,
-                             dialogInfo.threadId, monitoredThreadId_.load(std::memory_order_acquire))) {
+                             true, criticalDialog, dialogInfo.threadId,
+                             monitoredThreadId_.load(std::memory_order_acquire))) {
             NoteRenderThreadDialog(dialogInfo.hwnd, dialogInfo.threadId, dialogDescription);
         }
 
@@ -669,7 +634,7 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
                       "runtimePresentation=%d, renderLoopObserved=%d, liveEvidence=%d, vulkanLayerActive=%d, "
                       "vulkanPresentInFlight=%d, vulkanTidSwitches=%llu, monitorElapsed=%.1fs\n",
                       elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
-                      dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0,
+                      dialogInfo.threadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0,
                       renderLoopObserved, liveRenderLoopEvidence, vulkanLayerActive, vulkanPresentInFlight,
                       static_cast<unsigned long long>(
                           vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)), monitorElapsed);
@@ -678,81 +643,22 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
                 "FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
                 "runtimePresentation=%d renderLoopObserved=%d liveEvidence=%d vulkanLayerActive=%d "
                 "vulkanPresentInFlight=%d vulkanTidSwitches=%llu monitorElapsed=%.1fs",
-                elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId,
+                elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogInfo.threadId,
                 runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0, renderLoopObserved,
                 liveRenderLoopEvidence, vulkanLayerActive, vulkanPresentInFlight,
                 static_cast<unsigned long long>(
                     vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)), monitorElapsed);
         }
 
-        if (dialogSeenSince != 0 && !dialogDumpWritten) {
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            double dialogElapsed = (now - dialogSeenSince) / 1'000'000.0;
-            const bool isErrGfxStateDialog = dialogDescription.find("ERR_GFX_STATE") != std::string::npos;
-            const double requiredDialogDumpDelay = isErrGfxStateDialog ? 0.0 : kDialogDumpDelaySeconds;
-            const bool withinDialogDumpWindow = sinceStartup <= kDialogStartupWindowSeconds || isErrGfxStateDialog;
-            if (dialogElapsed >= requiredDialogDumpDelay && withinDialogDumpWindow) {
-                const double freezeTimeout = timeoutSeconds_.load(std::memory_order_acquire);
-                const bool renderLoopObserved = renderLoopObserved_.load(std::memory_order_acquire);
-                if (!ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
-                        isErrGfxStateDialog, renderLoopObserved, elapsed, freezeTimeout)) {
-                    if (!healthyDialogSuppressionLogged) {
-                        HookLogImportant(
-                            "FreezeWatchdog: Persistent dialog remains visible after %.1fs, but the render "
-                            "heartbeat is fresh (age=%.1fs timeout=%.1fs) - suppressing dialog dump",
-                            dialogElapsed, elapsed, freezeTimeout);
-                        healthyDialogSuppressionLogged = true;
-                    }
-                    continue;
-                } else if (!dialogIdentity.empty() && dialogIdentity == lastDialogDumpIdentity &&
-                    (now - lastDialogDumpTime) < kDialogDumpDedupWindowMicros) {
-                    HookLogImportant(
-                        "FreezeWatchdog: Suppressing duplicate dialog dump for %s because a dump was already captured "
-                        "%.1fs ago",
-                        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                        dialogDescription.c_str(), (now - lastDialogDumpTime) / 1'000'000.0);
-                    dialogDumpWritten = true;
-                    continue;
-                }
-
-                std::string reason = dialogDescription.empty() ? "Blocking dialog detected"
-                                                               : ("Blocking " + dialogDescription + " detected");
-                const bool explainedByApplicationDialog =
-                    ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
-                        true, isErrGfxStateDialog, dialogThreadId,
-                        monitoredThreadId_.load(std::memory_order_acquire));
-                if (isErrGfxStateDialog) {
-                    HookLogImportant("FreezeWatchdog: Critical dialog %s detected - capturing dump immediately",
-                                     dialogDescription.c_str());
-                } else if (explainedByApplicationDialog) {
-                    HookLogImportant(
-                        "FreezeWatchdog: The monitored render thread (tid=%lu) owns %s, so it is running that "
-                        "dialog's message pump rather than presenting - capturing stacks only",
-                        dialogThreadId, dialogDescription.c_str());
-                } else {
-                    HookLogImportant("FreezeWatchdog: Persistent dialog detected after %.1fs - capturing dump",
-                                     dialogElapsed);
-                }
-                RequestImmediateDump(reason, dialogThreadId, explainedByApplicationDialog);
-                dialogDumpWritten = true;
-                lastDialogDumpTime = now;
-                lastDialogDumpIdentity = dialogIdentity;
-            }
+        if (criticalDialog) {
+            const auto description = DescribeDialog(dialogInfo);
+            HookLogImportant("FreezeWatchdog: Critical dialog %s detected - capturing dump immediately",
+                             description.c_str());
+            RequestImmediateDump("Blocking " + description + " detected", dialogInfo.threadId);
+            return;
         }
 
         if (IsFrozen()) {
-            if (dialogSeenSince != 0 && dialogDumpWritten) {
-                if (!freezeDumpSuppressionLogged) {
-                    HookLogImportant(
-                        "FreezeWatchdog: Suppressing redundant freeze dump because a dialog dump was already captured "
-                        "for %s",
-                        dialogDescription.c_str());
-                    freezeDumpSuppressionLogged = true;
-                }
-                continue;
-            }
-            freezeDumpSuppressionLogged = false;
-
             const uint64_t frozenSeconds = monitoringWindow_.ElapsedMicros(
                 GetCurrentMicros(), lastHeartbeat_.load(std::memory_order_acquire)) / 1'000'000;
             std::string reason = "Render thread frozen for " + std::to_string(frozenSeconds) + " seconds";
@@ -764,8 +670,7 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
             // its memory would only record a message pump.
             const bool explainedByApplicationDialog =
                 ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
-                    dialogSeenSince != 0, dialogDescription.find("ERR_GFX_STATE") != std::string::npos,
-                    dialogThreadId, monitoredThreadId_.load(std::memory_order_acquire));
+                    hasDialog, criticalDialog, dialogInfo.threadId, monitoredThreadId_.load(std::memory_order_acquire));
             if (explainedByApplicationDialog) {
                 HookLogImportant(
                     "FreezeWatchdog: Freeze detected (%s) - the monitored render thread owns %s, capturing stacks "

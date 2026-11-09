@@ -545,8 +545,7 @@ TEST(FreezeWatchdogPolicyTest, ThePresentationWindowIsNeverABlockingDialog) {
     EXPECT_FALSE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(renderWindow, renderWindow));
     EXPECT_TRUE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(otherDialog, renderWindow));
 
-    // Before any presentation window is known - early startup - every dialog
-    // still counts, which is what preserves the startup-crash dumps.
+    // Before the presentation window is known the dialog remains observable.
     EXPECT_TRUE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(renderWindow, nullptr));
     EXPECT_FALSE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(nullptr, nullptr));
 }
@@ -601,22 +600,10 @@ TEST(FreezeWatchdogPolicyTest, CrossApiPresentLivenessSuppressesOnlyWhileFresh) 
     EXPECT_FALSE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 99999, kMaxAgeMs));
 }
 
-TEST(FreezeWatchdogPolicyTest, PersistentDialogRequiresAStaleRenderHeartbeat) {
-    constexpr double kFreezeTimeoutSeconds = 30.0;
-    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
-        /*criticalDialog=*/false, /*renderLoopObserved=*/true, 0.0, kFreezeTimeoutSeconds));
-    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
-        /*criticalDialog=*/false, /*renderLoopObserved=*/true, 29.999, kFreezeTimeoutSeconds));
-    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
-        /*criticalDialog=*/false, /*renderLoopObserved=*/true, kFreezeTimeoutSeconds, kFreezeTimeoutSeconds));
-}
-
-TEST(FreezeWatchdogPolicyTest, StartupAndCriticalDialogsRemainDumpable) {
-    constexpr double kFreezeTimeoutSeconds = 30.0;
-    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
-        /*criticalDialog=*/false, /*renderLoopObserved=*/false, 0.0, kFreezeTimeoutSeconds));
-    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
-        /*criticalDialog=*/true, /*renderLoopObserved=*/true, 0.0, kFreezeTimeoutSeconds));
+TEST(FreezeWatchdogPolicyTest, StartupDialogNeedsIndependentFreezeEvidence) {
+    EXPECT_FALSE(ce::freeze_watchdog_policy::IsCriticalPresentationDialog("Heroes of the Storm"));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(false, false, false, false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::IsCriticalPresentationDialog("ERR_GFX_STATE"));
 }
 
 // DOOM Eternal may rotate Vulkan presents across an idTech worker pool while
