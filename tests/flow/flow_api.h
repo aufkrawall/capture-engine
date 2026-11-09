@@ -21,6 +21,7 @@ struct CEFlowOverlayCoverage {
     uint64_t currentUncoveredStreak = 0;
     uint64_t longestUncoveredStreak = 0;
     uint64_t doubleDraws = 0;  // presents that got the overlay from two routes
+    uint64_t draws = 0;       // submitted overlay draws, excluding inherited coverage
     // Frame generation runtime outputs whose game frame the fake runtime reported (CEFlow_NoteRuntimeOutputFrame)
     // while CE had attributed them to a frame, and of those, outputs CE attributed to another frame than the ones
     // before them in that presenter lifetime (CE counts from its first Present, the fake from the proxy's).

@@ -271,6 +271,16 @@ bool FlowGame::DetachForeignFFXInputs() {
     return true;
 }
 
+bool FlowGame::WaitForFSRPresents() {
+    if (!fidelityfx_ || !fidelityfx_->swapchainContext)
+        return Fail("waiting for FidelityFX Presents without a swapchain", E_NOINTERFACE);
+    ffxDispatchDescFrameGenerationSwapChainWaitForPresentsDX12 wait{};
+    wait.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WAIT_FOR_PRESENTS_DX12;
+    if (fidelityfx_->dispatch(&fidelityfx_->swapchainContext, &wait.header) != FFX_API_RETURN_OK)
+        return Fail("ffxDispatch(waitForPresents)", E_FAIL);
+    return true;
+}
+
 bool FlowGame::SetFSRFrameGeneration(bool enabled, bool presentCallback) {
     if (!fidelityfx_ || !fidelityfx_->frameGenerationContext || kind_ != SwapchainKind::kFidelityFX)
         return Fail("SetFSRFrameGeneration without a FidelityFX swapchain", E_NOINTERFACE);

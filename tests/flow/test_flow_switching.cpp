@@ -84,6 +84,45 @@ TEST(FlowSwitch, GTAStyleRuntimeSwitchesKeepTheOverlay) {
     SwitchRuntimesWithFrameGenerationOn(game, false, FSRUiResource::kPlaceholder);
 }
 
+TEST(FlowSwitch, FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        SCOPED_TRACE(cycle);
+        ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kFidelityFX)) << game.Error();
+        ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/true)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(3)) << game.Error();
+        ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
+        ASSERT_TRUE(game.SetFSRFrameGeneration(false, /*presentCallback=*/true)) << game.Error();
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+
+        // The replacement presents one passthrough frame before SetOptions(ON).
+        // The departing FidelityFX surface cannot cover this new backbuffer.
+        const auto before = game.Coverage();
+        const auto physicalBefore = game.PhysicalPresents();
+        ASSERT_TRUE(game.RenderFrame()) << game.Error();
+        const auto after = game.Coverage();
+        EXPECT_EQ(game.PhysicalPresents() - physicalBefore, 1u);
+        EXPECT_EQ(after.presents - before.presents, 1u);
+        EXPECT_EQ(after.draws - before.draws, 1u) << "logs: " << game.LogDirectory();
+        ExpectPublished(game, 0, 1, "first Streamline passthrough");
+
+        ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(24)) << game.Error();
+        ExpectPublished(game, 1, 2, "DLSS FG resumed");
+    }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowSwitch, InactiveFidelityFXWithAProxyDeviceViewKeepsTheOverlayAfterDLSS) {
     FlowGame game(CurrentTestName());
     GameOptions options;

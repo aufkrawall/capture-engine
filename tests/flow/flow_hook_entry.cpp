@@ -308,6 +308,7 @@ extern "C" __declspec(dllexport) void CEFlow_GetOverlayCoverage(CEFlowOverlayCov
     out->currentUncoveredStreak = snapshot.currentStreak;
     out->longestUncoveredStreak = snapshot.longestStreak;
     out->doubleDraws = snapshot.doubleDraws;
+    out->draws = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
     std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
     out->outputFrameChecks = g_OutputFrames.checks;
     out->outputFrameMismatches = g_OutputFrames.mismatches;

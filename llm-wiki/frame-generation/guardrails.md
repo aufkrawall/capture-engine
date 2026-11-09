@@ -565,6 +565,23 @@ queues observed by ECL cannot invalidate this direct dispatch proof. GetState-on
 queues and a different swapchain or Present queue retain their startup gates. The native branch reports
 `nativeFinalOutput=1` on immediate takeover. Hardware retest pending.
 
+### First Streamline passthrough after FSR teardown (2026-11-09)
+
+The DX12 switch app with Steam Overlay active (session `20261109_204334`) had two FSR-to-DLSS
+handoffs whose first Streamline Present logged `firstPresent=inherited routes=none`. Both had
+preserved the ready backend for the replacement swapchain. The inner FG-off transition still
+treated generic runtime queue ownership as evidence of FidelityFX teardown and returned before
+the draw. An inherited coverage verdict can hide that gap on a new backbuffer.
+
+`FrameProcessSession::DrawFrameTransition` now uses the one-Present backend preservation proof
+from `TrackSwapchainAndSelectQueue` to keep the verified Streamline queue through this transition.
+The passthrough reaches the existing normal draw while the direct DLSS signal is off. Protected
+FFX startup, the unproven FSR teardown path and active PostSL routing keep their own gates.
+`FlowSwitch.FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches` drains the departing
+FidelityFX outputs before disable and checks one actual overlay submission on the first
+replacement Present. Look for `Keeping prewarmed Streamline overlay through post-FSR passthrough`
+and `firstPresent=drawn routes=normal` in a repeat run.
+
 ### Active DLSS-G swapchain recreation (2026-11-08)
 
 The Avatar session showed an original-game-queue create between two authoritative Streamline

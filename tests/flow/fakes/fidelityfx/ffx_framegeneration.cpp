@@ -672,6 +672,12 @@ extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context, const 
         return g_swapchainContext->proxy->RecordGeneration(
             *reinterpret_cast<const ffxDispatchDescFrameGeneration*>(desc));
     }
-    // PREPARE(_V2), WAIT_FOR_PRESENTS (presents are already lockstep) and the rest need no work here.
+    if (desc->type == FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WAIT_FOR_PRESENTS_DX12) {
+        auto* base = static_cast<Context*>(*context);
+        if (base->kind != ContextKind::kSwapchain)
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        static_cast<SwapchainContext*>(base)->proxy->WaitForPresents();
+    }
+    // PREPARE(_V2) and the rest need no work here.
     return FFX_API_RETURN_OK;
 }

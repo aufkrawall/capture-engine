@@ -443,7 +443,18 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
                     }
                 }
             } else if (!newTypeNeedsScQueue && dx12_hook_g_HadFSRFGPhase) {
-                if (targetIsNone) {
+                if (targetIsNone && !currentSLFGRunning && exactPrewarmedPostSLHandoffBackendPreservedThisPresent) {
+                    // The replacement Streamline swapchain already owns this queue and backend.
+                    // Keep both for its passthrough Present before DLSS activation.
+                    static std::atomic<uint32_t> s_prewarmedPassthroughs{0};
+                    const uint32_t handoffs = s_prewarmedPassthroughs.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (ce::log_meter::ShouldLogCadence(handoffs, 10, 120)) {
+                        HookLogImportant(
+                            "DX12: Keeping prewarmed Streamline overlay through post-FSR passthrough "
+                            "(sc=%p scQueue=%p handoffs=%u)",
+                            pSwapChain, transitionSwapchainQueue, handoffs);
+                    }
+                } else if (targetIsNone) {
                     // FSR→DLSS→Off: wait for live non-FG command traffic to
                     // prove which queue owns the resumed Present path again.
                     // Forcing origGame back into g_SwapchainQueue here caused
@@ -456,6 +467,7 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
                             targetIsNone, dx12_hook_g_HadFSRFGPhase, dx12_hook_g_FGRuntimeOwnsSwapchain,
                             DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
                     if (preserveRuntimeOwnedFSRTeardown) {
+                        NoteDX12OverlayCoverageGate("post-fsr-teardown-awaiting-queue");
                         HookLogImportant(
                             "DX12: FG→off after FSR phase classified while runtime still owns swapchain — "
                             "preserving FSR queue ownership until a stronger off signal appears "
