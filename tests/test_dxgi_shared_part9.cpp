@@ -544,11 +544,23 @@ TEST(DXGISharedTest, SameQueuePureDLSSColdStartIsSafeToRenderEarly) {
     // swapchain on the original Present queue (Talos session 20260910_075304).
     EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, false, false, false, false));
     EXPECT_TRUE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, false, true, false, false));
-    // A separate SL wrapper queue exists -> there IS a separate runtime pipeline; keep protections.
+    // An unrelated SL queue alone cannot prove that we can submit directly.
     EXPECT_FALSE(
         ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, true, /*hasSeparateSLWrapperQueue=*/true, false));
     // Device removed -> never render.
     EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, true, false, /*deviceRemoved=*/true));
+}
+
+TEST(DXGISharedTest, ExplicitDLSSFinalOutputCanUseProvenNativePresentQueueDespiteOtherRuntimeQueues) {
+    using ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe;
+
+    EXPECT_TRUE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+        false, true, false, true, true, false, /*explicitFinalOutputWithNativeSubmit=*/true));
+    // A different swapchain, a lost device and post-FSR activation still require their own routes.
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, false, false, true, false, true));
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, false, false, true, true, false, true));
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, false, true, true, true, true));
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(true, true, false, true, true, false, true));
 }
 
 TEST(DXGISharedTest, SameQueuePureDLSSColdStartBypassesReactivationWarmup) {

@@ -551,6 +551,20 @@ This page records current guardrails and tested transition families for no-FG, D
 - Build `0.1.3314` narrows the GTA V Enhanced pure-DLSS startup transport rule: an authoritative runtime-owned Streamline handoff is not by itself unsafe transport. The `all FG off -> DLSS FG` Apply path behind EOS needs real normal Streamline Present traffic, otherwise CE can keep the logical normal route but transport every startup Present through the bypass trampoline until Streamline/DLSSG activation is starved and startup OFF churn wins. `DetourPresent` / `DetourPresent1` now use bypass transport for this startup family only when a real Steam/third-party stale Present-hook risk is present, while post-FSR and Steam stale-hook families remain protected. Logs should distinguish `Streamline startup normal-route transport allowed` from `Streamline startup normal-route bypass` and include `transportRisk` plus `steamRisk`.
 - Build `0.1.3314` also hardens bypass/deep-hook trampolines against externally patched DXGI Present prologues. Resume offsets are accepted only at instruction boundaries whose live bytes match the clean on-disk image; CE extends past patched `E9 ... CC ...` filler bytes instead of jumping into the middle of a third-party patch. The expected diagnostic is `Extended resume offset past patched fill bytes`.
 
+### Explicit DLSS-G activation on a live native queue (2026-11-09)
+
+The Witcher 3 resumed from a minimized load with Steam and ReShade active. The game drew normally after
+restore, then explicitly enabled DLSS-G. The first DLSS outputs had 22 uncovered Presents over 219 ms
+in the PostSL countdown and warmup. Streamline had submitted work on other queues, but the confirmed
+PostSL route used the same native Present queue and swapchain as the preceding normal overlay.
+
+`PostSLRenderSession::PrepareRouteActivation` can accept that first final output without a retained
+startup transport swapchain when the normal draw, queue capture and live RTV/sync backend all identify
+the current swapchain, and the selected Present queue resolves to the native ECL entry. Separate runtime
+queues observed by ECL cannot invalidate this direct dispatch proof. GetState-only activation with such
+queues and a different swapchain or Present queue retain their startup gates. The native branch reports
+`nativeFinalOutput=1` on immediate takeover. Hardware retest pending.
+
 ### Active DLSS-G swapchain recreation (2026-11-08)
 
 The Avatar session showed an original-game-queue create between two authoritative Streamline

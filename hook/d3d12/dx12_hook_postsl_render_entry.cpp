@@ -26,13 +26,14 @@ const bool useTopLevelHandoffWrapperProgress =
     ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
         dx12_hook_g_HadFSRFGPhase, startupTopLevelPresentConsumed, startupWrapperProgressCount > 0);
 safePostFSRBootstrapPathForPostSL = HookHasSafePostFSRBootstrapPath();
+const bool explicitSetOptionsActivation = HookHasExplicitStreamlineSetOptionsActivation();
 explicitEnablePureDLSSColdStartProof = ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof(
-    dx12_hook_g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(),
+    dx12_hook_g_HadFSRFGPhase, explicitSetOptionsActivation,
     HasRetainedStreamlineStartupActivationSwapchain(),
     DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
 const bool explicitPostFSRSafeBootstrapStartupProof =
     ce::dx12_overlay_policy::HasExplicitPostFSRSafeBootstrapStartupProof(
-        dx12_hook_g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(), safePostFSRBootstrapPathForPostSL,
+        dx12_hook_g_HadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPathForPostSL,
         HasRetainedStreamlineStartupActivationSwapchain(),
         DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
 int callNum = s_postSLCalls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -103,19 +104,15 @@ if (keepAliveRenderAfterExplicitOff) {
 bool sameQueuePureDLSSColdStartSafe = false;
 bool noSeparateCommandQueueForPureDLSSColdStart = false;
 bool exactNormalOverlayOriginalQueueSwapchainProof = false;
+bool explicitFinalOutputWithNativeSubmit = false;
 {
-    ID3D12CommandQueue* sqScQueue = nullptr;
-    ID3D12CommandQueue* sqOrigQueue = nullptr;
-    ID3D12CommandQueue* sqCmdQueue = nullptr;
-    {
-        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-        sqScQueue = dx12_hook_g_SwapchainQueue;
-        sqOrigQueue = dx12_hook_g_OriginalGameQueue;
-        sqCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
-    }
-    ID3D12CommandQueue* sqSLWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
     auto* sqDev = g_Device.load(std::memory_order_acquire);
     const bool sqDeviceRemoved = sqDev && FAILED(sqDev->GetDeviceRemovedReason());
+    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+    auto* const sqScQueue = dx12_hook_g_SwapchainQueue;
+    auto* const sqOrigQueue = dx12_hook_g_OriginalGameQueue;
+    auto* const sqCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
+    ID3D12CommandQueue* sqSLWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
     exactNormalOverlayOriginalQueueSwapchainProof =
         pSwapChain != nullptr &&
         dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.load(std::memory_order_acquire) == pSwapChain &&
@@ -124,17 +121,29 @@ bool exactNormalOverlayOriginalQueueSwapchainProof = false;
         dx12_hook_g_State.cachedSwapChain == pSwapChain && dx12_hook_g_State.overlayInit &&
         dx12_hook_g_State.syncInit;
     noSeparateCommandQueueForPureDLSSColdStart = sqCmdQueue == nullptr || sqCmdQueue == sqOrigQueue;
+    const bool samePresentQueue = sqScQueue != nullptr && sqScQueue == sqOrigQueue;
+    if (cachedSLFGActive && !postSLConfirmedRendering && !dx12_hook_g_HadFSRFGPhase &&
+        sqSLWrapperQueue && samePresentQueue && exactNormalOverlayOriginalQueueSwapchainProof &&
+        explicitSetOptionsActivation && DXGIShared::IsPostSLFinalOutputPresentCallback()) {
+        // Match the native dispatch the submission stage will use. Discovery of another queue is
+        // insufficient to veto this path, but it also cannot prove a native submission on its own.
+        const auto originalEcl = GetOriginalExecuteCommandLists(sqScQueue);
+        const auto nativeEcl = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+        explicitFinalOutputWithNativeSubmit = originalEcl && originalEcl == nativeEcl &&
+            (!g_PostSLQueues.SelectedQueue() || g_PostSLQueues.SelectedQueue() == sqScQueue);
+    }
     sameQueuePureDLSSColdStartSafe = ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe(
-        dx12_hook_g_HadFSRFGPhase, sqScQueue != nullptr && sqScQueue == sqOrigQueue,
+        dx12_hook_g_HadFSRFGPhase, samePresentQueue,
         noSeparateCommandQueueForPureDLSSColdStart, exactNormalOverlayOriginalQueueSwapchainProof,
-        sqSLWrapperQueue != nullptr, sqDeviceRemoved);
+        sqSLWrapperQueue != nullptr, sqDeviceRemoved, explicitFinalOutputWithNativeSubmit);
 }
 bool syntheticStartupActivatedThisCall = false;
 bool immediateSameQueueStartupTakeover = false;
 bool immediatePostFSRExplicitStartupTakeover = false;
 {
     immediateSameQueueStartupTakeover =
-        sameQueuePureDLSSColdStartSafe && processFrameRecentlySeen && startupActivationPending;
+        sameQueuePureDLSSColdStartSafe && startupActivationPending &&
+        (processFrameRecentlySeen || explicitFinalOutputWithNativeSubmit);
     immediatePostFSRExplicitStartupTakeover = !immediateSameQueueStartupTakeover &&
                                               explicitPostFSRSafeBootstrapStartupProof && processFrameRecentlySeen &&
                                               startupActivationPending;
@@ -165,9 +174,8 @@ bool immediatePostFSRExplicitStartupTakeover = false;
             if (immediateSameQueueStartupTakeover) {
                 HookLogImportant(
                     "DX12: PostSL synthetic startup immediate same-queue takeover — callback proves the "
-                    "Streamline handoff before the ProcessFrame dormant timer (normalDrawPending=%d "
-                    "cooldown=%d)",
-                    normalRouteDrawPendingAtEntry ? 1 : 0,
+                    "Streamline handoff (normalDrawPending=%d nativeFinalOutput=%d cooldown=%d)",
+                    normalRouteDrawPendingAtEntry ? 1 : 0, explicitFinalOutputWithNativeSubmit ? 1 : 0,
                     dx12_hook_g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
             } else {
                 HookLogImportant(

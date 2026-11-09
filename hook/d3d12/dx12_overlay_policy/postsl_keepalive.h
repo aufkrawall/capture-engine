@@ -26,18 +26,24 @@ namespace ce::dx12_overlay_policy {
 // "moves to a runtime-owned swapchain"). When PostSL remains on the GAME'S PROVEN ORIGINAL PRESENT
 // queue, there is no separate proxy-init pipeline for CE's ECL to corrupt: the overlay ECL is another
 // submit on the queue where this exact swapchain already accepted CE's normal overlay. A separately
-// discovered render/primary command queue does not invalidate that stronger proof; a Streamline
-// wrapper queue or a different swapchain queue does. Render from the first callback for this topology.
+// discovered render/primary command queue does not invalidate that stronger proof. During explicit
+// activation, a final output on that exact swapchain can also use the already-resolved native ECL
+// path even if discovery saw Streamline submit on other queues. Render from the first callback.
 // device-removed is still caught by the PostSL render's pre-submit GetDeviceRemovedReason bail; a pure
 // GPU hang is caught by the freeze watchdog. GTA-unvalidated; excludes the documented separate-queue
 // hang by construction.
 inline bool ShouldTreatSameQueuePureDLSSColdStartAsSafe(bool hadFSRFGPhase, bool swapchainQueueIsOriginalGameQueue,
                                                         bool noSeparateCommandQueue,
                                                         bool exactNormalOverlayOriginalQueueSwapchainProof,
-                                                        bool hasSeparateSLWrapperQueue, bool deviceRemoved) {
-    return !hadFSRFGPhase && swapchainQueueIsOriginalGameQueue &&
-           (noSeparateCommandQueue || exactNormalOverlayOriginalQueueSwapchainProof) &&
-           !hasSeparateSLWrapperQueue && !deviceRemoved;
+                                                        bool hasSeparateSLWrapperQueue, bool deviceRemoved,
+                                                        bool explicitFinalOutputWithNativeSubmit = false) {
+    if (hadFSRFGPhase || !swapchainQueueIsOriginalGameQueue || deviceRemoved) {
+        return false;
+    }
+    if (hasSeparateSLWrapperQueue) {
+        return exactNormalOverlayOriginalQueueSwapchainProof && explicitFinalOutputWithNativeSubmit;
+    }
+    return noSeparateCommandQueue || exactNormalOverlayOriginalQueueSwapchainProof;
 }
 
 // Make-before-break for explicit Streamline FG OFF. slDLSSGSetOptions(off)
