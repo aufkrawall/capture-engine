@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <winver.h>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <string>
@@ -415,6 +416,58 @@ static inline bool DllVersionStringContains(const char* dllPath, const char* nee
 // A loaded module's own mapping answers; see ModuleReadVersionResource.
 static inline bool ModuleVersionStringContains(HMODULE module, const char* needle) {
     return VersionResourceStringContains(ModuleReadVersionResource(module), needle);
+}
+
+// The build a version resource names: the full four-part file version, then the
+// first non-empty identifying string ("2.14.16.0 SHA: b742680bf v2.14.16-rc2").
+// Two Streamline builds can share a file version - 2.14.16-rc2 and the release
+// both report 2.14.16.0 - and only the strings tell them apart. Empty when the
+// buffer carries no version. Printable ASCII only, truncated to `maxChars`.
+static inline std::string VersionResourceBuildIdentity(const std::string& buf, size_t maxChars = 96) {
+    VS_FIXEDFILEINFO* fixed = nullptr;
+    UINT fixedLen = 0;
+    if (buf.empty() || !VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&fixed), &fixedLen) || !fixed ||
+        fixedLen < sizeof(VS_FIXEDFILEINFO)) {
+        return {};
+    }
+    char text[160] = {};
+    int used = snprintf(text, sizeof(text), "%u.%u.%u.%u", HIWORD(fixed->dwFileVersionMS),
+                        LOWORD(fixed->dwFileVersionMS), HIWORD(fixed->dwFileVersionLS),
+                        LOWORD(fixed->dwFileVersionLS));
+    struct LangCP {
+        WORD lang, cp;
+    }* trans = nullptr;
+    UINT transLen = 0;
+    if (used > 0 && static_cast<size_t>(used) + 2 < sizeof(text) &&
+        VerQueryValueW(buf.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void**>(&trans), &transLen) &&
+        trans && transLen >= sizeof(LangCP)) {
+        for (const wchar_t* field : {L"OriginalFilename", L"ProductVersion", L"FileVersion"}) {
+            wchar_t subkey[128];
+            swprintf(subkey, sizeof(subkey) / sizeof(subkey[0]), L"\\StringFileInfo\\%04x%04x\\%ls", trans[0].lang,
+                     trans[0].cp, field);
+            wchar_t* value = nullptr;
+            UINT length = 0;
+            if (!VerQueryValueW(buf.data(), subkey, reinterpret_cast<void**>(&value), &length) || !value ||
+                length <= 1) {
+                continue;
+            }
+            text[used++] = ' ';
+            for (UINT i = 0; i < length && value[i] && static_cast<size_t>(used) + 1 < sizeof(text); ++i) {
+                text[used++] = value[i] >= 0x20 && value[i] < 0x7F ? static_cast<char>(value[i]) : '?';
+            }
+            text[used] = '\0';
+            break;
+        }
+    }
+    std::string identity(text);
+    if (identity.size() > maxChars) {
+        identity.resize(maxChars);
+    }
+    return identity;
+}
+
+static inline std::string ModuleBuildIdentity(HMODULE module) {
+    return VersionResourceBuildIdentity(ModuleReadVersionResource(module));
 }
 
 // Whether `module` was loaded from the System32 directory.

@@ -52,7 +52,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Diagnosing frame-generation switch crashes (GTA V Enhanced DLSS FG to FSR FG):** when Windows refuses the new swapchain because the previous one still holds the game window, the log now says whether each of the window's earlier DirectX 12 swapchains is still alive or was destroyed, which module released the last reference of a destroyed one, and which modules still hold backbuffer references. Capture Engine observes this without holding a reference on the swapchain or patching any of its functions.
+- **Diagnosing frame-generation switch crashes (GTA V Enhanced DLSS FG to FSR FG):** when Windows refuses the new swapchain because the previous one still holds the game window, the log now says whether each of the window's earlier DirectX 12 swapchains is still alive or was destroyed, which module released the last reference of a destroyed one, and which modules still hold backbuffer references. Capture Engine observes this without holding a reference on the swapchain or patching any of its functions. The log also names, in one line, the modules outside DirectX that still hold the old swapchain's backbuffers (in the GTA crash: Streamline's DLSS-G plugin).
+- **Exact build of every loaded upscaler and frame-generation DLL in the log:** the line for each loaded Streamline, NGX or FidelityFX DLL now includes its full file version and build string (for example `2.14.16.0 SHA: b742680bf v2.14.16-rc2`). Two builds can share a version number and a file size, so this is the only way to see from a log which build a session used.
 
 ## v0.1.7160
 

@@ -191,15 +191,21 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     }
     if (ce::graphics_runtime::IsRuntimeModuleBaseName(base) ||
         (hasPath && ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath))) {
+      // Read from the mapping (no loader call): two builds can share a file version and a
+      // size, and a runtime that changed between a working and a failing session must be
+      // visible in the log (logs/20261110_152655: sl.dlss_g 2.14.16-rc2 vs October's 2.14.0).
+      const std::string build = ModuleBuildIdentity(static_cast<HMODULE>(data->DllBase));
       if (hasPath) {
-        HookLogImportant("Loader: runtime module loaded: %s -> %s (base=%p size=0x%zX%s)", base,
+        HookLogImportant("Loader: runtime module loaded: %s -> %s (base=%p size=0x%zX build=%s%s)", base,
                          narrowPath, data->DllBase, static_cast<size_t>(data->SizeOfImage),
+                         build.empty() ? "unversioned" : build.c_str(),
                          ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath)
                              ? ", NGX model repository"
                              : "");
       } else {
-        HookLogImportant("Loader: runtime module loaded: %s (base=%p size=0x%zX, path unavailable)",
-                         base, data->DllBase, static_cast<size_t>(data->SizeOfImage));
+        HookLogImportant("Loader: runtime module loaded: %s (base=%p size=0x%zX build=%s, path unavailable)",
+                         base, data->DllBase, static_cast<size_t>(data->SizeOfImage),
+                         build.empty() ? "unversioned" : build.c_str());
       }
     }
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {

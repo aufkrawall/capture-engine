@@ -4,6 +4,7 @@
 #include <dxgi.h>
 
 #include <filesystem>
+#include <map>
 #include <string>
 
 #include "hook/present/backbuffer_reference_trace.h"
@@ -136,6 +137,21 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
     EXPECT_EQ(bufferVtable[1], originalAddRef);
     EXPECT_EQ(chainVtable[9], originalGetBuffer);
     leaked->Release();
+}
+
+// logs/20261110_152655: at FidelityFX's refused create the nets were D3D12Core.dll=+18 (the
+// chain's own ownership) and sl.common.dll=+6 (DLSS-G's buffers, outliving Streamline's
+// proxy). Only the second keeps the chain alive, and the verdict must name only it.
+TEST(BackBufferReferenceTraceTest, ForeignHoldersAreModulesOutsideDxgiAndD3D12WithPositiveNets) {
+    const std::map<std::string, long> refusedCreate = {
+        {"D3D12Core.dll", 18}, {"sl.common.dll", 6}, {"dxgi.dll", 3}, {"capture_hook_x64.dll", 0},
+        {"EOSOVH-Win64-Shipping.dll", -1}, {"unknown", 2}, {"GTA5_Enhanced.exe", 1}};
+    EXPECT_EQ(trace::DescribeForeignHolders(refusedCreate), "GTA5_Enhanced.exe=+1 sl.common.dll=+6");
+
+    EXPECT_EQ(trace::DescribeForeignHolders({{"D3D12Core.dll", 18}, {"D3D12.dll", 2}, {"DXGI.DLL", 1}}), "");
+    EXPECT_EQ(trace::DescribeForeignHolders({}), "");
+    // CE holding a buffer is exactly what the verdict exists to show.
+    EXPECT_EQ(trace::DescribeForeignHolders({{"capture_hook_x64.dll", 2}}), "capture_hook_x64.dll=+2");
 }
 
 // DXGI's GetBuffer is hooked below its entry, and only while the slot still names DXGI's

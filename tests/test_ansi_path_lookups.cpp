@@ -110,6 +110,37 @@ TEST(AnsiPathLookupTest, LoadedModuleProbesUseTheModuleHandle) {
     EXPECT_EQ(ModuleFileMajorVersion(nullptr), ModuleFileMajorVersion(GetModuleHandleW(nullptr)));
 }
 
+// Two Streamline builds share 2.14.16.0 and the loaded size; only the version strings
+// ("SHA: b742680bf v2.14.16-rc2") told the failing GTA sessions' DLSS-G plugin from
+// October's working one (logs/20261110_152655). The loader line carries both.
+TEST(AnsiPathLookupTest, BuildIdentityIsTheFullFileVersionThenTheFirstIdentifyingString) {
+    const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    ASSERT_NE(kernel32, nullptr);
+    const std::string mapped = ModuleReadVersionResource(kernel32);
+    uint32_t major = 0;
+    ASSERT_TRUE(VersionResourceFileVersionParts(mapped, &major, nullptr, nullptr));
+
+    const std::string identity = ModuleBuildIdentity(kernel32);
+    EXPECT_EQ(identity, VersionResourceBuildIdentity(mapped));
+    const std::string prefix = std::to_string(major) + ".";
+    ASSERT_EQ(identity.compare(0, prefix.size(), prefix), 0) << identity;
+    size_t dots = 0;
+    const size_t space = identity.find(' ');
+    for (size_t i = 0; i < space && i < identity.size(); ++i) {
+        dots += identity[i] == '.' ? 1u : 0u;
+    }
+    EXPECT_EQ(dots, 3u) << "all four version parts: " << identity;
+    ASSERT_NE(space, std::string::npos) << "kernel32's mapping carries its version strings: " << identity;
+    EXPECT_GT(identity.size(), space + 1);
+    for (const char c : identity) {
+        EXPECT_TRUE(c >= 0x20 && c < 0x7F) << identity;
+    }
+
+    EXPECT_EQ(VersionResourceBuildIdentity(mapped, 4).size(), 4u);
+    EXPECT_TRUE(VersionResourceBuildIdentity(std::string()).empty());
+    EXPECT_TRUE(ModuleBuildIdentity(nullptr).empty());
+}
+
 // A loaded module's version comes out of its own mapping, and it must be the
 // same answer the file gives: the file read goes through
 // LoadLibraryEx(AS_DATAFILE), the export Steam's overlay serializes behind a
@@ -141,7 +172,8 @@ TEST(AnsiPathLookupTest, LoadedModuleVersionIsReadFromTheMappingNotTheFile) {
     // The HMODULE forms never derive a path to re-open.
     const std::string dllUtils = ReadSource("hook/runtime/dll_utils.h");
     for (const char* form : {"static inline bool ModuleVersionStringContains(HMODULE module",
-                             "static inline bool ModuleFileVersionParts(HMODULE module"}) {
+                             "static inline bool ModuleFileVersionParts(HMODULE module",
+                             "static inline std::string ModuleBuildIdentity(HMODULE module"}) {
         const std::string body = Between(dllUtils, form, "\n}\n");
         ASSERT_FALSE(body.empty()) << form;
         EXPECT_NE(body.find("ModuleReadVersionResource(module)"), std::string::npos) << form;

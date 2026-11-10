@@ -12,6 +12,7 @@
 #include "dxgi_shared.h"
 #include "hook/runtime/hook_common.h"
 #include "resize_reconcile_hook_policy.h"
+#include "swapchain_lifetime_witness.h"
 
 namespace {
 
@@ -276,6 +277,29 @@ void BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source)
         summary += entry;
     }
     HookLogImportant("BackBufferRefTrace: net references by module over %u buffer(s): %s", count, summary.c_str());
+    const std::string holders = trace::DescribeForeignHolders(netByModule);
+    if (holders.empty()) {
+        HookLogImportant("BackBufferRefTrace: %s - no module outside DXGI/D3D12 holds a back-buffer reference",
+                         source ? source : "?");
+    } else {
+        HookLogImportant(
+            "BackBufferRefTrace: %s - back buffers still referenced outside DXGI/D3D12: %s. A chain whose buffers "
+            "are referenced is not destroyed, so its window stays bound and a new flip chain is refused",
+            source ? source : "?", holders.c_str());
+    }
+}
+
+std::string ce::backbuffer_reference_trace::DescribeForeignHolders(const std::map<std::string, long>& netByModule) {
+    std::string holders;
+    for (const auto& [module, net] : netByModule) {
+        if (net <= 0 || module == "unknown" || ce::swapchain_lifetime_witness::IsReleaseMachineryModule(module.c_str())) {
+            continue;
+        }
+        char entry[112];
+        snprintf(entry, sizeof(entry), "%s%s=%+ld", holders.empty() ? "" : " ", module.c_str(), net);
+        holders += entry;
+    }
+    return holders;
 }
 
 void BackBufferReferenceTrace_Uninstall() {

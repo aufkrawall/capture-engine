@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <string>
 
 struct IDXGISwapChain;
 
@@ -68,6 +70,14 @@ inline void Clear(SiteTally* table, size_t capacity) {
         table[i].site.store(0, std::memory_order_release);
     }
 }
+
+// The modules outside the graphics runtime that still hold back-buffer references, as
+// "sl.common.dll=+6 capture_hook_x64.dll=+1"; empty when none does. A D3D12 chain's
+// buffers share its lifetime, so any one of these keeps the chain - and its window
+// binding - alive after its owner released it (logs/20261110_152655: DLSS-G's buffers,
+// taken through sl.common, outlived Streamline's proxy and refused FidelityFX's create).
+// DXGI's and D3D12's own references are the chain's internal ownership and never count.
+std::string DescribeForeignHolders(const std::map<std::string, long>& netByModule);
 
 }  // namespace ce::backbuffer_reference_trace
 

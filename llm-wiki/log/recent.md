@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-11-10 - GTA DLSS FG -> FSR FG: the old chain is pinned by Streamline DLSS-G's back buffers after its proxy died
+
+- Session `20261110_152655` (0.1.7494). Run 1 started with FSR FG and switched to DLSS FG: fine. Run 2 started with DLSS FG (no long black screen this time) and switching to FSR FG crashed exactly like `gtacrash`. The FidelityFX FOR_HWND create at 15:31:34.867 got E_ACCESSDENIED. GTA then read its null swapchain slot.
+- Witness at the refused create:
+  - The DLSS-G chain `...05D0` (6 buffers, flags 0x842) was `state=alive`.
+  - The game's earlier 3-buffer chain had been destroyed at 15:31:08.377 by `sl.interposer.dll+0x2A68F`, the proxy Release's `m_base->Release()`.
+  - Back-buffer nets since GTA's resize at 34.531: `sl.common.dll=+6`, i.e. +1 on every buffer from the GetBuffer helper at `sl.common+0x7D57A`. `D3D12Core.dll=+18` is the chain's own internal references.
+  - sl.dlss_g gets the real buffers through sl.common's compute layer; its embedded string reads `ctx.compute->getSwapChainBuffer(ctx.swapChainData.getSwapChain(), i, ...)`.
+- Dump (210 MB, no heap):
+  - sl.interposer's swapchain tracker `m_pCurrentSwapChain` (`sl_interposer+0x9A110` in 2.14.16-rc2) was 0. The proxy's Present sets it; only the proxy's final Release clears it. So GTA's Streamline proxy had been destroyed before the create.
+  - Proxy Release (`+0x2A520`) runs the `eIDXGISwapChain_Destroyed` hooks only while `m_refCount` (proxy+0x20) is 1, then releases `m_base`.
+  - sl.dlss_g's `slHookSwapChainDestroyed` (`sl_dlss_g+0x558B0`) cleans up, and releases the buffers, only when the destroyed pointer equals its tracked chain (`ctx+0x4180`).
+  - The buffers were still held, so that cleanup never ran for this chain.
+  - DLSS-G's five worker threads (`pacer`, `dlssg`, `vblank-tracker`, `render-tracker`, `flip-tracker`) were idle.
+- CE side, all clean:
+  - The retained activation chain was balanced: retained 08.412, released 08.620.
+  - CE held no back-buffer nets.
+  - Every `slDLSSGSetOptions` reached Streamline unchanged.
+  - CE's `slGetPluginFunction` hook sits only on sl.common and forwards to sl.common's own original. No suppressed lookups were logged.
+  - CE globals hold only raw pointers to the chain: the present ledger, `g_lastPresentedNative`, `g_LastSwapchainQueueCaptureSwapchain`, `g_DX12PostSLRuntime`, the witness fast path, and the fg_session history.
+- Streamline build changed between working and failing sessions:
+  - CE's override folder `npi\sl` now holds 2.14.16-rc2 (PE 2026-10-06, OriginalFilename `SHA: b742680bf v2.14.16-rc2`; sl.dlss_g SizeOfImage 0x9D000).
+  - The October `fgtests` DLSS->FSR success (2026-10-03, same flow: resize, then FFX create 0.37 s later) loaded an sl.dlss_g of SizeOfImage 0x9C000, matching 2.14.0 (`Programme\dlssdl\310.9.0`).
+  - GTA ships 2.9.1.
+  - Leading hypothesis: an rc2 regression in DLSS-G's teardown in GTA's switch flow. Unproven until the user runs the switch with the override on 2.14.0, or with GTA's own 2.9.1.
+- Added:
+  - The loader's runtime-module line carries `build=<file version> <OriginalFilename|ProductVersion|FileVersion>`, read from the mapping.
+  - `BackBufferRefTrace` prints one verdict line naming the modules outside DXGI/D3D12 that still hold back buffers.
+  - Removed the unused `streamline_compat.h` helpers. `slGetNativeInterface` returns an AddRef'd base (`source/core/sl.api/sl.cpp`) and that helper never released it.
+
 ### 2026-11-10 - GTA DLSS FG -> FSR FG crash: refused FidelityFX create, holder unproven; swapchain lifetime witness
 
 - Session `gtacrash` (0.1.7492; GTA V Enhanced with the Epic launcher overlay `AppData\Local\Epic Games\Launcher\Overlay\EOSOVH`, Social Club, Streamline 2, AF 16x). DLSS-G on at 22:26:38 (sl.dlss_g chain `...A740`, 6 buffers, 0x842), off from 22:26:42 (focus loss -> pause menu; explicit OFFs accepted, PostSL exact-proxy keep-alive). Switch: last Present 22:29:19.11, ResizeBuffers on the DLSS-G chain 19.687 with `backBufferRefsHeldByOthers before=[0,0,0,0,0,0]`, NGX released DLSS SR 19.709 and DLSS-G 19.853, `ffxCreateContext(FG)` 19.940-20.663, FOR_HWND create 20.690 -> E_ACCESSDENIED through minimal unpin and full cleanup -> `swapchain context create result=0x3` -> GTA AV at `+0x1e963d2` reading its null swapchain slot (the FFX `outputSlot`).

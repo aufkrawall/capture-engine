@@ -59,7 +59,6 @@ namespace {
 #include "hook/overlay/overlay_metrics_publisher.h"
 #include "hook/metrics/performance_metrics.h"
 #include "hook/capture/screenshot_hook.h"
-#include "hook/streamline/streamline_compat.h"
 #include "hook/streamline/streamline_runtime_policy.h"
 #include "common/platform/secure_dll_loading.h"
 #include "hook/pacing/fps_limiter.h"
