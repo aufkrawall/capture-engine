@@ -155,6 +155,7 @@ void LogDLSSGSetOptionsTransition(uint32_t viewportKey,  const slDLSSGOptions& r
             last.requestMode != requestedOptions.mode || last.forwardedMode != forwardedOptions.mode ||
             last.requestedGeneratedFrames != requestedGeneratedFrames ||
             last.forwardedGeneratedFrames != forwardedOptions.numFramesToGenerate ||
+            last.forwardedFlags != forwardedOptions.flags ||
             last.capabilityMax != capabilityMax || last.result != result || last.overrideApplied != overrideApplied ||
             last.overrideClamped != overrideClamped || last.startupWindowActive != startupWindowActive ||
             last.hadFSRFGPhase != hadFSRFGPhase ||
@@ -175,6 +176,7 @@ void LogDLSSGSetOptionsTransition(uint32_t viewportKey,  const slDLSSGOptions& r
             last.forwardedMode = forwardedOptions.mode;
             last.requestedGeneratedFrames = requestedGeneratedFrames;
             last.forwardedGeneratedFrames = forwardedOptions.numFramesToGenerate;
+            last.forwardedFlags = forwardedOptions.flags;
             last.capabilityMax = capabilityMax;
             last.result = result;
             last.overrideApplied = overrideApplied;
@@ -197,12 +199,12 @@ void LogDLSSGSetOptionsTransition(uint32_t viewportKey,  const slDLSSGOptions& r
     if (shouldLog) {
         HookLogImportant(
             "Streamline Hook: slDLSSGSetOptions %s viewport=%u requested=%s(%u) forwardedMode=%s(%u) "
-            "generated=%u->%u capabilityMax=%u result=%d override=%d clamped=%d startupWindow=%d hadFSR=%d "
+            "generated=%u->%u flags=0x%X capabilityMax=%u result=%d override=%d clamped=%d startupWindow=%d hadFSR=%d "
             "explicitComeback=%d safeBootstrap=%d pending=%d unconfirmed=%d confirmed=%d settling=%d "
             "stabilizing=%d runtime=%s slSignal=%d observerOnly=%d",
             forwarded ? "forwarded" : "suppressed", viewportKey, GetDLSSGModeName(requestedOptions.mode),
             requestedOptions.mode, GetDLSSGModeName(forwardedOptions.mode), forwardedOptions.mode,
-            requestedGeneratedFrames, forwardedOptions.numFramesToGenerate, capabilityMax, result,
+            requestedGeneratedFrames, forwardedOptions.numFramesToGenerate, forwardedOptions.flags, capabilityMax, result,
             overrideApplied ? 1 : 0, overrideClamped ? 1 : 0, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0,
             explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
             startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,

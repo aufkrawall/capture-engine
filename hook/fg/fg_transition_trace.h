@@ -8,6 +8,19 @@ namespace ce::fg_session {
 struct FGSessionSnapshot;
 struct FGActionPlan;
 
+// The exact native chain that received an authoritative Streamline handoff.
+// PCL markers describe title activity, while the output clock starts when CE
+// is actually called for that chain's first Streamline output.
+struct StreamlineStartupOutput {
+    void* swapchain = nullptr;
+    uint64_t handoff = 0;
+    int64_t enteredUs = 0;
+};
+void RecordStreamlineStartupHandoff(void* swapchain, int64_t timeUs);
+void RecordStreamlineStartupTitlePresent(uint32_t frameId, int64_t timeUs);
+StreamlineStartupOutput BeginStreamlineStartupOutput(void* swapchain);
+void EndStreamlineStartupOutput(const StreamlineStartupOutput& output);
+
 // The trace stores state changes and callback arrival edges. Its exit writer
 // reads only published data and skips any slot interrupted during publication.
 void RecordPublishedFGState(const FGSessionSnapshot& snapshot, const FGActionPlan& plan);
@@ -16,6 +29,7 @@ void RecordFFXContextDestroy(void* context, uint32_t effectId, uint32_t status, 
 void RecordFFXConfigure(void* context, bool enabled, void* originalCallback, void* bridgeKey, uint32_t status);
 void RecordFFXCallbackArrival(void* userCtx, uint64_t frameId, bool isGenerated, bool bridgeValid);
 void RecordStreamlineDLSSGOptions(uint32_t viewport, bool enabled, uint32_t status);
+void RecordStreamlineFeatureLifecycle(const char* api, uint32_t argument, uint32_t status);
 void RecordStreamlineReflexOptions(uint32_t mode, uint32_t status);
 void RecordStreamlineReflexSleepFailure(uint32_t status);
 void RecordSwapchainTransition(const char* action, void* swapchain, void* device, void* queue, uint32_t status);

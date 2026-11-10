@@ -9,6 +9,7 @@
 #include "streamline_inline_hook_batch.h"
 #include "streamline_interposer_takeover.h"
 #include "streamline_hook_v1.h"
+#include "streamline_hook_lifecycle.h"
 #include "streamline_v1_feature_probe.h"
 
 #include <vulkan/vulkan.h>
@@ -514,6 +515,10 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
         // A newly loaded interposer publishes all of its core exports at once.
         // Commit that logical family with one peer-thread snapshot so module
         // discovery cannot pause the game's startup once per exported symbol.
+        if (mayHookV2Abi && moduleBaseName && !_stricmp(moduleBaseName, "sl.interposer.dll") &&
+            !ce::streamline_interposer_takeover::IsSupersededInterposerModule(module)) {
+            ce::streamline_lifecycle::QueueInterposerDiagnostics(module, coreHookBatch);
+        }
         hookedAnything |= coreHookBatch.Commit() != 0;
 
         if (shouldHookCoreExports && (originalSetTag || originalEvaluateFeature) && !mayHookAbiSensitive) {

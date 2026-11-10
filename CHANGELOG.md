@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **False DLSS Frame Generation startup freeze reports:** repeated configuration calls before the first frame no longer trigger a freeze dump. Capture Engine now traces the title's first Present marker and the first Streamline output callback separately.
+
 - **Windows build verification:** write each toolchain closure proof as a new record so an open proof file cannot cause an access-denied failure during the build or release preflight.
 
 - **GPU fault diagnostics during DLSS Frame Generation:** when the final-output overlay detects a removed device, Capture Engine collects GPU breadcrumbs and page-fault data if enabled. The DX12 FG switch test can arm DRED in its config for launchers that start it without command-line arguments.
@@ -51,6 +53,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 - **Inject overlay visibility with Ubisoft Connect / Uplay overlay:** games running with the Ubisoft Connect / Uplay overlay active (such as *Avatar: Frontiers of Pandora*) no longer cause the inject overlay to disappear. Capture Engine now tracks verified Ubisoft `overlay64.dll` and `overlay.dll` modules requiring corroborating Ubisoft path/product evidence, traversing the Present call stack past verified overlay frames to reach the true Present originator (including Streamline and DLSS Frame Generation) and compositing below foreign Present entry chains. Ubisoft version metadata takes effect on the first scan, and a verified late load keeps its position relative to Steam.
 
 ### Improved
+
+- **DLSS Frame Generation teardown diagnostics:** record the title's Streamline feature-load and resource-release calls, their results, and the options flags that govern retention when frame generation is off.
 
 - **DX12 swapchain replacement diagnostics:** report the back-buffer reference balance for the affected window and resize, with caller stacks for the first GetBuffer sites. A refused replacement retries the minimal cleanup only when Capture Engine released a startup reference.
 

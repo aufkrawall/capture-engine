@@ -654,34 +654,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
     // when re-activating FG).  Verify and repair immediately.
     if (requestedEnabled) {
         DXGIShared::RepairVTableHooksIfNeeded();
-
-        // Detect Present bypass: if DetourPresent hasn't fired in the last N
-        // slDLSSGSetOptions calls despite DLSS FG being active, it means SL's
-        // wrapper is bypassing our vtable hook entirely.
-        static uint64_t s_lastPresentCount = 0;
-        static uint32_t s_stallFrames = 0;
-        uint64_t currentPresentCount = DXGIShared::g_PresentCallCounter.load(std::memory_order_relaxed);
-        if (currentPresentCount == s_lastPresentCount) {
-            s_stallFrames++;
-            if (s_stallFrames == 10 || s_stallFrames == 30 || s_stallFrames == 100 || (s_stallFrames % 500) == 0) {
-                HookLogImportant(
-                    "Streamline Hook: Present STALLED for %u frames (counter=%llu) — "
-                    "vtable hook bypassed?",
-                    s_stallFrames, (unsigned long long)currentPresentCount);
-            }
-            if (s_stallFrames == 30) {
-                g_RenderWatchdog.RequestImmediateDump("Streamline Present stalled for 30 frames",
-                                                      DX12_GetGamePresentThreadId());
-            }
-        } else {
-            if (s_stallFrames > 0) {
-                HookLogImportant("Streamline Hook: Present resumed after %u stalled frames (counter=%llu)",
-                                 s_stallFrames, (unsigned long long)currentPresentCount);
-            }
-            s_stallFrames = 0;
-        }
-        s_lastPresentCount = currentPresentCount;
     }
+    // The render watchdog observes Present progress. SetOptions calls can arrive in a burst
+    // before the title submits a frame, so their count cannot authorize a stall dump.
 
     if (result == streamline_hook_kSlResultOk) {
         if (!pureObserverOnly && requestedEnabled) {

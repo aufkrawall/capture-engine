@@ -4,6 +4,7 @@
 #include "hook/metrics/streamline_pcl_latency.h"
 #include "hook/metrics/system_latency_frame_begin.h"
 #include "hook/fg/fg_detection.h"
+#include "hook/fg/fg_transition_trace.h"
 
 #include <sl_pcl.h>
 
@@ -62,6 +63,7 @@ sl::Result Hooked_slPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& fra
         // own thread, outside every Streamline call, where a held OFF is replayed.
         if (markerValue == ce::system_latency::PclMarkerHistory::kPresentStartMarker &&
             !StreamlineHook::CeIssuedFrameMarkerScope::Active() && !StreamlineHook::IsExternalOverlayPresentGuardActive()) {
+            ce::fg_session::RecordStreamlineStartupTitlePresent(static_cast<uint32_t>(frameId), markerTimeUs);
             streamline_hook_g_TitleFrameMarkerSequence.fetch_add(1, std::memory_order_acq_rel);
             NoteStartupProtectedActiveTitleFrame(frameId);
             StreamlineHook::ServiceHeldSetOptionsOffOnTitleFrame();

@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook/fg/fg_transition_trace.h"
 #include "device_loss_latch.h"
 #include "swapchain_api_classifier.h"
 
@@ -120,7 +121,11 @@ void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, I
     const int64_t startUs = timeForCsv ? PerfLogger::GetQpcUs() : 0;
     // Every route's PostSL draw, which otherwise reads as the routing around it (`startup_routing`).
     ce::present_stage_cost::StageScope overlayStage(ce::present_stage_cost::Stage::kPostSLOverlay);
+    const auto startupOutput = ce::fg_session::BeginStreamlineStartupOutput(swapChain);
     callback(swapChain);
+    if (startupOutput.swapchain) {
+        ce::fg_session::EndStreamlineStartupOutput(startupOutput);
+    }
     if (timeForCsv) {
         PerfLogger::NoteDrawOutsideRow(startUs, static_cast<int32_t>(PerfLogger::GetQpcUs() - startUs));
     }

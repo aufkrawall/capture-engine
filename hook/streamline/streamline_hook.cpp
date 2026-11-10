@@ -1,6 +1,7 @@
 #include "streamline_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/overlay/overlay_compat.h"
+#include "streamline_hook_lifecycle.h"
 #include "streamline_interposer_takeover.h"
 
 namespace StreamlineHook {
@@ -127,6 +128,7 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
     // when the departing module is not the one whose export it is calling (sl.interposer's
     // slGetFeatureFunction can dispatch into a plugin that unloaded first).
     streamline_hook_g_StreamlineModuleUnloadGeneration.fetch_add(1, std::memory_order_acq_rel);
+    ce::streamline_lifecycle::OnModuleUnloaded(moduleBase, moduleSizeBytes);
 
     // Runs under the loader lock: interlocked/atomic writes and lightweight
     // logging only. Do NOT take g_ModuleHookMutex here (InstallHooksForModule

@@ -685,6 +685,7 @@ struct DLSSGSetOptionsLogState {
     uint32_t forwardedMode = 0;
     uint32_t requestedGeneratedFrames = 0;
     uint32_t forwardedGeneratedFrames = 0;
+    uint32_t forwardedFlags = 0;
     uint32_t capabilityMax = 0;
     slResult result = streamline_hook_kSlResultOk;
     bool overrideApplied = false;

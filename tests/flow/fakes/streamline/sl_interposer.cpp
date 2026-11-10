@@ -41,6 +41,7 @@ GetPluginFunction_t PluginFunctions(HMODULE plugin) {
     return plugin ? reinterpret_cast<GetPluginFunction_t>(GetProcAddress(plugin, "slGetPluginFunction")) : nullptr;
 }
 std::atomic<bool> g_initialized{false};
+std::atomic<bool> g_dlssgEnabled{true};
 uint32_t g_initCalls = 0;
 uint32_t g_setDeviceCalls = 0;
 uint64_t g_initFlags = 0;
@@ -115,6 +116,7 @@ sl::Result slInit(const sl::Preferences& preferences, uint64_t) {
     g_reflex = LoadLibraryW((directory + L"\\sl.reflex.dll").c_str());
     g_pcl = LoadLibraryW((directory + L"\\sl.pcl.dll").c_str());
     g_dlssgFunction = PluginFunctions(g_dlssg);
+    g_dlssgEnabled.store(true, std::memory_order_relaxed);
     g_reflexFunction = PluginFunctions(g_reflex);
     g_pclFunction = PluginFunctions(g_pcl);
     g_initialized = g_common && g_dlssgFunction && g_reflexFunction && g_pclFunction;
@@ -154,11 +156,15 @@ sl::Result slIsFeatureSupported(sl::Feature feature, const sl::AdapterInfo&) {
 }
 
 sl::Result slIsFeatureLoaded(sl::Feature feature, bool& loaded) {
-    loaded = FeaturePlugin(feature) != nullptr;
+    loaded = FeaturePlugin(feature) != nullptr &&
+             (feature != sl::kFeatureDLSS_G || g_dlssgEnabled.load(std::memory_order_relaxed));
     return sl::Result::eOk;
 }
 
-sl::Result slSetFeatureLoaded(sl::Feature, bool) {
+sl::Result slSetFeatureLoaded(sl::Feature feature, bool loaded) {
+    if (feature == sl::kFeatureDLSS_G) {
+        g_dlssgEnabled.store(loaded, std::memory_order_relaxed);
+    }
     return sl::Result::eOk;
 }
 
@@ -171,8 +177,10 @@ sl::Result slAllocateResources(sl::CommandBuffer*, sl::Feature, const sl::Viewpo
     return sl::Result::eOk;
 }
 
-sl::Result slFreeResources(sl::Feature, const sl::ViewportHandle&) {
-    return sl::Result::eOk;
+sl::Result slFreeResources(sl::Feature feature, const sl::ViewportHandle& viewport) {
+    return feature == sl::kFeatureDLSS_G && static_cast<uint32_t>(viewport) != 0
+               ? sl::Result::eErrorInvalidParameter
+               : sl::Result::eOk;
 }
 
 sl::Result slSetTag(const sl::ViewportHandle&, const sl::ResourceTag*, uint32_t, sl::CommandBuffer*) {

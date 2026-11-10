@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_transition_trace.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_apply.h"
 #include "hook/present/swapchain_create_recovery.h"
@@ -167,6 +168,7 @@ if (SUCCEEDED(qiHr) && pQueue) {
         captureEvidence.authoritativeFFXRuntimeCreator || captureEvidence.officialAMDFFXRuntimeCreator,
         currentOriginalGameQueue != nullptr && pQueue == currentOriginalGameQueue);
     if (freshAuthoritativeStreamlineHandoff) {
+        ce::fg_session::RecordStreamlineStartupHandoff(pSwapChain, PerfLogger::GetQpcUs());
         // Retire the provisional official FFX startup before anything below prewarms PostSL: while that
         // latch is armed every CE GPU side effect stays quiesced, so InitOverlaySync keeps the sync
         // resources idle and the prewarm plus every later PostSL draw would be skipped for good.

@@ -4,12 +4,15 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <mutex>
 
 #include "common/crash/crash_first_chance.h"
 #include "common/logging/log_meter.h"
 #include "common/platform/bounded_diagnostic_history.h"
 #include "fg_session_state.h"
+#include "hook/metrics/perf_logger.h"
 #include "hook/runtime/hook_clock.h"
+#include "hook/runtime/hook_common.h"
 
 namespace ce::fg_session {
 namespace {
@@ -32,6 +35,14 @@ struct PublishedFGState {
 BoundedDiagnosticHistory<TransitionRecord, 256> g_History;
 BoundedDiagnosticHistory<PublishedFGState, 2> g_PublishedState;
 
+std::atomic<void*> g_PendingStartupOutput{nullptr};
+std::atomic<bool> g_PendingTitleMarker{false};
+std::mutex g_StreamlineStartupMutex;
+uint64_t g_StreamlineHandoff = 0;
+int64_t g_StreamlineHandoffUs = 0;
+int64_t g_FirstTitlePresentUs = 0;
+DWORD g_FirstTitleThread = 0;
+
 void Record(const char* boundary, const char* name, uint32_t status, void* ptrA, void* ptrB,
             const char* format, ...) __attribute__((format(printf, 6, 7)));
 
@@ -46,6 +57,84 @@ void Record(const char* boundary, const char* name, uint32_t status, void* ptrA,
 }
 
 }  // namespace
+
+void RecordStreamlineStartupHandoff(void* swapchain, int64_t timeUs) {
+    uint64_t handoff = 0;
+    {
+        std::lock_guard lock(g_StreamlineStartupMutex);
+        handoff = ++g_StreamlineHandoff;
+        g_StreamlineHandoffUs = timeUs;
+        g_FirstTitlePresentUs = 0;
+        g_FirstTitleThread = 0;
+        g_PendingTitleMarker.store(true, std::memory_order_release);
+        g_PendingStartupOutput.store(swapchain, std::memory_order_release);
+    }
+    HookLogImportant("[SL STARTUP] handoff=%llu sc=%p qpcUs=%lld", static_cast<unsigned long long>(handoff), swapchain,
+                     static_cast<long long>(timeUs));
+}
+
+void RecordStreamlineStartupTitlePresent(uint32_t frameId, int64_t timeUs) {
+    if (!g_PendingTitleMarker.load(std::memory_order_relaxed)) {
+        return;
+    }
+    uint64_t handoff = 0;
+    int64_t elapsedUs = 0;
+    const DWORD thread = GetCurrentThreadId();
+    {
+        std::lock_guard lock(g_StreamlineStartupMutex);
+        if (!g_PendingTitleMarker.load(std::memory_order_relaxed) || timeUs < g_StreamlineHandoffUs) {
+            return;
+        }
+        g_FirstTitlePresentUs = timeUs;
+        g_FirstTitleThread = thread;
+        elapsedUs = timeUs - g_StreamlineHandoffUs;
+        g_PendingTitleMarker.store(false, std::memory_order_relaxed);
+        handoff = g_StreamlineHandoff;
+    }
+    HookLogImportant("[SL STARTUP] handoff=%llu firstTitlePresentStart frame=%u tid=0x%04lX qpcUs=%lld "
+                     "sinceHandoffUs=%lld", static_cast<unsigned long long>(handoff), frameId, thread,
+                     static_cast<long long>(timeUs), static_cast<long long>(elapsedUs));
+}
+
+StreamlineStartupOutput BeginStreamlineStartupOutput(void* swapchain) {
+    if (!swapchain || g_PendingStartupOutput.load(std::memory_order_acquire) != swapchain) {
+        return {};
+    }
+    StreamlineStartupOutput output;
+    int64_t handoffUs = 0;
+    int64_t titlePresentUs = 0;
+    DWORD titleThread = 0;
+    {
+        std::lock_guard lock(g_StreamlineStartupMutex);
+        if (g_PendingStartupOutput.load(std::memory_order_relaxed) != swapchain) {
+            return {};
+        }
+        output = {swapchain, g_StreamlineHandoff, PerfLogger::GetQpcUs()};
+        handoffUs = g_StreamlineHandoffUs;
+        titlePresentUs = g_FirstTitlePresentUs;
+        titleThread = g_FirstTitleThread;
+        g_PendingStartupOutput.store(nullptr, std::memory_order_release);
+        g_PendingTitleMarker.store(false, std::memory_order_relaxed);
+    }
+    HookLogImportant("[SL STARTUP] handoff=%llu sc=%p firstOutputCallbackEnter qpcUs=%lld sinceHandoffUs=%lld "
+                     "sinceFirstTitleMarkerUs=%lld titleTid=0x%04lX",
+                     static_cast<unsigned long long>(output.handoff), swapchain,
+                     static_cast<long long>(output.enteredUs), static_cast<long long>(output.enteredUs - handoffUs),
+                     static_cast<long long>(titlePresentUs == 0 ? -1 : output.enteredUs - titlePresentUs), titleThread);
+    return output;
+}
+
+void EndStreamlineStartupOutput(const StreamlineStartupOutput& output) {
+    if (!output.swapchain) {
+        return;
+    }
+    const auto elapsedUs = PerfLogger::GetQpcUs() - output.enteredUs;
+    HookLogImportant("[SL STARTUP] handoff=%llu sc=%p firstOutputCallbackReturn overlayCallbackUs=%lld",
+                     static_cast<unsigned long long>(output.handoff), output.swapchain,
+                     static_cast<long long>(elapsedUs));
+    Record("STREAMLINE", "FirstOutputCallback", 0, output.swapchain, nullptr, "handoff=%llu elapsedUs=%lld",
+           static_cast<unsigned long long>(output.handoff), static_cast<long long>(elapsedUs));
+}
 
 void RecordPublishedFGState(const FGSessionSnapshot& snapshot, const FGActionPlan& plan) {
     g_PublishedState.Append({snapshot, plan});
@@ -100,6 +189,10 @@ void RecordStreamlineDLSSGOptions(uint32_t viewport, bool enabled, uint32_t stat
                viewport, enabled ? 1 : 0,
                log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
+}
+
+void RecordStreamlineFeatureLifecycle(const char* api, uint32_t argument, uint32_t status) {
+    Record("STREAMLINE", api, status, nullptr, nullptr, "feature=DLSS-G arg=%u", argument);
 }
 
 void RecordStreamlineReflexOptions(uint32_t mode, uint32_t status) {
