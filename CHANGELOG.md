@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **GPU fault diagnostics during DLSS Frame Generation:** when the final-output overlay detects a removed device, Capture Engine collects GPU breadcrumbs and page-fault data if enabled. The DX12 FG switch test can arm DRED in its config for launchers that start it without command-line arguments.
+
 - **DirectX Present crash during startup or frame-generation switching:** serialize hook installation when the first game swapchain and the bootstrap swapchain arrive together. Capture Engine keeps one forwarding route for Present and Present1, preventing recursive calls and a stack overflow.
 
 - **Inject overlay when leaving DLSS Frame Generation during rapid switches:** draw on the first native DX12 frame and report FG off when the game replaces the confirmed Streamline output while its OFF request is still held. This fixes the brief blank seen with Steam Overlay and ReShade active.

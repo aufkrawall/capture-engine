@@ -28,6 +28,8 @@ void LoadConfig() {
     dx12_fg_switch_test_g_VSync = GetPrivateProfileIntA("Rendering", "vsync", dx12_fg_switch_test_g_VSync, configPath.c_str());
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     dx12_fg_switch_test_g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", dx12_fg_switch_test_g_Fullscreen, configPath.c_str());
+    dx12_fg_switch_test_g_EnableDred =
+        GetPrivateProfileIntA("Diagnostics", "dred", 0, configPath.c_str()) != 0;
     dx12_fg_switch_test_g_FsrReloadRuntimeOnSwitch = GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch",
                                                        dx12_fg_switch_test_g_FsrReloadRuntimeOnSwitch ? 1 : 0, configPath.c_str()) != 0;
     dx12_fg_switch_test_g_StreamlinePreloadInitialOff =

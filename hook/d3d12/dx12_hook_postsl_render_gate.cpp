@@ -6,6 +6,7 @@ if (FAILED(devReason)) {
     dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
     DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);
     HookLogImportant("DX12: PostSLOverlayRender — device removed (0x%08X), disabling", (unsigned)devReason);
+    ce::dx12_dred::DumpOnDeviceRemoved(dev, "PostSL before overlay render");
     g_PostSLLifecycle.SuspendRoute();
         return PostSLFlow::kReturn;
 }
