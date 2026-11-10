@@ -170,7 +170,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
     if (ctx.startupTopLevelCandidate) {
         // This is a runtime output even though the large gap classifies it as top-level.
         // Submit through PostSL on the prepared chain and keep the existing Present transport.
-        const bool prewarmedHandoff = DX12_HasPrewarmedActiveStreamlineHandoff(pSwapChain);
+        const bool prewarmedHandoff = DX12_PrepareActiveStreamlineHandoffForOutput(pSwapChain, ctx.startupNativeDlssgOutput);
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {

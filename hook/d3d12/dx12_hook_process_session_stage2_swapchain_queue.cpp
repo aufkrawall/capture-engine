@@ -171,6 +171,13 @@ if (processLogicalSwapchainReplacement) {
             }
         } else {
             CleanupRTVs();
+            if (streamlineFGRunning &&
+                dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire) == pSwapChain) {
+                // The retiring views have their own completion proof. The renderer
+                // can be reused if PostSL initializes on the same device and format.
+                dx12_hook_g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(),
+                                                                    std::memory_order_release);
+            }
             {
                 std::lock_guard<std::recursive_mutex> capLock(dx12_hook_g_DX12CaptureMutex);
                 dx12_hook_g_SharedCaptureD3D12.Reset();

@@ -128,6 +128,23 @@ void LogResolvedQueueMethodFit(ce::dx12_overlay_policy::ResolvedQueueMethodFit f
 
 }  // namespace
 
+bool DX12_HasNativeStartupOutputSubmitPath(ID3D12CommandQueue* queue) {
+    const auto original = reinterpret_cast<void*>(GetOriginalExecuteCommandLists(queue));
+    char path[MAX_PATH] = {};
+    if (!GetCodeModulePath(original, path)) {
+        return false;
+    }
+    const char* basename = strrchr(path, '\\');
+    basename = basename ? basename + 1 : path;
+    if (_stricmp(basename, "d3d12.dll") && _stricmp(basename, "d3d12core.dll") &&
+        _stricmp(basename, "d3d12sdklayers.dll")) {
+        return false;
+    }
+    const void* jump = FollowDirectJump(original);
+    return DX12_MayCallResolvedQueueMethod(queue, jump ? jump : original, "ExecuteCommandLists",
+                                          "first Streamline output");
+}
+
 bool DX12_MayCallResolvedQueueMethod(ID3D12CommandQueue* queue, const void* method, const char* methodName,
                                      const char* site) {
     if (!method) {

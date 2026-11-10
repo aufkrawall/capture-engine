@@ -103,6 +103,7 @@ void DX12_NoteOverlayPresentOriginator(uint8_t originator);
 void DX12_NoteOverlayVisibilitySwapchainCreated(IDXGISwapChain* pSwapChain);
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source);
 bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain* pSwapChain);
+bool DX12_PrepareActiveStreamlineHandoffForOutput(IDXGISwapChain* pSwapChain, bool nativeDlssgOutput);
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
 void DX12_HookDeviceVTable(ID3D12Device* device);

@@ -783,6 +783,7 @@ struct PresentCallContext {
     bool ffxStartupBypass = false;
     bool streamlineSyntheticReentrant = false;
     bool startupTopLevelCandidate = false;
+    bool startupNativeDlssgOutput = false;
     bool stalePostFSRStartupHandoffPresentHookRisk = false;
     bool startupHandoffSteamRisk = false;
     bool postFSRRuntimeStartupHandoffRisk = false;

@@ -10,20 +10,63 @@ bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain* pSwapChain) {
            !HookHasRuntimeOwnedNativeFGPresentPath();
 }
 
+bool DX12_PrepareActiveStreamlineHandoffForOutput(IDXGISwapChain* pSwapChain, bool nativeDlssgOutput) {
+    if (DX12_HasPrewarmedActiveStreamlineHandoff(pSwapChain)) {
+        return true;
+    }
+    if (!pSwapChain || !nativeDlssgOutput || !DXGIShared::IsStreamlineStartupHandoffPending() || HookHasFSRFGHistory() ||
+        !DXGIShared::DoesFGRuntimeOwnSwapchain() || !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+        !HookHasExplicitStreamlineSetOptionsActivation() || HookOverlayObserverOnlyEnabled() ||
+        g_FGCompat.IsFSRFGApiActive() || HookHasRuntimeOwnedNativeFGPresentPath() ||
+        !g_PostSLLifecycle.CallbacksEnabled() || g_PostSLLifecycle.RouteConfirmed()) {
+        return false;
+    }
+
+    // The caller is in Streamline's native output Present. At this point even a
+    // title that resized immediately after creation has its final buffers. Use
+    // only the exact creation queue, with its native ExecuteCommandLists entry.
+    std::unique_lock<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex, std::try_to_lock);
+    if (!overlayLock.owns_lock() || !g_OverlayAdapter.IsInitialized() ||
+        dx12_hook_g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
+        return false;
+    }
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+    {
+        std::lock_guard<std::recursive_mutex> queueLock(g_CommandQueueMutex);
+        if (dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire) != pSwapChain ||
+            !dx12_hook_g_SwapchainQueue || dx12_hook_g_SwapchainQueue == dx12_hook_g_OriginalGameQueue) {
+            return false;
+        }
+        queue = dx12_hook_g_SwapchainQueue;
+    }
+    if (!DX12_HasNativeStartupOutputSubmitPath(queue.Get())) {
+        return false;
+    }
+
+    dx12_hook_g_State.overlayInit = false;
+    dx12_hook_g_State.syncInit = false;
+    CleanupRTVs();
+    if (!PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, queue.Get(), "first native Streamline output")) {
+        return false;
+    }
+    dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain, std::memory_order_release);
+    return true;
+}
+
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source) {
     auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
     if (!pSwapChain || !postSLCallback || dx12_hook_g_RequireExactPostSLStartupTransportDraw) {
         return false;
     }
 
-    const uint64_t drawsBefore = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
+    const uint64_t submitsBefore = dx12_hook_s_PostSLSuccessfulSubmitSequence;
     dx12_hook_g_RequireExactPostSLStartupTransportDraw = true;
     // This explicit draw is immediately followed by the real startup-handoff
     // Present below the caller. Unlike the retained-swapchain activation
     // service later in this file, it represents one genuine output ordinal.
     DXGIShared::InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
     dx12_hook_g_RequireExactPostSLStartupTransportDraw = false;
-    const bool drawn = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire) != drawsBefore;
+    const bool drawn = dx12_hook_s_PostSLSuccessfulSubmitSequence != submitsBefore;
 
     static std::atomic<int> s_exactStartupTransportDrawLogCount{0};
     const int logCount = s_exactStartupTransportDrawLogCount.fetch_add(1, std::memory_order_relaxed) + 1;

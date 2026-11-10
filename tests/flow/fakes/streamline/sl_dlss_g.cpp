@@ -40,6 +40,7 @@ std::atomic<uint32_t> g_presentedSinceGetState{0};
 // Dynamic MFG: the output rate holds and the game frame rate gives way, so every output takes this long whatever the
 // factor (0: outputs share the game's frame interval, as with a fixed factor).
 std::atomic<int64_t> g_constantOutputIntervalUs{0};
+std::atomic<bool> g_nextPresentOnTitleThread{false};
 
 struct PresentJob {
     UINT syncInterval = 0;
@@ -151,6 +152,8 @@ private:
     HRESULT PresentThroughPresenter(PresentJob job) {
         // The game's frame must be complete on its queue before the presenter copies it on the present queue.
         WaitForQueue(gameQueue_.Get());
+        if (g_nextPresentOnTitleThread.exchange(false, std::memory_order_relaxed))
+            return PresentBatch(job);
         std::unique_lock<std::mutex> lock(jobMutex_);
         job_ = job;
         hasJob_ = true;
@@ -336,6 +339,10 @@ void FlowSetConstantOutputInterval(int64_t microseconds) {
     g_constantOutputIntervalUs.store(microseconds, std::memory_order_relaxed);
 }
 
+void FlowPresentNextBatchOnTitleThread() {
+    g_nextPresentOnTitleThread.store(true, std::memory_order_relaxed);
+}
+
 }  // namespace
 }  // namespace ce::flow::fake
 
@@ -355,5 +362,7 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&FlowCreateNativeBelowRuntime);
     if (std::strcmp(name, "flowSetConstantOutputInterval") == 0)
         return reinterpret_cast<void*>(&FlowSetConstantOutputInterval);
+    if (std::strcmp(name, "flowPresentNextBatchOnTitleThread") == 0)
+        return reinterpret_cast<void*>(&FlowPresentNextBatchOnTitleThread);
     return nullptr;
 }

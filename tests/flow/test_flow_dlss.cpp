@@ -180,4 +180,40 @@ TEST(FlowDLSS, ActiveRecreationAfterNativeQueueReturnCoversTheFirstOutput) {
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowDLSS, ColdHandoffDrawsTheFirstNativeOutput) {
+    FlowGame game(CurrentTestName());
+    auto options = StreamlineGameOptions();
+    options.swapchain = SwapchainKind::kNative;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(90)) << game.Error();
+    const auto before = game.Coverage();
+    const auto physicalBefore = game.PhysicalPresents();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.ResizeSwapchain(352, 208)) << game.Error();
+    game.AdvanceVirtualClock(310'000);
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+    ASSERT_NE(plugin, nullptr);
+    const auto lookup = reinterpret_cast<void* (*)(const char*)>(GetProcAddress(plugin, "slGetPluginFunction"));
+    ASSERT_NE(lookup, nullptr);
+    const auto presentOnTitleThread = reinterpret_cast<void (*)()>(lookup("flowPresentNextBatchOnTitleThread"));
+    ASSERT_NE(presentOnTitleThread, nullptr);
+    presentOnTitleThread();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+
+    const auto physicalOutputs = game.PhysicalPresents() - physicalBefore;
+    const auto after = game.Coverage();
+    ASSERT_GT(physicalOutputs, 0u);
+    EXPECT_EQ(after.presents - before.presents, physicalOutputs);
+    EXPECT_EQ(after.draws - before.draws, physicalOutputs) << game.LogDirectory();
+    EXPECT_TRUE(game.PostSLLifecycle().confirmedInEpoch) << game.LogDirectory();
+    ExpectEveryPresentCoveredOnce(game);
+    std::ifstream log(game.LogDirectory() + "/hook_debug.log");
+    ASSERT_TRUE(log.is_open());
+    const std::string text{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
+    EXPECT_NE(text.find("exact PostSL startup-transport draw SUBMITTED"), std::string::npos);
+    EXPECT_NE(text.find("Reusing warm DX12 overlay backend"), std::string::npos);
+    ExpectNoDebugLayerErrors();
+}
+
 }  // namespace

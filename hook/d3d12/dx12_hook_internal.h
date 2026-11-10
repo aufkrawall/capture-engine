@@ -650,6 +650,7 @@ bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullp
 bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQueue, const char* phase);
 void ProbeRealD3D12ECL(ID3D12Device* device);
 bool TryPublishRealD3D12ECLCandidate(ExecuteCommandListsPtr candidate, const char* source);
+bool DX12_HasNativeStartupOutputSubmitPath(ID3D12CommandQueue* queue);
 bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source);
 // Whether a resolved D3D12 runtime queue method may be called with `queue`: only when the queue's vtable
 // lives in the method's image (dx12_overlay_policy/resolved_queue_method.h); a wrapping layer's queue (debug

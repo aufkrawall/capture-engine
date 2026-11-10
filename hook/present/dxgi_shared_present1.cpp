@@ -1,5 +1,7 @@
 #include "dxgi_shared_forwarded_present.h"
 #include "dxgi_shared_internal.h"
+#include "hook/fg/fg_transition_trace.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
 #include "translated_swapchain_owner.h"
@@ -235,7 +237,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
     EnterStage(CostStage::kStartupRouting);
     if (startupTopLevelCandidate) {
-        const bool prewarmedHandoff = DX12_HasPrewarmedActiveStreamlineHandoff(pSwapChain);
+        const bool prewarmedHandoff = DX12_PrepareActiveStreamlineHandoffForOutput(
+            pSwapChain, ce::streamline_runtime_policy::IsStreamlineDLSSGFeatureModuleName(origin.module));
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {

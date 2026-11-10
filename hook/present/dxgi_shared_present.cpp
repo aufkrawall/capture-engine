@@ -1,4 +1,6 @@
 #include "dxgi_shared_internal.h"
+#include "hook/fg/fg_transition_trace.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 #include "dxgi_shared_forwarded_present.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
@@ -309,6 +311,8 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     ctx.stalePostFSRStartupHandoffPresentHookRisk = ctx.api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
                                      ctx.presentBypassAvailable, ctx.steamOverlayLoaded, ctx.api == APIType::D3D12,
                                      ctx.inWrapperPresent, ctx.wrappedSwapchain, ctx.hadFSRFGPhase, ctx.startupTopLevelCandidate);
+    ctx.startupNativeDlssgOutput =
+        ctx.startupTopLevelCandidate && ce::streamline_runtime_policy::IsStreamlineDLSSGFeatureModuleName(origin.module);
     ctx.startupHandoffSteamRisk = ctx.staleThirdPartyPresentHookRisk || ctx.stalePostFSRStartupHandoffPresentHookRisk;
     ctx.postFSRRuntimeStartupHandoffRisk = ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
         ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, ctx.startupTopLevelCandidate, ctx.safePostFSRBootstrapPath,
