@@ -22,8 +22,8 @@ struct Callbacks {
 };
 void SetCallbacks(const Callbacks& callbacks);
 
-// A DLSS-G runtime created this native swapchain (the capture evidence of its create call). Installs DXGI's Release
-// observation, which costs nothing until an unload is held.
+// Proven DLSS-G-plugin creation on a D3D12 queue, captured before forwarding the create. Interposer/common/SR
+// stack frames alone do not qualify. Installs DXGI's Release observation, idle until an unload is held.
 void NoteDlssgChain(IDXGISwapChain* chain);
 
 enum class SetLoadedAction {

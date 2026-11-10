@@ -127,6 +127,43 @@ TEST(FlowDLSSUnloadOrder, ATitleThatKeepsPresentingGetsTheUnloadAtItsNextRequest
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowDLSSUnloadOrder, StartupCapabilityProbeDoesNotKeepDLSSGLoadedForAnInterposerOnlyChain) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = StreamlineGameOptions();
+    options.swapchain = SwapchainKind::kNative;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    const HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+    const auto reallyLoaded = reinterpret_cast<bool (*)()>(GetProcAddress(interposer, "flowInterposerDLSSGEnabled"));
+    ASSERT_NE(reallyLoaded, nullptr);
+
+    // GTA's startup: a normal chain goes through the interposer while DLSS-G is unloaded, then the title loads
+    // the plugin to query its capabilities and unloads it again without replacing that chain.
+    ASSERT_TRUE(game.UnloadDLSSG()) << game.Error();
+    ASSERT_FALSE(reallyLoaded());
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.LoadDLSSG()) << game.Error();
+    ASSERT_TRUE(reallyLoaded());
+    ASSERT_TRUE(game.UnloadDLSSG()) << game.Error();
+    EXPECT_FALSE(game.DLSSGReportedLoaded());
+    EXPECT_FALSE(reallyLoaded()) << "the next auxiliary swapchain would still enter DLSS-G";
+    ASSERT_TRUE(game.RenderFrames(10)) << game.Error();
+
+    const std::string text = ReadHookLog(game);
+    EXPECT_EQ(text.find("[SL UNLOAD ORDER] deferred"), std::string::npos);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowDLSSUnloadOrder, APluginOwnedChainNeedsDestroyDispatchEvenBeforeFrameGenerationIsEnabled) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(StreamlineGameOptions())) << game.Error();
+    ASSERT_TRUE(game.UnloadDLSSG()) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kNative)) << game.Error();
+    const std::string text = ReadHookLog(game);
+    EXPECT_NE(text.find("[SL UNLOAD ORDER] deferred sc="), std::string::npos);
+    EXPECT_NE(text.find("[SL UNLOAD ORDER] forwarded reason=proxy-released residualRefs=0"), std::string::npos);
+    ExpectNoDebugLayerErrors();
+}
+
 // Without a DLSS-G chain there is nothing to wait for: the call is Streamline's at once, as before.
 TEST(FlowDLSSUnloadOrder, AnUnloadWithoutALiveDLSSGChainIsForwardedImmediately) {
     FlowGame game(CurrentTestName());

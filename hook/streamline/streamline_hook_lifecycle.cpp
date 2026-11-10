@@ -155,6 +155,23 @@ void SwapchainDestroyed(IDXGISwapChain* chain) {
 
 }  // namespace
 
+bool IsDlssgCreatingSwapchain() {
+    HMODULE plugin = nullptr;
+    void* const target = g_SwapchainDestroyed.target.load(std::memory_order_acquire);
+    if (!target || !DoesAddressBelongToLoadedModule(target, &plugin, nullptr, 0, nullptr)) {
+        return false;
+    }
+    void* frames[32] = {};
+    const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        HMODULE owner = nullptr;
+        if (DoesAddressBelongToLoadedModule(frames[i], &owner, nullptr, 0, nullptr) && owner == plugin) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void QueueInterposerDiagnostics(HMODULE module, StreamlineInlineHookBatch& batch) {
     ce::streamline_unload_order::Callbacks callbacks;
     callbacks.forwardHeldUnload = &ForwardHeldUnload;

@@ -310,6 +310,7 @@ struct CreateSwapchainQueueCaptureEvidence {
     bool authoritativeFFXRuntimeCreator = false;
     bool officialAMDFFXRuntimeCreator = false;
     bool authoritativeStreamlineRuntimeCreator = false;
+    bool dlssgPluginCreatedChain = false;
     bool callerFromStreamlineFGModule = false;
     bool streamlineFrameGenerationInStack = false;
     // XeSS frame generation creates this swapchain: its init scope is open (fg_presenter.h) or libxess_fg.dll is on

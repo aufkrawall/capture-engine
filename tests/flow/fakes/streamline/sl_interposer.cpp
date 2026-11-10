@@ -73,11 +73,15 @@ public:
     HRESULT STDMETHODCALLTYPE CreateSwapChainForHwnd(IUnknown* device, HWND window, const DXGI_SWAP_CHAIN_DESC1* desc,
                                                      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
                                                      IDXGIOutput* output, IDXGISwapChain1** swapchain) override {
-        auto create = g_dlssgFunction ? reinterpret_cast<CreateSwapChainForHwnd_t>(
+        auto create = g_dlssgEnabled.load(std::memory_order_relaxed) && g_dlssgFunction
+                          ? reinterpret_cast<CreateSwapChainForHwnd_t>(
                                             g_dlssgFunction("flowCreateSwapChainForHwnd"))
-                                      : nullptr;
-        if (!create)
-            return real_->CreateSwapChainForHwnd(device, window, desc, fullscreenDesc, output, swapchain);
+                          : nullptr;
+        if (!create) {
+            const HRESULT hr = real_->CreateSwapChainForHwnd(device, window, desc, fullscreenDesc, output, swapchain);
+            Log(kModule, "passthrough swapchain created hr=0x%08lX", static_cast<unsigned long>(hr));
+            return hr;
+        }
         return create(real_, device, window, desc, fullscreenDesc, output, swapchain);
     }
 };
@@ -143,6 +147,9 @@ extern "C" __declspec(dllexport) void flowInterposerDispatchSwapChainDestroyed(I
 extern "C" __declspec(dllexport) uint32_t flowInterposerInitCalls() { return g_initCalls; }
 extern "C" __declspec(dllexport) uint64_t flowInterposerInitFlags() { return g_initFlags; }
 extern "C" __declspec(dllexport) uint32_t flowInterposerSetDeviceCalls() { return g_setDeviceCalls; }
+extern "C" __declspec(dllexport) bool flowInterposerDLSSGEnabled() {
+    return g_dlssgEnabled.load(std::memory_order_relaxed);
+}
 
 sl::Result slShutdown() {
     Log(kModule, "slShutdown");

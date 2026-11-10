@@ -2,6 +2,7 @@
 
 #include "dx12_factory_slot_policy.h"
 #include "hook/fg/fg_presenter.h"
+#include "hook/streamline/streamline_hook_lifecycle.h"
 
 // Swapchain creates that reach CE only BELOW a loaded overlay's factory hooks.
 //
@@ -110,6 +111,8 @@ evidence.authoritativeFFXRuntimeCreator =
     ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule,
                                                                                 ffxFrameGenerationInStack);
 evidence.authoritativeStreamlineRuntimeCreator = callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
+evidence.dlssgPluginCreatedChain = evidence.authoritativeStreamlineRuntimeCreator &&
+                                 ce::streamline_lifecycle::IsDlssgCreatingSwapchain();
 evidence.callerFromStreamlineFGModule = callerFromStreamlineFGModule;
 evidence.streamlineFrameGenerationInStack = streamlineFrameGenerationInStack;
 if (callerModulePath && *callerModulePath) {
@@ -133,6 +136,7 @@ if (evidence.authoritativeXeFGRuntimeCreator) {
     evidence.authoritativeFFXRuntimeCreator = false;
     evidence.officialAMDFFXRuntimeCreator = false;
     evidence.authoritativeStreamlineRuntimeCreator = false;
+    evidence.dlssgPluginCreatedChain = false;
     evidence.callerFromStreamlineFGModule = false;
     evidence.streamlineFrameGenerationInStack = false;
 }

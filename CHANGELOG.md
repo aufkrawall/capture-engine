@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **GTA V Enhanced crash during startup:** keep startup capability queries from leaving DLSS Frame Generation enabled after the game unloads it. Unload ordering now requires a DirectX 12 swapchain actually created by the DLSS-G plugin; ordinary swapchains passing through Streamline no longer keep the plugin active for later auxiliary DirectX 11 swapchains.
+
 - **GTA V Enhanced crash when switching from DLSS to FSR Frame Generation:** the game unloads DLSS-G before it releases its DLSS swapchain, so Streamline never told DLSS-G that the swapchain was gone and Windows refused the FSR swapchain for the window (`E_ACCESSDENIED`). Capture Engine now holds the unload until that swapchain's proxy released it, which restores Streamline's own order; the game is still answered as if DLSS-G were unloaded. Titles without a live DLSS-G swapchain are unaffected.
 
 - **Inject overlay on the first DirectX 12 DLSS Frame Generation output:** prepare the replacement swapchain's overlay on its verified native presentation queue and reuse the warm renderer across the handoff.

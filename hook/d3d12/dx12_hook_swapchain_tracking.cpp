@@ -87,11 +87,11 @@ void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pS
 if (!pDevice || !pSwapChain)
     return;
 
-// A chain DLSS-G created, whatever queue it used: its unload order belongs to Streamline (streamline_unload_order.h).
-if (captureEvidence.authoritativeStreamlineRuntimeCreator) ce::streamline_unload_order::NoteDlssgChain(pSwapChain);
 ID3D12CommandQueue* pQueue = nullptr;
 HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
 if (SUCCEEDED(qiHr) && pQueue) {
+    // Only DLSS-G's own D3D12 chain needs its destroy dispatch; an interposer frame alone proves no ownership.
+    if (captureEvidence.dlssgPluginCreatedChain) ce::streamline_unload_order::NoteDlssgChain(pSwapChain);
     ce::translated_swapchain::ObserveNativeCreate(pSwapChain);
     ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
     ID3D12CommandQueue* currentSwapchainQueue = nullptr;

@@ -102,8 +102,13 @@ void NoteDlssgChain(IDXGISwapChain* chain) {
     if (SUCCEEDED(chain->GetDesc(&desc)) && desc.OutputWindow) {
         witness::Watch(chain, desc.OutputWindow);
     }
-    g_LiveGeneration.store(witness::Describe(chain).generation, std::memory_order_release);
-    g_LiveChain.store(chain, std::memory_order_release);
+    const uint64_t generation = witness::Describe(chain).generation;
+    const uint64_t previousGeneration = g_LiveGeneration.exchange(generation, std::memory_order_acq_rel);
+    const auto previous = g_LiveChain.exchange(chain, std::memory_order_acq_rel);
+    if (previous != chain || previousGeneration != generation) {
+        HookLogImportant("[SL UNLOAD ORDER] tracked plugin-created D3D12 sc=%p lifetime=%llu",
+                         chain, static_cast<unsigned long long>(generation));
+    }
     native_release::SetHandler(native_release::Subscriber::kUnloadOrder, &OnNativeRelease);
     native_release::Install(chain);
 }
