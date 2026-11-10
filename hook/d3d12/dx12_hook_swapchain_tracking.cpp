@@ -5,6 +5,8 @@
 #include "hook/present/translated_swapchain_owner.h"
 
 #include "dx12_factory_slot_policy.h"
+#include "hook/present/backbuffer_reference_trace.h"
+#include "hook/present/swapchain_lifetime_witness.h"
 #include "hook/present/swapchain_liveness.h"
 #include "hook/wrappers/dxgi_swapchain_wrap_internal.h"
 
@@ -47,9 +49,19 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
         chains.push_back(dx12_hook_g_LastSwapChain);
     }
 
+    // Which of the window's chains still live, and who released the others: an alive chain with no back-buffer
+    // references outstanding is pinned by a reference on the chain itself; a window whose chains are all
+    // destroyed is held by something other than a swapchain. Recovery erases CE's HWND map, the witness keeps
+    // its own record, so later stages still see every chain.
+    const size_t aliveChains =
+        ce::swapchain_lifetime_witness::LogWindowChains(hWnd, stage ? stage : "E_ACCESSDENIED pre-cleanup");
+    // References on the last resized chain's back buffers since that resize, by call site and module.
+    BackBufferReferenceTrace_Log(nullptr, stage ? stage : "E_ACCESSDENIED pre-cleanup");
+
     if (chains.empty()) {
-        HookLogImportant("DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p no tracked chains",
-                         logCount + 1, stage ? stage : "pre-cleanup", hWnd);
+        HookLogImportant("DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p no tracked chains "
+                         "(witnessedAlive=%zu)",
+                         logCount + 1, stage ? stage : "pre-cleanup", hWnd, aliveChains);
         return;
     }
     // The capture binds its swapchain by identity address and holds no
@@ -62,12 +74,13 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
         if (note.known) {
             snprintf(residualRefs, sizeof(residualRefs), "%lu", note.residualRefsAtCeRelease);
         }
+        const ce::swapchain_lifetime_witness::ChainReport witness = ce::swapchain_lifetime_witness::Describe(chain);
         HookLogImportant(
-            "DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p chain=%p ceReleasedLastRef=%d "
+            "DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p chain=%p witness=%s ceReleasedLastRef=%d "
             "residualRefsAtCeRelease=%s retained=%d captureKey=%p (raw tracked pointer, never probed)",
             logCount + 1, stage ? stage : "pre-cleanup", hWnd, (void*)chain,
-            note.ceReleasedLastOwnedReference ? 1 : 0, residualRefs,
-            HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0, captureKey);
+            ce::swapchain_lifetime_witness::StateName(witness.state), note.ceReleasedLastOwnedReference ? 1 : 0,
+            residualRefs, HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0, captureKey);
     }
 }
 
@@ -419,13 +432,18 @@ if (!hWnd || !pSwapChain)
 // already-dead object that happened to sit at the same address. Drop it rather than let the
 // diagnostics attribute a dead chain's residual pin count to this one.
 ce::swapchain_liveness::ForgetNote(pSwapChain);
-std::lock_guard<std::mutex> lock(dx12_hook_s_hwndSwapchainMutex);
-auto& vec = dx12_hook_s_hwndSwapchainMap[hWnd];
-for (auto* sc : vec) {
-    if (sc == pSwapChain)
-        return;  // Already tracked
+{
+    std::lock_guard<std::mutex> lock(dx12_hook_s_hwndSwapchainMutex);
+    auto& vec = dx12_hook_s_hwndSwapchainMap[hWnd];
+    if (std::find(vec.begin(), vec.end(), pSwapChain) == vec.end()) {
+        vec.push_back(pSwapChain);
+    }
 }
-vec.push_back(pSwapChain);
+// Also for an address already in the map: nothing removes a dead chain's entry, so a new chain can arrive at
+// its address. Watch answers a witnessed live chain without locking. Outside CE's lock: DXGI takes its own
+// while storing the private data. The chain is live here (its create just returned or it is presenting), and
+// the witness holds no reference on it.
+ce::swapchain_lifetime_witness::Watch(pSwapChain, hWnd);
 }
 
 

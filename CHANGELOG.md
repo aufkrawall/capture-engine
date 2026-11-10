@@ -50,6 +50,10 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Inject overlay visibility with Ubisoft Connect / Uplay overlay:** games running with the Ubisoft Connect / Uplay overlay active (such as *Avatar: Frontiers of Pandora*) no longer cause the inject overlay to disappear. Capture Engine now tracks verified Ubisoft `overlay64.dll` and `overlay.dll` modules requiring corroborating Ubisoft path/product evidence, traversing the Present call stack past verified overlay frames to reach the true Present originator (including Streamline and DLSS Frame Generation) and compositing below foreign Present entry chains. Ubisoft version metadata takes effect on the first scan, and a verified late load keeps its position relative to Steam.
 
+### Improved
+
+- **Diagnosing frame-generation switch crashes (GTA V Enhanced DLSS FG to FSR FG):** when Windows refuses the new swapchain because the previous one still holds the game window, the log now says whether each of the window's earlier DirectX 12 swapchains is still alive or was destroyed, which module released the last reference of a destroyed one, and which modules still hold backbuffer references. Capture Engine observes this without holding a reference on the swapchain or patching any of its functions.
+
 ## v0.1.7160
 
 Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7159).
