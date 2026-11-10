@@ -71,6 +71,11 @@ TEST(FlowDLSSUnloadOrder, GTAOrderLetsStreamlineDispatchTheDestroyBeforeTheRepla
     ASSERT_NE(destroyed, std::string::npos) << "the destroy hook never ran; logs: " << game.LogDirectory();
     ASSERT_NE(release, std::string::npos) << game.LogDirectory();
     EXPECT_NE(LineAt(text, release).find("returnedRefs=0"), std::string::npos) << LineAt(text, release);
+    // The decisive release names who dropped the proxy: its call site first, then the frames above it.
+    const auto stack = text.find("[SL LIFETIME] native Release stack sc=", release);
+    ASSERT_NE(stack, std::string::npos) << game.LogDirectory();
+    EXPECT_NE(LineAt(text, stack).find("frames=sl.dlss_g.dll+0x"), std::string::npos) << LineAt(text, stack);
+    EXPECT_NE(LineAt(text, stack).find(" <- "), std::string::npos) << LineAt(text, stack);
     ASSERT_NE(forwarded, std::string::npos) << game.LogDirectory();
     ASSERT_NE(unload, std::string::npos) << "the held unload never reached Streamline; logs: " << game.LogDirectory();
     EXPECT_EQ(Count(text, "[SL UNLOAD ORDER] forwarded"), 1u);

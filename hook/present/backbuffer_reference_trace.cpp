@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -156,6 +157,38 @@ void PublishGetBufferTrampoline(void* trampoline, void*) {
     g_OriginalGetBuffer.store(reinterpret_cast<GetBufferFn>(trampoline), std::memory_order_release);
 }
 
+std::string DescribeSite(uintptr_t site);
+
+// The frames above this module's own, at most kReleaseStackFrames: the native Release's call site and who called
+// that (for a Streamline proxy's final Release, the module that dropped the proxy).
+constexpr size_t kReleaseStackFrames = 8;
+
+std::string DescribeReleaseStack() {
+    static const void* ownImage = [] {
+        void* image = nullptr;
+        RtlPcToFileHeader(reinterpret_cast<void*>(&DescribeReleaseStack), &image);
+        return image;
+    }();
+    void* frames[24] = {};
+    const USHORT count = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+    std::string stack;
+    size_t shown = 0;
+    bool leadingOwnFrames = true;
+    for (USHORT i = 0; i < count && shown < kReleaseStackFrames; ++i) {
+        if (leadingOwnFrames) {
+            void* image = nullptr;
+            if (RtlPcToFileHeader(frames[i], &image) && image == ownImage) {
+                continue;
+            }
+            leadingOwnFrames = false;
+        }
+        stack += shown == 0 ? "" : " <- ";
+        stack += DescribeSite(reinterpret_cast<uintptr_t>(frames[i]));
+        ++shown;
+    }
+    return stack;
+}
+
 // The observer's subscriber: the chain's references as the trace saw them at its last resize.
 void OnNativeSwapchainRelease(const native_release::ReleaseReport& report) {
     const auto& witness = report.witnessBefore;
@@ -175,6 +208,14 @@ void OnNativeSwapchainRelease(const native_release::ReleaseReport& report) {
                          report.chain, static_cast<unsigned long long>(witness.generation), report.callerImage,
                          static_cast<unsigned long long>(report.callerOffset), report.remaining,
                          static_cast<long long>(report.enterQpcUs), static_cast<long long>(report.returnQpcUs), call);
+    }
+    if (report.remaining <= 1) {
+        // The release that decides whether the chain lives on: name who made it. The caller module alone is the
+        // proxy's code (sl.interposer.dll in GTA V Enhanced, session 20261110_182518); the frames above it are
+        // whoever dropped the proxy.
+        HookLogImportant("[SL LIFETIME] native Release stack sc=%p lifetime=%llu returnedRefs=%lu call=%u frames=%.900s",
+                         report.chain, static_cast<unsigned long long>(witness.generation), report.remaining, call,
+                         DescribeReleaseStack().c_str());
     }
 }
 
