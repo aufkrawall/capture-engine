@@ -107,7 +107,10 @@ TEST(BackBufferReferenceTraceTest, RecordsPerSiteAndReportsOverflow) {
 // every patched resource slot.
 TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables) {
     FakeSwapChain chain;
+    FakeSwapChain unrelatedChain;
     FakeBuffer untracked;
+    const HWND window = reinterpret_cast<HWND>(1);
+    const HWND unrelatedWindow = reinterpret_cast<HWND>(2);
     // Volatile: the compiler may treat vtable contents as invariant and fold
     // the reads across the patch.
     // NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign) - the compiler-generated vptr is set by the constructor
@@ -116,7 +119,7 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
     void* const originalAddRef = bufferVtable[1];
     void* const originalGetBuffer = chainVtable[9];
 
-    BackBufferReferenceTrace_Track(&chain, 3, "unit-test");
+    BackBufferReferenceTrace_Track(&chain, window, 3, "unit-test");
     EXPECT_NE(bufferVtable[1], originalAddRef);
     EXPECT_EQ(chainVtable[9], originalGetBuffer) << "the swapchain's GetBuffer slot must stay pristine";
     for (const FakeBuffer& buffer : chain.buffers) {
@@ -130,7 +133,10 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
     EXPECT_EQ(untracked.refs, 1u);
 
     // The log call walks the tables; it must not disturb the counts.
-    BackBufferReferenceTrace_Log(&chain, "unit-test");
+    EXPECT_TRUE(BackBufferReferenceTrace_Log(&chain, "unit-test"));
+    EXPECT_TRUE(BackBufferReferenceTrace_LogForWindow(window, "unit-test", false));
+    EXPECT_FALSE(BackBufferReferenceTrace_Log(&unrelatedChain, "unit-test"));
+    EXPECT_FALSE(BackBufferReferenceTrace_LogForWindow(unrelatedWindow, "unit-test", false));
     EXPECT_EQ(chain.buffers[1].refs, 2u);
 
     BackBufferReferenceTrace_Uninstall();
@@ -178,7 +184,7 @@ TEST(BackBufferReferenceTraceTest, ResizeDiagnosticsArmTheTraceOnSuccessAndReadI
     ASSERT_NE(begin, std::string::npos);
     const std::string body = resize.substr(begin, resize.find("\n}\n", begin) - begin);
     const size_t throttle = body.find("s_succeededLogs");
-    const size_t track = body.find("BackBufferReferenceTrace_Track(pSwapChain, preparation.bufferCount, source)");
+    const size_t track = body.find("BackBufferReferenceTrace_Track(pSwapChain, preparation.window, resizedCount, source)");
     const size_t log = body.find("BackBufferReferenceTrace_Log(pSwapChain, source)");
     ASSERT_NE(track, std::string::npos);
     ASSERT_NE(log, std::string::npos);

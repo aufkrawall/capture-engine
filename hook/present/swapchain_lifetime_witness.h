@@ -31,6 +31,7 @@ enum class ChainState {
 struct ChainReport {
     ChainState state = ChainState::kUnwatched;
     HWND window = nullptr;
+    uint64_t generation = 0;
     uint64_t watchedAtMs = 0;
     uint64_t destroyedAtMs = 0;
     DWORD destroyingThread = 0;

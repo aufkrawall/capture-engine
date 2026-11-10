@@ -132,6 +132,8 @@ TEST_F(SwapchainLifetimeWitnessTest, ANewChainAtADeadChainsAddressIsWitnessedAga
     alignas(FakeSwapChain) unsigned char storage[sizeof(FakeSwapChain)];
     auto* first = new (storage) FakeSwapChain();
     ASSERT_TRUE(witness::Watch(first, TestWindow(0x1000)));
+    const uint64_t firstGeneration = witness::Describe(first).generation;
+    ASSERT_NE(firstGeneration, 0u);
     first->DestroyPrivateData();
     ASSERT_EQ(witness::Describe(first).state, witness::ChainState::kDestroyed);
     first->~FakeSwapChain();
@@ -143,6 +145,7 @@ TEST_F(SwapchainLifetimeWitnessTest, ANewChainAtADeadChainsAddressIsWitnessedAga
     const witness::ChainReport report = witness::Describe(second);
     EXPECT_EQ(report.state, witness::ChainState::kAlive);
     EXPECT_EQ(report.window, TestWindow(0x2000));
+    EXPECT_NE(report.generation, firstGeneration);
     second->~FakeSwapChain();
 }
 

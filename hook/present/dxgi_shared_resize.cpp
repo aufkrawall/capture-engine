@@ -138,6 +138,7 @@ void ReconcileApplicationResizeRequest(IDXGISwapChain* pSwapChain, UINT& BufferC
 struct D3D12ResizePreparation {
     ce::resize_reference_probe::BackBufferReferences before;
     ce::resize_reference_probe::BackBufferReferences afterCaptureRelease;
+    HWND window = nullptr;
     UINT bufferCount = 0;
     bool captureReleased = false;
     char capture[160] = {};
@@ -151,6 +152,7 @@ D3D12ResizePreparation PrepareD3D12Resize(IDXGISwapChain* pSwapChain) {
         return preparation;
     }
     preparation.bufferCount = desc.BufferCount;
+    preparation.window = desc.OutputWindow;
     preparation.before =
         ce::resize_reference_probe::Probe<ID3D12Resource>(pSwapChain, desc.BufferCount, __uuidof(ID3D12Resource));
     if (preparation.before.probed == 0) {
@@ -181,7 +183,8 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
         // not deadlock on its own diagnostics.
         std::unique_lock<std::mutex> vtableLock(g_SharedMutex, std::try_to_lock);
         if (vtableLock.owns_lock()) {
-            BackBufferReferenceTrace_Track(pSwapChain, preparation.bufferCount, source);
+            const UINT resizedCount = BufferCount == 0 ? preparation.bufferCount : BufferCount;
+            BackBufferReferenceTrace_Track(pSwapChain, preparation.window, resizedCount, source);
         } else {
             HookLog("%s: back-buffer reference trace not re-armed - vtable lock busy", source);
         }

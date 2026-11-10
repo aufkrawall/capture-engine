@@ -3,13 +3,17 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 
 #include "hook/hooking/inline_hook.h"
 #include "dxgi_shared.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/runtime/hook_common.h"
 #include "resize_reconcile_hook_policy.h"
 #include "swapchain_lifetime_witness.h"
@@ -37,11 +41,28 @@ void** g_ResourceVtable = nullptr;
 bool g_GetBufferInstallAttempted = false;
 std::mutex g_InstallMutex;
 
+constexpr size_t kGetBufferStackLimit = 4;
+constexpr size_t kGetBufferStackDepth = 12;
+struct GetBufferSite {
+    std::atomic<uintptr_t> address{0};
+    void* frames[kGetBufferStackDepth] = {};
+    USHORT count = 0;
+};
+
+// Registration and snapshots serialize off the COM hot path. Only a tracked
+// buffer takes the shared lock, and it never waits on a resize or a report.
+std::shared_mutex g_TraceMutex;
+std::atomic<uint64_t> g_TraceGeneration{0};
 std::atomic<uint32_t> g_TrackedCount{0};
 std::atomic<uintptr_t> g_Tracked[trace::kMaxTrackedBuffers];
 trace::SiteTally g_Sites[trace::kMaxTrackedBuffers][trace::kSitesPerBuffer];
+GetBufferSite g_GetBufferSites[kGetBufferStackLimit];
 std::atomic<uint32_t> g_Overflow{0};
-ULONG g_BaselineHeldByOthers[trace::kMaxTrackedBuffers] = {};
+std::atomic<uint32_t> g_ContentionDrops{0};
+IDXGISwapChain* g_TrackedChain = nullptr;
+HWND g_TrackedWindow = nullptr;
+uint64_t g_WitnessGeneration = 0;
+uint64_t g_RegisteredAtMs = 0;
 char g_TrackedSource[64] = {};
 
 // DXGI's GetBuffer AddRefs/QIs the buffer internally; the reference belongs to
@@ -59,40 +80,68 @@ int TrackedIndex(const void* object) {
     return -1;
 }
 
-void Tally(int index, void* returnAddress, bool acquire) {
-    if (index < 0 || t_InsideGetBuffer != 0) {
+void RecordGetBufferStack(uintptr_t site) {
+    for (auto& entry : g_GetBufferSites) {
+        uintptr_t address = entry.address.load(std::memory_order_relaxed);
+        if (address == 0 && entry.address.compare_exchange_strong(address, site, std::memory_order_relaxed)) {
+            entry.count = CaptureStackBackTrace(1, kGetBufferStackDepth, entry.frames, nullptr);
+            return;
+        }
+        if (address == site) {
+            return;
+        }
+    }
+}
+
+void Tally(const void* buffer, void* returnAddress, uint64_t generation, bool acquire, bool fromGetBuffer = false) {
+    if (t_InsideGetBuffer != 0 || TrackedIndex(buffer) < 0) {
         return;
     }
-    if (!trace::Record(g_Sites[index], trace::kSitesPerBuffer, reinterpret_cast<uintptr_t>(returnAddress), acquire)) {
+    std::shared_lock lock(g_TraceMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        g_ContentionDrops.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const int index = TrackedIndex(buffer);
+    if (index < 0 || g_TraceGeneration.load(std::memory_order_relaxed) != generation) {
+        return;
+    }
+    const auto site = reinterpret_cast<uintptr_t>(returnAddress);
+    if (!trace::Record(g_Sites[index], trace::kSitesPerBuffer, site, acquire)) {
         g_Overflow.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (fromGetBuffer && site != 0) {
+        RecordGetBufferStack(site);
     }
 }
 
 HRESULT STDMETHODCALLTYPE HookQueryInterface(IUnknown* self, REFIID riid, void** out) {
+    const uint64_t generation = g_TraceGeneration.load(std::memory_order_acquire);
     const HRESULT hr = g_OriginalQueryInterface.load(std::memory_order_acquire)(self, riid, out);
     if (SUCCEEDED(hr) && out && *out) {
-        Tally(TrackedIndex(self), __builtin_return_address(0), true);
+        Tally(self, __builtin_return_address(0), generation, true);
     }
     return hr;
 }
 
 ULONG STDMETHODCALLTYPE HookAddRef(IUnknown* self) {
-    Tally(TrackedIndex(self), __builtin_return_address(0), true);
+    Tally(self, __builtin_return_address(0), g_TraceGeneration.load(std::memory_order_acquire), true);
     return g_OriginalAddRef.load(std::memory_order_acquire)(self);
 }
 
 ULONG STDMETHODCALLTYPE HookRelease(IUnknown* self) {
     // Counted before forwarding: the object may be gone afterwards.
-    Tally(TrackedIndex(self), __builtin_return_address(0), false);
+    Tally(self, __builtin_return_address(0), g_TraceGeneration.load(std::memory_order_acquire), false);
     return g_OriginalRelease.load(std::memory_order_acquire)(self);
 }
 
 HRESULT STDMETHODCALLTYPE HookGetBuffer(IDXGISwapChain* self, UINT buffer, REFIID riid, void** out) {
+    const uint64_t generation = g_TraceGeneration.load(std::memory_order_acquire);
     ++t_InsideGetBuffer;
     const HRESULT hr = g_OriginalGetBuffer.load(std::memory_order_acquire)(self, buffer, riid, out);
     --t_InsideGetBuffer;
     if (SUCCEEDED(hr) && out && *out) {
-        Tally(TrackedIndex(*out), __builtin_return_address(0), true);
+        Tally(*out, __builtin_return_address(0), generation, true, true);
     }
     return hr;
 }
@@ -197,7 +246,7 @@ std::string ModuleOf(const std::string& site) {
 
 }  // namespace
 
-void BackBufferReferenceTrace_Track(IDXGISwapChain* swapChain, UINT bufferCount, const char* source) {
+void BackBufferReferenceTrace_Track(IDXGISwapChain* swapChain, HWND window, UINT bufferCount, const char* source) {
     if (!swapChain || bufferCount == 0) {
         return;
     }
@@ -216,59 +265,148 @@ void BackBufferReferenceTrace_Track(IDXGISwapChain* swapChain, UINT bufferCount,
         return;  // not a D3D12 chain
     }
 
-    // Unpublish first so no hook counts into a table that is being cleared.
-    g_TrackedCount.store(0, std::memory_order_release);
-    for (size_t i = 0; i < trace::kMaxTrackedBuffers; ++i) {
-        trace::Clear(g_Sites[i], trace::kSitesPerBuffer);
-        g_Tracked[i].store(i < obtained ? reinterpret_cast<uintptr_t>(buffers[i]) : 0, std::memory_order_relaxed);
-    }
-    g_Overflow.store(0, std::memory_order_relaxed);
-    snprintf(g_TrackedSource, sizeof(g_TrackedSource), "%s", source ? source : "resize");
-
     InstallHooks(*reinterpret_cast<void***>(buffers[0]), *reinterpret_cast<void***>(swapChain));
 
-    char baseline[96] = {};
-    size_t used = 0;
+    const auto witness = ce::swapchain_lifetime_witness::Describe(swapChain);
+    const char* const resizeSource = source ? source : "resize";
+    uint64_t generation = 0;
+    {
+        std::unique_lock lock(g_TraceMutex);
+        g_TrackedCount.store(0, std::memory_order_release);
+        for (size_t i = 0; i < trace::kMaxTrackedBuffers; ++i) {
+            trace::Clear(g_Sites[i], trace::kSitesPerBuffer);
+            g_Tracked[i].store(i < obtained ? reinterpret_cast<uintptr_t>(buffers[i]) : 0, std::memory_order_relaxed);
+        }
+        for (auto& site : g_GetBufferSites) {
+            site.count = 0;
+            site.address.store(0, std::memory_order_relaxed);
+        }
+        g_TrackedChain = swapChain;
+        g_TrackedWindow = window;
+        g_WitnessGeneration = witness.generation;
+        g_RegisteredAtMs = ce::hook_clock::TickCount64();
+        g_Overflow.store(0, std::memory_order_relaxed);
+        g_ContentionDrops.store(0, std::memory_order_relaxed);
+        snprintf(g_TrackedSource, sizeof(g_TrackedSource), "%s", resizeSource);
+        g_TrackedCount.store(obtained, std::memory_order_release);
+        generation = g_TraceGeneration.fetch_add(1, std::memory_order_release) + 1;
+    }
+
     ++t_InsideGetBuffer;
     for (UINT i = 0; i < obtained; ++i) {
-        buffers[i]->AddRef();
-        g_BaselineHeldByOthers[i] = buffers[i]->Release() - 1;  // minus this function's own GetBuffer reference
-        const int written = snprintf(baseline + used, sizeof(baseline) - used, i == 0 ? "%lu" : ",%lu",
-                                     static_cast<unsigned long>(g_BaselineHeldByOthers[i]));
-        if (written > 0 && used + static_cast<size_t>(written) < sizeof(baseline)) {
-            used += static_cast<size_t>(written);
-        }
         buffers[i]->Release();
     }
     --t_InsideGetBuffer;
-    g_TrackedCount.store(obtained, std::memory_order_release);
-    HookLogImportant("BackBufferRefTrace: tracking %u buffer(s) of sc=%p after %s (heldByOthers at start=[%s])",
-                     obtained, swapChain, g_TrackedSource, baseline);
+    HookLogImportant("BackBufferRefTrace: tracking %u/%u buffer(s) sc=%p hwnd=%p resize=%llu lifetime=%llu after %s",
+                     obtained, bufferCount, swapChain, window, static_cast<unsigned long long>(generation),
+                     static_cast<unsigned long long>(witness.generation), resizeSource);
 }
 
-void BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source) {
-    const uint32_t count = g_TrackedCount.load(std::memory_order_acquire);
-    if (count == 0) {
-        HookLogImportant("BackBufferRefTrace: %s on sc=%p - no buffers tracked", source ? source : "?", swapChain);
-        return;
+namespace {
+
+struct TraceSnapshot {
+    struct RefSite {
+        uintptr_t address;
+        int32_t acquired;
+        int32_t released;
+        uint32_t buffer;
+    };
+    struct Stack {
+        uintptr_t site = 0;
+        std::array<void*, kGetBufferStackDepth> frames{};
+        USHORT count = 0;
+    };
+    std::array<RefSite, trace::kMaxTrackedBuffers * trace::kSitesPerBuffer> sites;
+    std::array<Stack, kGetBufferStackLimit> getBufferStacks;
+    size_t siteCount = 0;
+    IDXGISwapChain* chain = nullptr;
+    HWND window = nullptr;
+    uint32_t bufferCount = 0;
+    uint32_t overflow = 0;
+    uint32_t contentionDrops = 0;
+    uint64_t generation = 0;
+    uint64_t witnessGeneration = 0;
+    uint64_t registeredAtMs = 0;
+    char resizeSource[64] = {};
+};
+
+bool SnapshotTrace(IDXGISwapChain* swapChain, HWND window, bool detailed, TraceSnapshot& snapshot) {
+    std::unique_lock lock(g_TraceMutex);
+    const uint32_t count = g_TrackedCount.load(std::memory_order_relaxed);
+    if (count == 0 || (swapChain ? g_TrackedChain != swapChain : !window || g_TrackedWindow != window)) {
+        return false;
     }
-    HookLogImportant(
-        "BackBufferRefTrace: %s on sc=%p - references taken (acq) and returned (rel) per call site since %s; "
-        "overflow=%u. A module whose acq exceeds its rel holds the difference",
-        source ? source : "?", swapChain, g_TrackedSource, g_Overflow.load(std::memory_order_relaxed));
-    std::map<std::string, long> netByModule;
+    snapshot.chain = g_TrackedChain;
+    snapshot.window = g_TrackedWindow;
+    snapshot.bufferCount = count;
+    snapshot.overflow = g_Overflow.load(std::memory_order_relaxed);
+    snapshot.contentionDrops = g_ContentionDrops.load(std::memory_order_relaxed);
+    snapshot.generation = g_TraceGeneration.load(std::memory_order_relaxed);
+    snapshot.witnessGeneration = g_WitnessGeneration;
+    snapshot.registeredAtMs = g_RegisteredAtMs;
+    snprintf(snapshot.resizeSource, sizeof(snapshot.resizeSource), "%s", g_TrackedSource);
     for (uint32_t b = 0; b < count; ++b) {
-        for (size_t s = 0; s < trace::kSitesPerBuffer; ++s) {
-            const uintptr_t site = g_Sites[b][s].site.load(std::memory_order_acquire);
-            if (site == 0) {
+        for (const auto& entry : g_Sites[b]) {
+            const uintptr_t address = entry.site.load(std::memory_order_relaxed);
+            if (address == 0) {
                 break;
             }
-            const int32_t acquired = g_Sites[b][s].acquired.load(std::memory_order_relaxed);
-            const int32_t released = g_Sites[b][s].released.load(std::memory_order_relaxed);
-            const std::string where = DescribeSite(site);
-            netByModule[ModuleOf(where)] += static_cast<long>(acquired) - static_cast<long>(released);
-            HookLogImportant("BackBufferRefTrace: bb%u %s acq=%d rel=%d", b, where.c_str(), acquired, released);
+            snapshot.sites[snapshot.siteCount++] = {address, entry.acquired.load(std::memory_order_relaxed),
+                                                    entry.released.load(std::memory_order_relaxed), b};
         }
+    }
+    if (detailed) {
+        for (size_t i = 0; i < kGetBufferStackLimit; ++i) {
+            const auto& entry = g_GetBufferSites[i];
+            auto& stack = snapshot.getBufferStacks[i];
+            stack.site = entry.address.load(std::memory_order_relaxed);
+            stack.count = entry.count;
+            std::copy_n(entry.frames, entry.count, stack.frames.begin());
+        }
+    }
+    return true;
+}
+
+bool LogTrace(IDXGISwapChain* swapChain, HWND window, const char* source, bool detailed) {
+    TraceSnapshot snapshot;
+    const char* const stage = source ? source : "?";
+    if (!SnapshotTrace(swapChain, window, detailed, snapshot)) {
+        HookLogImportant("BackBufferRefTrace: %s sc=%p hwnd=%p has no matching resize trace", stage, swapChain, window);
+        return false;
+    }
+    const auto witness = ce::swapchain_lifetime_witness::Describe(snapshot.chain);
+    if (witness.state == ce::swapchain_lifetime_witness::ChainState::kDestroyed ||
+        (snapshot.witnessGeneration != 0 && snapshot.witnessGeneration != witness.generation)) {
+        HookLogImportant("BackBufferRefTrace: %s sc=%p hwnd=%p resize=%llu trace is from a retired lifetime", stage,
+                         snapshot.chain, snapshot.window, static_cast<unsigned long long>(snapshot.generation));
+        return false;
+    }
+    std::map<std::string, long> netByModule;
+    std::map<uintptr_t, std::string> siteNames;
+    constexpr size_t kDetailedSiteLines = 24;
+    for (size_t i = 0; i < snapshot.siteCount; ++i) {
+        const auto& site = snapshot.sites[i];
+        auto [name, inserted] = siteNames.try_emplace(site.address);
+        if (inserted) {
+            name->second = DescribeSite(site.address);
+        }
+        netByModule[ModuleOf(name->second)] += static_cast<long>(site.acquired) - static_cast<long>(site.released);
+        if (detailed && i < kDetailedSiteLines) {
+            HookLogImportant("BackBufferRefTrace: bb%u %s acq=%d rel=%d", site.buffer, name->second.c_str(),
+                             site.acquired, site.released);
+        }
+    }
+    for (const auto& stack : snapshot.getBufferStacks) {
+        if (!stack.count) {
+            continue;
+        }
+        std::string callers;
+        for (size_t i = 0; i < stack.count; ++i) {
+            callers += i == 0 ? "" : " <- ";
+            callers += DescribeSite(reinterpret_cast<uintptr_t>(stack.frames[i]));
+        }
+        HookLogImportant("BackBufferRefTrace: GetBuffer site=%s stack=%.640s", DescribeSite(stack.site).c_str(),
+                         callers.c_str());
     }
     std::string summary;
     for (const auto& [module, net] : netByModule) {
@@ -276,17 +414,25 @@ void BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source)
         snprintf(entry, sizeof(entry), "%s%s=%+ld", summary.empty() ? "" : " ", module.c_str(), net);
         summary += entry;
     }
-    HookLogImportant("BackBufferRefTrace: net references by module over %u buffer(s): %s", count, summary.c_str());
     const std::string holders = trace::DescribeForeignHolders(netByModule);
-    if (holders.empty()) {
-        HookLogImportant("BackBufferRefTrace: %s - no module outside DXGI/D3D12 holds a back-buffer reference",
-                         source ? source : "?");
-    } else {
-        HookLogImportant(
-            "BackBufferRefTrace: %s - back buffers still referenced outside DXGI/D3D12: %s. A chain whose buffers "
-            "are referenced is not destroyed, so its window stays bound and a new flip chain is refused",
-            source ? source : "?", holders.c_str());
-    }
+    HookLogImportant("BackBufferRefTrace: %s sc=%p hwnd=%p resize=%llu lifetime=%llu ageMs=%llu buffers=%u "
+                     "since=%s sites=%zu overflow=%u contentionDrops=%u observedNet=[%.256s] foreignNet=[%.256s]",
+                     stage, snapshot.chain, snapshot.window, static_cast<unsigned long long>(snapshot.generation),
+                     static_cast<unsigned long long>(snapshot.witnessGeneration),
+                     static_cast<unsigned long long>(ce::hook_clock::TickCount64() - snapshot.registeredAtMs),
+                     snapshot.bufferCount, snapshot.resizeSource, snapshot.siteCount, snapshot.overflow,
+                     snapshot.contentionDrops, summary.c_str(), holders.c_str());
+    return true;
+}
+
+}  // namespace
+
+bool BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source) {
+    return LogTrace(swapChain, nullptr, source, true);
+}
+
+bool BackBufferReferenceTrace_LogForWindow(HWND window, const char* source, bool detailed) {
+    return LogTrace(nullptr, window, source, detailed);
 }
 
 std::string ce::backbuffer_reference_trace::DescribeForeignHolders(const std::map<std::string, long>& netByModule) {
@@ -304,7 +450,11 @@ std::string ce::backbuffer_reference_trace::DescribeForeignHolders(const std::ma
 
 void BackBufferReferenceTrace_Uninstall() {
     std::lock_guard<std::mutex> lock(g_InstallMutex);
-    g_TrackedCount.store(0, std::memory_order_release);
+    {
+        std::unique_lock traceLock(g_TraceMutex);
+        g_TrackedCount.store(0, std::memory_order_release);
+        g_TraceGeneration.fetch_add(1, std::memory_order_release);
+    }
     RestoreSlot(g_ResourceVtable, kQueryInterfaceSlot, reinterpret_cast<void*>(&HookQueryInterface),
                 reinterpret_cast<void*>(g_OriginalQueryInterface.load()));
     RestoreSlot(g_ResourceVtable, kAddRefSlot, reinterpret_cast<void*>(&HookAddRef),

@@ -29,7 +29,7 @@ thread_local bool s_forwardingAccessDeniedCreateThroughEntryChain = false;
 // wrapper destructor re-ran OptiScaler's proxy destructor -> STATUS_HEAP_CORRUPTION on game close).
 // Instead this reports the ledger note the wrapper destructor recorded when CE dropped its last
 // reference, which is the only sound observation of the residual pin count that exists.
-void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
+void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage, bool detailed) {
     static std::atomic<int> s_pinDiagnosticsLogCount{0};
     const int logCount = s_pinDiagnosticsLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount >= 8 && (logCount % 64) != 0) {
@@ -49,14 +49,11 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
         chains.push_back(dx12_hook_g_LastSwapChain);
     }
 
-    // Which of the window's chains still live, and who released the others: an alive chain with no back-buffer
-    // references outstanding is pinned by a reference on the chain itself; a window whose chains are all
-    // destroyed is held by something other than a swapchain. Recovery erases CE's HWND map, the witness keeps
-    // its own record, so later stages still see every chain.
+    // Recovery erases CE's HWND map. The witness still reports destruction and the reference trace still reports
+    // observations from the most recent matching resize, which may cover only part of the chain's lifetime.
     const size_t aliveChains =
         ce::swapchain_lifetime_witness::LogWindowChains(hWnd, stage ? stage : "E_ACCESSDENIED pre-cleanup");
-    // References on the last resized chain's back buffers since that resize, by call site and module.
-    BackBufferReferenceTrace_Log(nullptr, stage ? stage : "E_ACCESSDENIED pre-cleanup");
+    BackBufferReferenceTrace_LogForWindow(hWnd, stage, detailed);
 
     if (chains.empty()) {
         HookLogImportant("DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p no tracked chains "
@@ -587,7 +584,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
         HookLogImportant("DeepHook: recovery complete hwnd=%p hr=0x%08X nestedCalls=%u",
                          hWnd, hr, recoveryScope.NestedCalls());
     });
-    LogAccessDeniedSwapchainPinDiagnostics(hWnd, "pre-cleanup");
+    LogAccessDeniedSwapchainPinDiagnostics(hWnd, "pre-cleanup", true);
 
     const bool streamlineModuleLoaded = IsStreamlineLoaded();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
@@ -648,8 +645,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
             callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
             HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0,
             callerModulePath[0] ? callerModulePath : "unknown");
-        ReleaseStreamlineStartupActivationSwapchain("DeepHook: E_ACCESSDENIED runtime-managed minimal recovery");
-        if (hr == E_ACCESSDENIED) {
+        if (ReleaseStreamlineStartupActivationSwapchain("DeepHook: E_ACCESSDENIED runtime-managed minimal recovery")) {
             // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
             constexpr int attempt = 1;
             hr = dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
@@ -660,7 +656,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
         }
         if (hr == E_ACCESSDENIED) {
             HookLogImportant(
-                "DeepHook: runtime-managed minimal recovery still E_ACCESSDENIED — escalating to full overlay "
+                "DeepHook: runtime-managed create still E_ACCESSDENIED — escalating to full overlay "
                 "cleanup for HWND=%p",
                 hWnd);
             {

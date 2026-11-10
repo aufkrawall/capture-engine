@@ -342,6 +342,7 @@ ChainReport Describe(const IDXGISwapChain* swapchain) {
     report.state = record.state;
     report.window = record.window;
     report.watchedAtMs = record.watchedAtMs;
+    report.generation = record.generation;
     report.destroyedAtMs = record.destroyedAtMs;
     report.destroyingThread = record.destroyingThread;
     snprintf(report.destroyedBy, sizeof(report.destroyedBy), "%s", record.destroyedBy);

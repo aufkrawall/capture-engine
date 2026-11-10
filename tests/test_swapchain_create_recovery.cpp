@@ -49,5 +49,10 @@ TEST(SwapchainCreateRecoveryTest, BothHookLayersGateRecoveryAndHaveNoSleepRetrie
         EXPECT_NE(source.find("hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()"), std::string::npos);
         EXPECT_EQ(source.find("Sleep(20)"), std::string::npos);
         EXPECT_EQ(source.find("attempt <= 10"), std::string::npos);
+        const size_t unpin = source.find("if (ReleaseStreamlineStartupActivationSwapchain(");
+        ASSERT_NE(unpin, std::string::npos);
+        const size_t retry = source.find("runtime-managed minimal-recovery retry", unpin);
+        ASSERT_NE(retry, std::string::npos);
+        EXPECT_LT(source.find("E_ACCESSDENIED runtime-managed minimal recovery", unpin), retry);
     }
 }

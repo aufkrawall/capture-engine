@@ -420,9 +420,9 @@ bool DX12_TryInvokePostSLStartupActivationCallbackFromSharedService(const char* 
     return DX12_TryInvokePostSLStartupActivationCallback(source, clearStartupWindow, false);
 }
 
-void SafeReleaseStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
+bool SafeReleaseStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
 if (!swapchain) {
-    return;
+    return false;
 }
 
 if (!IsUsableStartupActivationSwapchainPointer(swapchain)) {
@@ -434,14 +434,15 @@ if (!IsUsableStartupActivationSwapchainPointer(swapchain)) {
             "(source=%s log=%d)",
             swapchain, source ? source : "unknown", logCount + 1);
     }
-    return;
+    return false;
 }
 
 swapchain->Release();
+return true;
 }
 
 
-void ReleaseStreamlineStartupActivationSwapchain(const char* source) {
+bool ReleaseStreamlineStartupActivationSwapchain(const char* source) {
 IDXGISwapChain* oldSwapchain = nullptr;
 {
     std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchainMutex);
@@ -449,11 +450,12 @@ IDXGISwapChain* oldSwapchain = nullptr;
     dx12_hook_g_StreamlineStartupActivationSwapchain = nullptr;
 }
 
-if (oldSwapchain) {
+if (SafeReleaseStartupActivationSwapchain(oldSwapchain, source)) {
     HookLogImportant("DX12: Released retained Streamline startup activation swapchain %p (source=%s)", oldSwapchain,
                      source ? source : "unknown");
-    SafeReleaseStartupActivationSwapchain(oldSwapchain, source);
+    return true;
 }
+return false;
 }
 
 

@@ -169,7 +169,7 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
 }
 
 if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
-    LogAccessDeniedSwapchainPinDiagnostics(hWnd, "inline-pre-cleanup");
+    LogAccessDeniedSwapchainPinDiagnostics(hWnd, "inline-pre-cleanup", true);
     auto recoveryLog = ce::make_scope_guard([&]() {
         HookLogImportant("CreateSwapChainForHwnd INLINE: recovery complete hwnd=%p hr=0x%08X nestedCalls=%u",
                          hWnd, hr, recoveryScope.NestedCalls());
@@ -206,9 +206,8 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
 
             HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0,
             callerModulePath[0] ? callerModulePath : "unknown");
-        ReleaseStreamlineStartupActivationSwapchain(
-            "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED runtime-managed minimal recovery");
-        if (hr == E_ACCESSDENIED) {
+        if (ReleaseStreamlineStartupActivationSwapchain(
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED runtime-managed minimal recovery")) {
             // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
             constexpr int attempt = 1;
             hr = original(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
@@ -221,7 +220,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
         }
         if (hr == E_ACCESSDENIED) {
             HookLogImportant(
-                "CreateSwapChainForHwnd INLINE: runtime-managed minimal recovery still E_ACCESSDENIED — "
+                "CreateSwapChainForHwnd INLINE: runtime-managed create still E_ACCESSDENIED — "
                 "escalating to full overlay cleanup for HWND=%p",
                 hWnd);
             {
@@ -250,6 +249,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
             }
         }
         if (hr == E_ACCESSDENIED) {
+            LogAccessDeniedSwapchainPinDiagnostics(hWnd, "inline-recovery-exhausted");
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED persists after CE unpin + full cleanup — "
                 "returning the error to the caller (HWND=%p)",
