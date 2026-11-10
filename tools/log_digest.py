@@ -64,7 +64,20 @@ BENIGN_COUNTER = re.compile(
     re.IGNORECASE,
 )
 
+# Findings the hook states in its own words: a screen that stopped changing while the game kept presenting
+# ("[SCANOUT STALL]", hook/present/scanout_stall_report.h) and the Streamline unload order that was not the plain one
+# (hook/streamline/streamline_unload_order.cpp: a chain that vanished unreported, a title that kept presenting, a
+# reference that outlived the destroy dispatch, an interposer that left with an unload held). The continuation lines of
+# a stall snapshot (swapchain, window, above) are details of its start line and stay out of the problem list.
+HOOK_FINDING = re.compile(
+    r"\[SCANOUT STALL\] ep=\d+ (?:start|still-stalled)\b|"
+    r"\[SL UNLOAD ORDER\] (?:forwarded reason=(?:chain-gone|title-kept-chain)\b|"
+    r"forwarded reason=proxy-released residualRefs=[1-9]|dropped\b)"
+)
+HOOK_FINDING_DETAIL = re.compile(r"\[SCANOUT STALL\] ep=\d+ (?:swapchain|window|above)\b")
+
 TIMELINE = re.compile(
+    r"\[SCANOUT STALL\] ep=\d+ (?:start|end)\b|\[SL UNLOAD ORDER\]|firstScreenChange|"
     r"FG (?:EVENT|PLAN DIFF|TRANSITION)|frame.?generation (?:on|off|enabled|disabled|activ)|"
     r"DLSS-?G (?:enabled|disabled|turned|activ)|"
     r"Recording (?:started|stopped|failed)|recording (?:start|stop)|[Ff]inaliz(?:ed|ation)|"
@@ -167,6 +180,10 @@ def load_session(directory: str, pid: str | None, since: str | None, until: str 
 def is_problem(line: Line) -> bool:
     if line.level in ("WARN", "ERROR"):
         return True
+    if HOOK_FINDING.search(line.message):
+        return True
+    if HOOK_FINDING_DETAIL.search(line.message):
+        return False
     match = PROBLEM.search(line.message)
     if not match:
         return False
@@ -419,6 +436,45 @@ def self_test() -> int:
         recovered = digest(session, pid="42", since="10:00:00.001")
         assert "repeated sequence number(s)" in recovered
         assert "line(s) lost" not in recovered
+    with tempfile.TemporaryDirectory() as session:
+        # The hook's own findings: a stall episode and the Streamline unload order.
+        with open(os.path.join(session, "hook_debug.log"), "w", encoding="utf-8") as handle:
+            handle.write("\n".join([
+                "10:00:00.000 T1 #0 p42 [SL STARTUP] handoff=1 sc=0000000000001000 firstScreenChange "
+                "sinceHandoffUs=19571323 presentsBefore=2497",
+                "10:00:01.000 T1 #1 p42 [SL UNLOAD ORDER] deferred sc=0000000000001000 lifetime=1 tid=0x0123",
+                "10:00:01.100 T1 #2 p42 [SL UNLOAD ORDER] forwarded reason=proxy-released residualRefs=0 "
+                "sc=0000000000001000 lifetime=1 caller=sl.interposer.dll+0x2A68F tid=0x0123 heldUs=1000",
+                "10:00:02.000 T1 #3 p42 [SL UNLOAD ORDER] forwarded reason=proxy-released residualRefs=2 "
+                "sc=0000000000002000 lifetime=2 caller=sl.interposer.dll+0x2A68F tid=0x0123 heldUs=1000",
+                "10:00:03.000 T1 #4 p42 [SL UNLOAD ORDER] forwarded reason=title-kept-chain",
+                "10:00:04.000 T1 #5 p42 [SCANOUT STALL] ep=1 start sc=0000000000001000 ageUs=256928 "
+                "presentsSinceChange=36 results=[0x087A0001=66]",
+                "10:00:04.001 T1 #6 p42 [SCANOUT STALL] ep=1 swapchain fmt=28 buffers=3",
+                "10:00:04.002 T1 #7 p42 [SCANOUT STALL] ep=1 window visible=1 iconic=0 flipBlockers=none",
+                "10:00:04.003 T1 #8 p42 [SCANOUT STALL] ep=1 above total=0 shown=0 none",
+                "10:00:06.000 T1 #9 p42 [SCANOUT STALL] ep=1 still-stalled ageUs=2200000 presentsSinceChange=300",
+                "10:00:24.000 T1 #10 p42 [SCANOUT STALL] ep=1 end durationUs=19571323 presents=2497 firstChange=own",
+            ]) + "\n")
+        text = digest(session)
+        problems, _, timeline = text.partition("## timeline")
+        findings = {
+            "a stall start is a problem": "[SCANOUT STALL] ep=1 start" in problems,
+            "a running stall is a problem": "still-stalled" in problems,
+            "a stall snapshot's detail lines are not problems": "ep=1 swapchain" not in problems
+            and "ep=1 window" not in problems and "ep=1 above" not in problems,
+            "an unload order with residual references is a problem": "residualRefs=2" in problems,
+            "a kept-chain forward is a problem": "title-kept-chain" in problems,
+            "the plain unload order is no problem": "residualRefs=0" not in problems and "deferred" not in problems,
+            "the stall is on the timeline": "ep=1 start" in timeline and "ep=1 end" in timeline,
+            "the unload order is on the timeline": "[SL UNLOAD ORDER] deferred" in timeline,
+            "the first screen change is on the timeline": "firstScreenChange sinceHandoffUs=19571323" in timeline,
+        }
+        failed = [name for name, ok in findings.items() if not ok]
+        if failed:
+            print(text)
+            print("FAILED:", ", ".join(failed))
+            return 1
     print("log_digest self-test passed")
     return 0
 
