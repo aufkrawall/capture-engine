@@ -124,6 +124,22 @@ sl::Result slInit(const sl::Preferences& preferences, uint64_t) {
     return g_initialized ? sl::Result::eOk : sl::Result::eErrorInitNotCalled;
 }
 
+// Test-host query (not a Streamline function): what the real interposer's swapchain proxy does when the game's last
+// reference to it goes. The plugin's destroy hook runs only while the feature is loaded - Streamline rebuilds its
+// hook lists without a disabled plugin (PluginManager::setFeatureEnabled), so after slSetFeatureLoaded(DLSS-G, false)
+// the plugin never learns the chain died and keeps its references.
+extern "C" __declspec(dllexport) void flowInterposerDispatchSwapChainDestroyed(IDXGISwapChain* chain) {
+    using Destroyed_t = void (*)(IDXGISwapChain*);
+    if (!g_dlssgEnabled.load(std::memory_order_relaxed)) {
+        Log(kModule, "slHookSwapChainDestroyed not dispatched for real %p: DLSS-G is unloaded", chain);
+        return;
+    }
+    const auto destroyed = g_dlssgFunction ? reinterpret_cast<Destroyed_t>(g_dlssgFunction("slHookSwapChainDestroyed"))
+                                           : nullptr;
+    if (destroyed)
+        destroyed(chain);
+}
+
 extern "C" __declspec(dllexport) uint32_t flowInterposerInitCalls() { return g_initCalls; }
 extern "C" __declspec(dllexport) uint64_t flowInterposerInitFlags() { return g_initFlags; }
 extern "C" __declspec(dllexport) uint32_t flowInterposerSetDeviceCalls() { return g_setDeviceCalls; }
