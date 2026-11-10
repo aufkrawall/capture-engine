@@ -3,6 +3,7 @@
 #include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
 #include "hook/present/present_stage_cost.h"
 #include "hook/present/present_stall_attribution.h"
+#include "hook/present/scanout_stall_report.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/metrics/present_phase_clock.h"
 
@@ -547,6 +548,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         flushInfo = FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present", callCount, focusLostForFlush);
     }
     DXGIShared::NotePresentDeviceResult(hr, "wrapped Present");
+    ce::scanout_stall::OnPresentReturned(pRealCached, SyncInterval, presentFlags, hr);
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present", callCount, SyncInterval, presentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
         // A Present hook is the earliest boundary before the game starts the
@@ -784,6 +786,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         flushInfo = FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present1", callCount, focusLostForFlush);
     }
     DXGIShared::NotePresentDeviceResult(hr, "wrapped Present1");
+    ce::scanout_stall::OnPresentReturned(pReal1Cached, SyncInterval, PresentFlags, hr);
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present1", callCount, SyncInterval, PresentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
         CostScope limiterStage(CostStage::kLimiter);

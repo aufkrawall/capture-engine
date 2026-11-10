@@ -123,6 +123,10 @@ public:
     bool ReturnToNativeSwapchainOnNewQueue();
     bool ReturnToNativeSwapchainThroughStreamline();
     void AdvanceVirtualClock(int64_t microseconds) { advanceClock_(microseconds); }
+    // The sensor service's side of the display stream: publishes one transition reaching the screen now. A scenario
+    // that never calls it leaves the stream inactive, as without the sensor; one that stops calling it is a screen that
+    // stopped changing while the game keeps presenting (the scanout-stall report).
+    bool PublishDisplayTransition();
 
     // ResizeBuffers to `format` at the same size, then SetColorSpace1(colorSpace), as a game does when it moves its
     // swapchain between SDR and HDR10 output at runtime.

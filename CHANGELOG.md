@@ -58,7 +58,9 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Streamline swapchain-destroy diagnostics:** with trace logging, the log records when Streamline calls its swapchain-destroy callback, which module releases the native chain and how many references it still holds, and how long the NGX feature creation takes. This shows whether a refused FSR swapchain was pinned by a skipped Streamline cleanup.
+- **Black-screen diagnostics after a DLSS Frame Generation handoff (GTA V Enhanced):** the log now times the first change of the screen after a Streamline swapchain handoff (`firstScreenChange`), and when the screen stops changing although the game keeps presenting it records one `[SCANOUT STALL]` snapshot per episode: the swapchain's state, the results its Presents returned (Windows drops an occluded window's Presents), the window's visibility, cloaking, foreground state and flip blockers, and the visible windows above the game. Running episodes repeat a short line every two seconds and end with their duration and what changed first.
+
+- **Streamline swapchain-destroy diagnostics:** the log always records when Streamline calls its swapchain-destroy callback; with trace logging it also records which module releases the native chain and how many references it still holds, with the call stack of the releasing frames, and how long the NGX feature creation takes. This shows whether a refused FSR swapchain was pinned by a skipped Streamline cleanup.
 
 - **DLSS Frame Generation teardown diagnostics:** record the title's Streamline feature-load and resource-release calls, their results, and the options flags that govern retention when frame generation is off.
 

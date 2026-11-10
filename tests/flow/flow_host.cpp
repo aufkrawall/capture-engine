@@ -630,4 +630,14 @@ bool FlowGame::TryConfirmPostSLEpoch(uint32_t epoch) {
     return tryConfirmPostSLEpoch_ && tryConfirmPostSLEpoch_(epoch);
 }
 
+bool FlowGame::PublishDisplayTransition() {
+    if (!hostMemory_ || !clockMicroseconds_)
+        return false;
+    // The sensor service's side of the display stream: one transition reaching the screen now, stamped on the clock
+    // the hook reads (the virtual one).
+    const int64_t nowUs = clockMicroseconds_();
+    hostMemory_->displayTiming.Publish(nowUs, nowUs);
+    return true;
+}
+
 }  // namespace ce::flow

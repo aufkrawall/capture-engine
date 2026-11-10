@@ -2,6 +2,7 @@
 #include "dxgi_shared_internal.h"
 #include "hook/fg/fg_transition_trace.h"
 #include "hook/streamline/streamline_unload_order.h"
+#include "scanout_stall_report.h"
 #include "hook/streamline/streamline_runtime_policy.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
@@ -798,6 +799,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         EnterStage(CostStage::kPresentResult);
         NoteDX12PresentResultForVtablePath(pSwapChain, "Present1", SyncInterval, Flags, hr);
     }
+    ce::scanout_stall::OnPresentReturned(pSwapChain, SyncInterval, Flags, hr);
 
     EnterStage(CostStage::kLimiter);
     if (SUCCEEDED(hr)) {

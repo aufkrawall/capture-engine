@@ -11,6 +11,7 @@
 #include "common/platform/bounded_diagnostic_history.h"
 #include "fg_session_state.h"
 #include "hook/metrics/perf_logger.h"
+#include "hook/present/scanout_stall_report.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/hook_common.h"
 
@@ -73,6 +74,9 @@ void RecordStreamlineStartupHandoff(void* swapchain, int64_t timeUs) {
     }
     HookLogImportant("[SL STARTUP] handoff=%llu sc=%p qpcUs=%lld", static_cast<unsigned long long>(handoff), swapchain,
                      static_cast<long long>(timeUs));
+    // How long until this chain reaches the screen: the black seconds after GTA's DLSS-G handoff
+    // (session 20261110_182518) show up as one `firstScreenChange` line.
+    ce::scanout_stall::ArmFirstScreenChange(handoff, static_cast<IDXGISwapChain*>(swapchain));
 }
 
 void RecordStreamlineStartupTitlePresent(uint32_t frameId, int64_t timeUs) {

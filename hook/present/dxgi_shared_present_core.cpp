@@ -2,6 +2,7 @@
 #include "dxgi_shared_internal.h"
 #include "dx11_present_perf_row.h"
 #include "hook/runtime/hook_clock.h"
+#include "scanout_stall_report.h"
 
 #include <optional>
 
@@ -32,6 +33,8 @@ namespace DXGIShared {
 namespace {
 void NotePresentResultForFocusTracking(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
                                        const char* presentName) {
+    // Every forwarded Present of every API ends here: the scanout-stall report counts them against the display.
+    ce::scanout_stall::OnPresentReturned(pSwapChain, SyncInterval, Flags, hr);
     if (api == APIType::D3D12) {
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
