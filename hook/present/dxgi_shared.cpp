@@ -119,9 +119,9 @@ void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, I
     auto scope = ce::make_scope_guard([]() { --s_postSLFinalOutputPresentCallbackDepth; });
     const bool timeForCsv = PerfLogger::Get().IsEnabled();
     const int64_t startUs = timeForCsv ? PerfLogger::GetQpcUs() : 0;
+    const auto startupOutput = ce::fg_session::BeginStreamlineStartupOutput(swapChain);
     // Every route's PostSL draw, which otherwise reads as the routing around it (`startup_routing`).
     ce::present_stage_cost::StageScope overlayStage(ce::present_stage_cost::Stage::kPostSLOverlay);
-    const auto startupOutput = ce::fg_session::BeginStreamlineStartupOutput(swapChain);
     callback(swapChain);
     if (startupOutput.swapchain) {
         ce::fg_session::EndStreamlineStartupOutput(startupOutput);
