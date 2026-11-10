@@ -1,7 +1,7 @@
 #include "dxgi_shared_internal.h"
 #include "hook/fg/fg_transition_trace.h"
 #include "hook/streamline/streamline_runtime_policy.h"
-#include "hook/streamline/streamline_unload_order.h"
+#include "scanout_stall_report.h"
 #include "dxgi_shared_forwarded_present.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
@@ -57,6 +57,7 @@ void NoteDX12PresentResultForVtablePath(IDXGISwapChain* pSwapChain, const char* 
     if (!pSwapChain || IsInWrapperPresent()) {
         return;
     }
+    ce::scanout_stall::OnPresentReturned(pSwapChain, SyncInterval, Flags, hr);  // the wrapper reports its own
     static std::atomic<int> s_vtablePresentResultCount{0};
     const int callCount = s_vtablePresentResultCount.fetch_add(1, std::memory_order_relaxed) + 1;
     DXGI_SWAP_CHAIN_DESC desc = {};
@@ -276,7 +277,6 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     const bool originatorFromStreamline = origin.fromStreamline;
     if (originatorFromStreamline) {
         ce::fg_session::RecordStreamlineStartupNativePresent(pSwapChain, "Present");
-        ce::streamline_unload_order::NoteNativePresent(pSwapChain);
     }
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     ctx.callerFromStreamlineModule = originatorFromStreamline || caller.streamlineModule;

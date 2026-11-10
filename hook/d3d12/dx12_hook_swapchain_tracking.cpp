@@ -87,12 +87,8 @@ void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pS
 if (!pDevice || !pSwapChain)
     return;
 
-// Whatever queue the create used: a chain DLSS-G created is one whose unload order Streamline owns (see
-// streamline_unload_order_policy.h).
-if (captureEvidence.authoritativeStreamlineRuntimeCreator) {
-    ce::streamline_unload_order::NoteDlssgChain(pSwapChain);
-}
-
+// A chain DLSS-G created, whatever queue it used: its unload order belongs to Streamline (streamline_unload_order.h).
+if (captureEvidence.authoritativeStreamlineRuntimeCreator) ce::streamline_unload_order::NoteDlssgChain(pSwapChain);
 ID3D12CommandQueue* pQueue = nullptr;
 HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
 if (SUCCEEDED(qiHr) && pQueue) {

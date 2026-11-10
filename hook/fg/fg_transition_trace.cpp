@@ -12,6 +12,7 @@
 #include "fg_session_state.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/present/scanout_stall_report.h"
+#include "hook/streamline/streamline_unload_order.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/hook_common.h"
 
@@ -103,6 +104,7 @@ void RecordStreamlineStartupTitlePresent(uint32_t frameId, int64_t timeUs) {
 }
 
 void RecordStreamlineStartupNativePresent(void* swapchain, const char* method) {
+    ce::streamline_unload_order::NoteNativePresent(static_cast<IDXGISwapChain*>(swapchain));
     if (!swapchain || g_PendingNativePresent.load(std::memory_order_relaxed) != swapchain) {
         return;
     }

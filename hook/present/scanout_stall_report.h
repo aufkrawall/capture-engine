@@ -25,8 +25,10 @@ struct IDXGISwapChain;
 
 namespace ce::scanout_stall {
 
-// A Present of `swapChain` returned `result`. Called by every forwarded Present on the presenting thread; one try-lock
-// and a few atomic reads unless an episode starts, continues or ends. Never delays the Present.
+// A Present of `swapChain` returned `result`. Called on the presenting thread by the D3D12 routes' one result report:
+// the hooked Present and Present1 of an unwrapped chain (NoteDX12PresentResultForVtablePath) and the swapchain
+// wrapper's own Present and Present1. One try-lock and a few atomic reads unless an episode starts, continues or ends.
+// Never delays the Present.
 void OnPresentReturned(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT result);
 
 // A fresh Streamline handoff created `swapChain`: logs `[SL STARTUP] handoff=<n> ... firstScreenChange` once, at the

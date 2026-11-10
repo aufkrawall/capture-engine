@@ -1,8 +1,6 @@
 #include "dxgi_shared_forwarded_present.h"
 #include "dxgi_shared_internal.h"
 #include "hook/fg/fg_transition_trace.h"
-#include "hook/streamline/streamline_unload_order.h"
-#include "scanout_stall_report.h"
 #include "hook/streamline/streamline_runtime_policy.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
@@ -163,7 +161,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool originatorFromStreamline = origin.fromStreamline;
     if (originatorFromStreamline) {
         ce::fg_session::RecordStreamlineStartupNativePresent(pSwapChain, "Present1");
-        ce::streamline_unload_order::NoteNativePresent(pSwapChain);
     }
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     const bool callerFromStreamlineModule = originatorFromStreamline || callerStreamlineModule;
@@ -799,7 +796,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         EnterStage(CostStage::kPresentResult);
         NoteDX12PresentResultForVtablePath(pSwapChain, "Present1", SyncInterval, Flags, hr);
     }
-    ce::scanout_stall::OnPresentReturned(pSwapChain, SyncInterval, Flags, hr);
 
     EnterStage(CostStage::kLimiter);
     if (SUCCEEDED(hr)) {
