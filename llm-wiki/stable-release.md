@@ -86,7 +86,8 @@ overrides. Nothing in it is trusted on its own:
   `.verified/<dep>-<hash>.json`; a warm prefetch then costs 1.6 s (cold: 160 s, 705 MB incl. mirrors).
   `.sig`/`.asc` files shipped inside source packages are read from the recipe and are not cached.
 - `git/<name>.git`: bare mirrors (FFmpeg, nv-codec-headers), pins kept reachable under `refs/ce-pins/<sha>`.
-- `toolchain/`: `closure_proofs.json` + `packages/<sha>.txt`.
+- `toolchain/`: immutable `proofs/<timestamp>-<id>.json` records containing the proof and package inventory.
+  Existing `closure_proofs.json` and `packages/<sha>.txt` files remain readable.
 - `clang-tidy/entries/`: location-independent results (schema 4).
 - `locks/`: holder records for the machine locks.
 
@@ -107,6 +108,9 @@ overrides. Nothing in it is trusted on its own:
   passing `tools/rehearse_dependency_closure.py`. `dispatch` refuses when a proof exists for an *older* toolchain
   but not this one (the 2026-11-01 situation) and lists the package changes; no history at all only warns.
   `--accept-unproven-toolchain` overrides. A failed closure build logs the same "Toolchain hint".
+  New records use exclusive creation, so a Windows reader holding an old proof open cannot block publication.
+  Readers ignore incomplete JSON and select the newest 60 distinct proofs. Pruning keeps one package inventory
+  per toolchain and leaves an old record in place if a Windows reader still has it open.
 - **Machine build lock** (`tools/machine_lock.py`): every top-level `build.py` (and the rehearsal) takes the named
   mutex `Global\CaptureEngine.build-py` before touching its logs and waits, naming the holder; the sanitizer
   child runs under its parent's hold. Low-integrity, Everyone-access DACL, so elevated and normal builds share it;

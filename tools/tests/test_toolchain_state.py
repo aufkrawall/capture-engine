@@ -71,10 +71,43 @@ class ClosureProofTest(unittest.TestCase):
         assert latest is not None
         self.assertEqual(latest["inputs_sha256"], "x")
 
-    def test_history_is_bounded_and_corrupt_state_reads_as_empty(self) -> None:
+    @unittest.skipUnless(sys.platform == "win32", "Windows readers can deny file replacement")
+    def test_an_open_legacy_proof_file_does_not_block_recording(self) -> None:
+        legacy = Path(self.dir, "closure_proofs.json")
+        legacy.write_text(json.dumps([{
+            "kind": "ffmpeg", "inputs_sha256": "old-inputs",
+            "toolchain_sha256": state.fingerprint([HEADERS_OLD]), "origin": "build",
+        }]), encoding="utf-8")
+        with legacy.open("rb"):
+            state.record_proof(self.dir, "ffmpeg", "new-inputs", [HEADERS_NEW], "build")
+        proofs = state.load_proofs(self.dir)
+        self.assertEqual([proof["inputs_sha256"] for proof in proofs], ["old-inputs", "new-inputs"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows readers can deny file deletion")
+    def test_a_reader_can_keep_a_superseded_record_open(self) -> None:
+        state.record_proof(self.dir, "ffmpeg", "x", [HEADERS_OLD], "build")
+        record, = Path(self.dir, "proofs").glob("*.json")
+        with record.open("rb"):
+            state.record_proof(self.dir, "ffmpeg", "x", [HEADERS_OLD], "release")
+            self.assertTrue(record.exists())
+            self.assertEqual([proof["origin"] for proof in state.load_proofs(self.dir)], ["release"])
+        state.record_proof(self.dir, "ffmpeg", "y", [HEADERS_OLD], "build")
+        self.assertFalse(record.exists())
+
+    def test_history_is_bounded_and_preserves_the_last_package_inventory(self) -> None:
+        state.record_proof(self.dir, "ffmpeg", "old", [HEADERS_OLD], "build")
         for index in range(state.PROOF_HISTORY_LIMIT + 5):
             state.record_proof(self.dir, "ffmpeg", f"inputs-{index}", ["a-1-1"], "build")
         self.assertEqual(len(state.load_proofs(self.dir)), state.PROOF_HISTORY_LIMIT)
+        self.assertEqual(len(list(Path(self.dir, "proofs").glob("*.json"))), state.PROOF_HISTORY_LIMIT + 1)
+        self.assertEqual(state.proof_packages(self.dir, state.fingerprint([HEADERS_OLD])), [HEADERS_OLD])
+
+    def test_incomplete_proof_does_not_hide_a_complete_record(self) -> None:
+        state.record_proof(self.dir, "ffmpeg", "x", ["a-1-1"], "build")
+        Path(self.dir, "proofs", "99999999999999999999-interrupted.json").write_text('{"proof":', encoding="utf-8")
+        self.assertEqual([proof["inputs_sha256"] for proof in state.load_proofs(self.dir)], ["x"])
+
+    def test_corrupt_legacy_state_reads_as_empty(self) -> None:
         Path(self.dir, "closure_proofs.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(state.load_proofs(self.dir), [])
         Path(self.dir, "closure_proofs.json").write_text(json.dumps({"a": 1}), encoding="utf-8")

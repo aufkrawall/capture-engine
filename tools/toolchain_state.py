@@ -28,9 +28,12 @@ import hashlib
 import json
 import os
 import subprocess
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 PROOF_HISTORY_LIMIT = 60
 CLOSURE_KINDS = ("dependency_closure", "ffmpeg")
@@ -123,7 +126,7 @@ def _packages_path(state_dir: str, toolchain_sha256: str) -> str:
     return os.path.join(state_dir, "packages", f"{toolchain_sha256}.txt")
 
 
-def load_proofs(state_dir: str) -> List[Dict[str, Any]]:
+def _load_legacy_proofs(state_dir: str) -> List[Dict[str, Any]]:
     try:
         with open(_proofs_path(state_dir), "r", encoding="utf-8") as source:
             proofs = json.load(source)
@@ -132,12 +135,66 @@ def load_proofs(state_dir: str) -> List[Dict[str, Any]]:
         return []
 
 
-def _write_atomically(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = f"{path}.{os.getpid()}.tmp"
-    with open(temporary, "w", encoding="utf-8", newline="\n") as target:
-        target.write(text)
-    os.replace(temporary, path)
+def _proof_key(proof: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    kind = proof.get("kind")
+    inputs = proof.get("inputs_sha256")
+    toolchain = proof.get("toolchain_sha256")
+    if kind in CLOSURE_KINDS and isinstance(inputs, str) and isinstance(toolchain, str):
+        return kind, inputs, toolchain
+    return None
+
+
+def _proof_records(state_dir: str) -> Iterator[Tuple[Path, Dict[str, Any]]]:
+    for path in sorted(Path(state_dir, "proofs").glob("*.json"), reverse=True):
+        try:
+            with path.open("r", encoding="utf-8") as source:
+                record = json.load(source)
+        except (OSError, ValueError):
+            # A reader can meet a writer partway through a new file, or a writer
+            # can stop before the complete JSON record reaches disk.
+            continue
+        if (isinstance(record, dict) and isinstance(record.get("proof"), dict)
+                and _proof_key(record["proof"]) is not None and isinstance(record.get("packages"), list)
+                and all(isinstance(package, str) for package in record["packages"])):
+            yield path, record
+
+
+def load_proofs(state_dir: str) -> List[Dict[str, Any]]:
+    newest = {}
+    for _, record in _proof_records(state_dir):
+        proof = record["proof"]
+        newest.setdefault(_proof_key(proof), proof)
+        if len(newest) == PROOF_HISTORY_LIMIT:
+            return list(reversed(newest.values()))
+    for proof in reversed(_load_legacy_proofs(state_dir)):
+        key = _proof_key(proof)
+        if key is not None:
+            newest.setdefault(key, proof)
+        if len(newest) == PROOF_HISTORY_LIMIT:
+            break
+    return list(reversed(newest.values()))
+
+
+def _prune_proof_records(state_dir: str) -> None:
+    proof_keys = set()
+    toolchains = set()
+    for path, record in _proof_records(state_dir):
+        key = _proof_key(record["proof"])
+        assert key is not None
+        toolchain = key[2]
+        in_history = len(proof_keys) < PROOF_HISTORY_LIMIT and key not in proof_keys
+        proof_keys.add(key)
+        if in_history or toolchain not in toolchains:
+            # Keep at least one package inventory for each toolchain, even
+            # after its proof has aged out of the active history.
+            toolchains.add(toolchain)
+            continue
+        try:
+            path.unlink()
+        except (FileNotFoundError, PermissionError):
+            # A Windows reader can keep an older file open. It is already
+            # excluded from the logical history and can be pruned next time.
+            pass
 
 
 def record_proof(state_dir: str, kind: str, inputs_sha256: str, packages: Sequence[str], origin: str) -> None:
@@ -145,22 +202,22 @@ def record_proof(state_dir: str, kind: str, inputs_sha256: str, packages: Sequen
     if kind not in CLOSURE_KINDS:
         raise ValueError(f"unknown closure kind {kind!r}")
     toolchain_sha256 = fingerprint(packages)
-    packages_path = _packages_path(state_dir, toolchain_sha256)
-    if not os.path.isfile(packages_path):
-        _write_atomically(packages_path, "\n".join(sorted(packages)) + "\n")
-    proofs = [
-        proof for proof in load_proofs(state_dir)
-        if (proof.get("kind"), proof.get("inputs_sha256"), proof.get("toolchain_sha256"))
-        != (kind, inputs_sha256, toolchain_sha256)
-    ]
-    proofs.append({
+    proof = {
         "kind": kind,
         "inputs_sha256": inputs_sha256,
         "toolchain_sha256": toolchain_sha256,
         "origin": origin,
         "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    })
-    _write_atomically(_proofs_path(state_dir), json.dumps(proofs[-PROOF_HISTORY_LIMIT:], indent=2) + "\n")
+    }
+    directory = Path(state_dir, "proofs")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{time.time_ns():020d}-{uuid.uuid4().hex}.json"
+    # Publish a complete proof and its package inventory in one immutable
+    # record. No file being read by a preflight or scanner needs replacement.
+    record = json.dumps({"proof": proof, "packages": sorted(packages)})
+    with path.open("x", encoding="utf-8", newline="\n") as target:
+        target.write(record + "\n")
+    _prune_proof_records(state_dir)
 
 
 def find_proof(state_dir: str, kind: str, inputs_sha256: str, toolchain_sha256: str) -> Optional[Dict[str, Any]]:
@@ -177,6 +234,9 @@ def latest_proof(state_dir: str, kind: str) -> Optional[Dict[str, Any]]:
 
 
 def proof_packages(state_dir: str, toolchain_sha256: str) -> Optional[List[str]]:
+    for _, record in _proof_records(state_dir):
+        if record["proof"]["toolchain_sha256"] == toolchain_sha256:
+            return record["packages"]
     try:
         with open(_packages_path(state_dir, toolchain_sha256), "r", encoding="utf-8") as source:
             return [line.strip() for line in source if line.strip()]
