@@ -164,6 +164,10 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     clockOrigin_ = clockMicroseconds_();
 }
 
+void FlowGame::EnableTraceLogging() {
+    hostMemory_->SetLogLevel(LogLevel::Trace);
+}
+
 FlowGame::~FlowGame() {
     // A third-party overlay or a second CaptureEngine hook in this process changes the Present path the scenarios
     // check: the numbers are then not about CE. Reported before the hook shuts down, at the scenario's end.

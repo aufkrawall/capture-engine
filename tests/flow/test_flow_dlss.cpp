@@ -57,6 +57,43 @@ TEST(FlowDLSS, ConfigurationBurstsAndLifecycleCallsPreserveRuntimeResults) {
     EXPECT_NE(text.find("[SL LIFECYCLE] slFreeResources returned feature=DLSS-G arg=17 result="), std::string::npos);
 }
 
+TEST(FlowDLSS, ResizeAndRetirementReportTheDestroyDispatchBeforeNativeRelease) {
+    FlowGame game(CurrentTestName());
+    game.EnableTraceLogging();
+    auto options = StreamlineGameOptions();
+    options.swapchain = SwapchainKind::kNative;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(20)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.ResizeSwapchain(352, 208)) << game.Error();
+
+    const HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+    ASSERT_NE(interposer, nullptr);
+    const auto setLoaded = reinterpret_cast<PFun_slSetFeatureLoaded*>(GetProcAddress(interposer, "slSetFeatureLoaded"));
+    const auto freeResources = reinterpret_cast<PFun_slFreeResources*>(GetProcAddress(interposer, "slFreeResources"));
+    ASSERT_TRUE(setLoaded && freeResources);
+    ASSERT_EQ(freeResources(sl::kFeatureDLSS_G, sl::ViewportHandle{0u}), sl::Result::eOk);
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kNative)) << game.Error();
+    ASSERT_EQ(setLoaded(sl::kFeatureDLSS_G, false), sl::Result::eOk);
+
+    std::ifstream log(game.LogDirectory() + "/hook_debug.log");
+    ASSERT_TRUE(log.is_open());
+    const std::string text{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
+    const auto free = text.find("[SL LIFECYCLE] slFreeResources returned");
+    const auto destroyed = text.find("[SL LIFETIME] slHookSwapChainDestroyed returned", free);
+    const auto release = text.find("[SL LIFETIME] native Release sc=", destroyed);
+    const auto unloaded = text.find("[SL LIFECYCLE] slSetFeatureLoaded enter feature=DLSS-G arg=0", release);
+    ASSERT_NE(free, std::string::npos);
+    ASSERT_NE(destroyed, std::string::npos) << game.LogDirectory();
+    ASSERT_NE(release, std::string::npos) << game.LogDirectory();
+    ASSERT_NE(unloaded, std::string::npos);
+    // The Release names the module that dropped the proxy's reference and what the chain still holds.
+    const std::string releaseLine = text.substr(release, text.find('\n', release) - release);
+    EXPECT_NE(releaseLine.find("caller=sl.dlss_g.dll+0x"), std::string::npos) << releaseLine;
+    EXPECT_NE(releaseLine.find("returnedRefs="), std::string::npos) << releaseLine;
+    ExpectNoDebugLayerErrors();
+}
+
 // A menu toggle seconds apart, as in the 0.1.6951 Talos/GTA runs.
 TEST(FlowDLSS, MenuTogglesKeepTheOverlayAndPublishTheRuntimeState) {
     FlowGame game(CurrentTestName());

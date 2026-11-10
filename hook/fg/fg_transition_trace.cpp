@@ -36,6 +36,7 @@ BoundedDiagnosticHistory<TransitionRecord, 256> g_History;
 BoundedDiagnosticHistory<PublishedFGState, 2> g_PublishedState;
 
 std::atomic<void*> g_PendingStartupOutput{nullptr};
+std::atomic<void*> g_PendingNativePresent{nullptr};
 std::atomic<bool> g_PendingTitleMarker{false};
 std::mutex g_StreamlineStartupMutex;
 uint64_t g_StreamlineHandoff = 0;
@@ -68,6 +69,7 @@ void RecordStreamlineStartupHandoff(void* swapchain, int64_t timeUs) {
         g_FirstTitleThread = 0;
         g_PendingTitleMarker.store(true, std::memory_order_release);
         g_PendingStartupOutput.store(swapchain, std::memory_order_release);
+        g_PendingNativePresent.store(swapchain, std::memory_order_release);
     }
     HookLogImportant("[SL STARTUP] handoff=%llu sc=%p qpcUs=%lld", static_cast<unsigned long long>(handoff), swapchain,
                      static_cast<long long>(timeUs));
@@ -94,6 +96,27 @@ void RecordStreamlineStartupTitlePresent(uint32_t frameId, int64_t timeUs) {
     HookLogImportant("[SL STARTUP] handoff=%llu firstTitlePresentStart frame=%u tid=0x%04lX qpcUs=%lld "
                      "sinceHandoffUs=%lld", static_cast<unsigned long long>(handoff), frameId, thread,
                      static_cast<long long>(timeUs), static_cast<long long>(elapsedUs));
+}
+
+void RecordStreamlineStartupNativePresent(void* swapchain, const char* method) {
+    if (!swapchain || g_PendingNativePresent.load(std::memory_order_relaxed) != swapchain) {
+        return;
+    }
+    const auto timeUs = PerfLogger::GetQpcUs();
+    uint64_t handoff = 0;
+    int64_t handoffUs = 0;
+    {
+        std::lock_guard lock(g_StreamlineStartupMutex);
+        if (g_PendingNativePresent.load(std::memory_order_relaxed) != swapchain || timeUs < g_StreamlineHandoffUs) {
+            return;
+        }
+        g_PendingNativePresent.store(nullptr, std::memory_order_relaxed);
+        handoff = g_StreamlineHandoff;
+        handoffUs = g_StreamlineHandoffUs;
+    }
+    HookLogImportant("[SL STARTUP] handoff=%llu sc=%p firstNativePresent=%s qpcUs=%lld sinceHandoffUs=%lld",
+                     static_cast<unsigned long long>(handoff), swapchain, method,
+                     static_cast<long long>(timeUs), static_cast<long long>(timeUs - handoffUs));
 }
 
 StreamlineStartupOutput BeginStreamlineStartupOutput(void* swapchain) {

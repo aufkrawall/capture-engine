@@ -18,6 +18,7 @@ struct StreamlineStartupOutput {
 };
 void RecordStreamlineStartupHandoff(void* swapchain, int64_t timeUs);
 void RecordStreamlineStartupTitlePresent(uint32_t frameId, int64_t timeUs);
+void RecordStreamlineStartupNativePresent(void* swapchain, const char* method);
 StreamlineStartupOutput BeginStreamlineStartupOutput(void* swapchain);
 void EndStreamlineStartupOutput(const StreamlineStartupOutput& output);
 

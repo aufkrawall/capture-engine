@@ -2,6 +2,7 @@
 #include "ngx_fg_observation.h"
 #include "common/logging/log_meter.h"
 #include "hook/hooking/module_export_resolver.h"
+#include "hook/metrics/perf_logger.h"
 #include "hook/runtime/graphics_runtime_module_policy.h"
 
 #include <array>
@@ -193,7 +194,14 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
 
     if (params)
         EnsureVTableHooks(params);
+    const bool timeFeatureCreate = ce::ngx_lifecycle::IsFrameGenerationFeature(featureID) && HookTraceLoggingEnabled();
+    const auto enteredUs = timeFeatureCreate ? PerfLogger::GetQpcUs() : 0;
     const NVSDK_NGX_Result res = create();
+    if (timeFeatureCreate) {
+        HookLogImportant("[NGX CREATE] frame-generation feature=%d forwardEnterQpcUs=%lld forwardUs=%lld result=0x%X",
+                         featureID, static_cast<long long>(enteredUs),
+                         static_cast<long long>(PerfLogger::GetQpcUs() - enteredUs), static_cast<unsigned>(res));
+    }
     TrackNgxFeatureCreation(featureID, res, handle);
 
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())

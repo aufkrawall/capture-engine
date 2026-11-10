@@ -4,6 +4,8 @@
 
 #include "hook/fg/fg_transition_trace.h"
 #include "hook/metrics/perf_logger.h"
+#include "hook/present/backbuffer_reference_trace.h"
+#include "hook/present/swapchain_lifetime_witness.h"
 #include "streamline_hook_internal.h"
 #include "streamline_inline_hook_batch.h"
 
@@ -39,15 +41,21 @@ struct LifecycleExport {
     }
 
     void Queue(HMODULE module, StreamlineInlineHookBatch& batch, Function* detour) {
-        if (auto* address = GetProcAddress(module, name)) {
-            batch.Queue(reinterpret_cast<void*>(address), reinterpret_cast<void*>(detour), original, installed,
-                        target, name, StreamlineInlineHookBatch::ForeignEntryPolicy::kLeaveToOwner);
-        }
+        QueueAddress(reinterpret_cast<void*>(GetProcAddress(module, name)), batch, detour);
+    }
+
+    void QueueAddress(void* address, StreamlineInlineHookBatch& batch, Function* detour) {
+        batch.Queue(address, reinterpret_cast<void*>(detour), original, installed, target, name,
+                    StreamlineInlineHookBatch::ForeignEntryPolicy::kLeaveToOwner);
     }
 };
 
 LifecycleExport<PFun_slSetFeatureLoaded> g_SetFeatureLoaded{"slSetFeatureLoaded"};
 LifecycleExport<PFun_slFreeResources> g_FreeResources{"slFreeResources"};
+// Streamline 2.x sl.api/internal.h's PFunSwapchainDestroyedBefore. We only
+// observe the provider's dispatch. The title and interposer own the callback.
+LifecycleExport<void(IDXGISwapChain*)> g_SwapchainDestroyed{"slHookSwapChainDestroyed"};
+std::atomic<HMODULE> g_InspectedDlssg{nullptr};
 
 template <typename Function, typename Argument>
 sl::Result Observe(LifecycleExport<Function>& api, sl::Feature feature, const Argument& argument, uint32_t value) {
@@ -83,6 +91,30 @@ sl::Result FreeResources(sl::Feature feature, const sl::ViewportHandle& viewport
     return Observe(g_FreeResources, feature, viewport, static_cast<uint32_t>(viewport));
 }
 
+void SwapchainDestroyed(IDXGISwapChain* chain) {
+    auto* original = g_SwapchainDestroyed.Original();
+    if (!original) {
+        return;
+    }
+    if (HookIsShuttingDown()) {
+        original(chain);
+        return;
+    }
+    const auto witness = swapchain_lifetime_witness::Describe(chain);
+    if (witness.state != swapchain_lifetime_witness::ChainState::kAlive) {
+        original(chain);
+        return;
+    }
+    const auto enteredUs = PerfLogger::GetQpcUs();
+    HookLogImportant("[SL LIFETIME] slHookSwapChainDestroyed enter sc=%p lifetime=%llu qpcUs=%lld",
+                     chain, static_cast<unsigned long long>(witness.generation), static_cast<long long>(enteredUs));
+    original(chain);
+    HookLogImportant("[SL LIFETIME] slHookSwapChainDestroyed returned sc=%p lifetime=%llu elapsedUs=%lld",
+                     chain, static_cast<unsigned long long>(witness.generation),
+                     static_cast<long long>(PerfLogger::GetQpcUs() - enteredUs));
+    BackBufferReferenceTrace_Log(chain, "slHookSwapChainDestroyed return", false);
+}
+
 }  // namespace
 
 void QueueInterposerDiagnostics(HMODULE module, StreamlineInlineHookBatch& batch) {
@@ -90,9 +122,26 @@ void QueueInterposerDiagnostics(HMODULE module, StreamlineInlineHookBatch& batch
     g_FreeResources.Queue(module, batch, &FreeResources);
 }
 
+void QueueDlssgDestroyDiagnostic(HMODULE module, StreamlineInlineHookBatch& batch) {
+    if (!HookTraceLoggingEnabled() || g_InspectedDlssg.exchange(module, std::memory_order_acq_rel) == module) {
+        return;
+    }
+    const auto lookup = reinterpret_cast<PFN_slGetPluginFunction>(GetProcAddress(module, "slGetPluginFunction"));
+    HMODULE owner = nullptr;
+    void* target = lookup ? lookup(g_SwapchainDestroyed.name) : nullptr;
+    if (!target || !DoesAddressBelongToLoadedModule(target, &owner, nullptr, 0, nullptr) || owner != module) {
+        HookLogImportant("[SL LIFETIME] slHookSwapChainDestroyed unavailable in DLSS-G module %p", module);
+        return;
+    }
+    g_SwapchainDestroyed.QueueAddress(target, batch, &SwapchainDestroyed);
+}
+
 void OnModuleUnloaded(const void* moduleBase, size_t moduleSize) {
     g_SetFeatureLoaded.OnUnload(moduleBase, moduleSize);
     g_FreeResources.OnUnload(moduleBase, moduleSize);
+    g_SwapchainDestroyed.OnUnload(moduleBase, moduleSize);
+    HMODULE inspected = reinterpret_cast<HMODULE>(const_cast<void*>(moduleBase));
+    g_InspectedDlssg.compare_exchange_strong(inspected, nullptr, std::memory_order_acq_rel);
 }
 
 }  // namespace ce::streamline_lifecycle

@@ -56,6 +56,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Streamline swapchain-destroy diagnostics:** with trace logging, the log records when Streamline calls its swapchain-destroy callback, which module releases the native chain and how many references it still holds, and how long the NGX feature creation takes. This shows whether a refused FSR swapchain was pinned by a skipped Streamline cleanup.
+
 - **DLSS Frame Generation teardown diagnostics:** record the title's Streamline feature-load and resource-release calls, their results, and the options flags that govern retention when frame generation is off.
 
 - **DX12 swapchain replacement diagnostics:** report the back-buffer reference balance for the affected window and resize, with caller stacks for the first GetBuffer sites. A refused replacement retries the minimal cleanup only when Capture Engine released a startup reference.

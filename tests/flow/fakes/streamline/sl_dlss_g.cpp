@@ -47,6 +47,10 @@ struct PresentJob {
     UINT flags = 0;
 };
 
+__attribute__((noinline)) void SwapchainDestroyed(IDXGISwapChain* chain) {
+    Log(kModule, "slHookSwapChainDestroyed called for real %p", chain);
+}
+
 class DLSSGProxySwapChain final : public ForwardingSwapChain {
 public:
     DLSSGProxySwapChain(IDXGISwapChain4* real, ID3D12CommandQueue* presentQueue, ID3D12CommandQueue* gameQueue,
@@ -74,6 +78,8 @@ public:
         presenter_.join();
         WaitForQueue(presentQueue_.Get());
         CloseHandle(fenceEvent_);
+        realBuffers_.clear();
+        SwapchainDestroyed(real_);
         Log(kModule, "proxy swapchain %p destroyed (real %p)", this, real_);
     }
 
@@ -354,6 +360,8 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&DLSSGSetOptions);
     if (std::strcmp(name, "slDLSSGGetState") == 0)
         return reinterpret_cast<void*>(&DLSSGGetState);
+    if (std::strcmp(name, "slHookSwapChainDestroyed") == 0)
+        return reinterpret_cast<void*>(&SwapchainDestroyed);
     if (std::strcmp(name, "flowCreateSwapChainForHwnd") == 0)
         return reinterpret_cast<void*>(&CreateProxySwapChainForHwnd);
     if (std::strcmp(name, "flowCurrentMode") == 0)

@@ -11,8 +11,11 @@
 #include <shared_mutex>
 #include <string>
 
+#include "common/logging/log_meter.h"
 #include "hook/hooking/inline_hook.h"
 #include "dxgi_shared.h"
+#include "hook/metrics/perf_logger.h"
+#include "hook/overlay/overlay_compat.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/hook_common.h"
 #include "resize_reconcile_hook_policy.h"
@@ -36,9 +39,13 @@ std::atomic<QueryInterfaceFn> g_OriginalQueryInterface{nullptr};
 std::atomic<AddRefFn> g_OriginalAddRef{nullptr};
 std::atomic<ReleaseFn> g_OriginalRelease{nullptr};
 std::atomic<GetBufferFn> g_OriginalGetBuffer{nullptr};
+std::atomic<ReleaseFn> g_OriginalNativeSwapchainRelease{nullptr};
+std::atomic<IDXGISwapChain*> g_NativeReleaseTraceChain{nullptr};
+std::atomic<uint32_t> g_NativeReleaseCount{0};
 void** g_ResourceVtable = nullptr;
 // The GetBuffer body hook is installed at most once per process (never removed).
 bool g_GetBufferInstallAttempted = false;
+bool g_NativeReleaseInstallAttempted = false;
 std::mutex g_InstallMutex;
 
 constexpr size_t kGetBufferStackLimit = 4;
@@ -150,6 +157,57 @@ void PublishGetBufferTrampoline(void* trampoline, void*) {
     g_OriginalGetBuffer.store(reinterpret_cast<GetBufferFn>(trampoline), std::memory_order_release);
 }
 
+ULONG STDMETHODCALLTYPE HookNativeSwapchainRelease(IUnknown* self) {
+    const auto original = g_OriginalNativeSwapchainRelease.load(std::memory_order_acquire);
+    const auto* caller = __builtin_return_address(0);
+    auto* chain = reinterpret_cast<IDXGISwapChain*>(self);
+    if (g_NativeReleaseTraceChain.load(std::memory_order_relaxed) != chain || IsProcessTerminating()) {
+        return original(self);
+    }
+
+    // This is the real Release of an already owned reference. The snapshot and
+    // the post-call log use its address as an identity and never dereference it.
+    static const void* traceImage = [] {
+        void* image = nullptr;
+        RtlPcToFileHeader(reinterpret_cast<void*>(&HookNativeSwapchainRelease), &image);
+        return image;
+    }();
+    HMODULE callerModule = nullptr;
+    char path[MAX_PATH] = {};
+    if (!ce::overlay_compat::module_address_cache::Lookup(caller, &callerModule, path, sizeof(path), nullptr) ||
+        callerModule == traceImage ||
+        DXGIShared::IsAddressInsideSystemDXGI(caller)) {
+        return original(self);
+    }
+    const auto witness = ce::swapchain_lifetime_witness::Describe(chain);
+    bool watched = false;
+    {
+        std::shared_lock lock(g_TraceMutex, std::try_to_lock);
+        watched = lock.owns_lock() && g_TrackedChain == chain && witness.generation == g_WitnessGeneration &&
+                  witness.state == ce::swapchain_lifetime_witness::ChainState::kAlive;
+    }
+    if (!watched) {
+        return original(self);
+    }
+    const auto enteredUs = PerfLogger::GetQpcUs();
+    const ULONG remaining = original(self);
+    const auto call = g_NativeReleaseCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (remaining <= 1 || ce::log_meter::ShouldLogCadence(call, 12, 128)) {
+        const char* name = strrchr(path, '\\');
+        const auto offset = reinterpret_cast<uintptr_t>(caller) - reinterpret_cast<uintptr_t>(callerModule);
+        HookLogImportant("[SL LIFETIME] native Release sc=%p lifetime=%llu caller=%s+0x%llX returnedRefs=%lu "
+                         "enterQpcUs=%lld returnQpcUs=%lld call=%u",
+                         chain, static_cast<unsigned long long>(witness.generation), name ? name + 1 : path,
+                         static_cast<unsigned long long>(offset), remaining, static_cast<long long>(enteredUs),
+                         static_cast<long long>(PerfLogger::GetQpcUs()), call);
+    }
+    return remaining;
+}
+
+void PublishNativeSwapchainReleaseTrampoline(void* trampoline, void*) {
+    g_OriginalNativeSwapchainRelease.store(reinterpret_cast<ReleaseFn>(trampoline), std::memory_order_release);
+}
+
 template <typename Fn>
 bool PatchSlot(void** vtable, size_t slot, void* detour, std::atomic<Fn>& original) {
     void* current = *static_cast<void* volatile*>(&vtable[slot]);
@@ -177,7 +235,7 @@ void RestoreSlot(void** vtable, size_t slot, void* detour, void* original) {
     }
 }
 
-void InstallHooks(void** resourceVtable, void** swapChainVtable) {
+void InstallHooks(void** resourceVtable, void** swapChainVtable, bool traceNativeRelease) {
     std::lock_guard<std::mutex> lock(g_InstallMutex);
     if (!g_ResourceVtable && resourceVtable) {
         const bool qi = PatchSlot(resourceVtable, kQueryInterfaceSlot, reinterpret_cast<void*>(&HookQueryInterface),
@@ -214,6 +272,17 @@ void InstallHooks(void** resourceVtable, void** swapChainVtable) {
             "hooked=%d%s",
             getBufferTarget, swapChainVtable, getBuffer ? 1 : 0,
             getBuffer ? "" : " - references handed out by GetBuffer are attributed to DXGI");
+    }
+    if (traceNativeRelease && !g_NativeReleaseInstallAttempted && swapChainVtable) {
+        g_NativeReleaseInstallAttempted = true;
+        void* const target = *static_cast<void* volatile*>(&swapChainVtable[kReleaseSlot]);
+        const bool hooked = DXGIShared::IsAddressInsideSystemDXGI(target) &&
+                            InlineHook::InstallDeepHookPublishedWithRetry(
+                                "BackBufferRefTrace", "native Release", target,
+                                reinterpret_cast<void*>(&HookNativeSwapchainRelease),
+                                PublishNativeSwapchainReleaseTrampoline, nullptr,
+                                ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize) != nullptr;
+        HookLogImportant("[SL LIFETIME] native Release observation target=%p hooked=%d", target, hooked ? 1 : 0);
     }
 }
 
@@ -265,7 +334,9 @@ void BackBufferReferenceTrace_Track(IDXGISwapChain* swapChain, HWND window, UINT
         return;  // not a D3D12 chain
     }
 
-    InstallHooks(*reinterpret_cast<void***>(buffers[0]), *reinterpret_cast<void***>(swapChain));
+    const bool traceNativeRelease =
+        HookTraceLoggingEnabled() && ce::overlay_compat::IsStreamlineInterposerModuleLoaded();
+    InstallHooks(*reinterpret_cast<void***>(buffers[0]), *reinterpret_cast<void***>(swapChain), traceNativeRelease);
 
     const auto witness = ce::swapchain_lifetime_witness::Describe(swapChain);
     const char* const resizeSource = source ? source : "resize";
@@ -282,6 +353,8 @@ void BackBufferReferenceTrace_Track(IDXGISwapChain* swapChain, HWND window, UINT
             site.address.store(0, std::memory_order_relaxed);
         }
         g_TrackedChain = swapChain;
+        g_NativeReleaseCount.store(0, std::memory_order_relaxed);
+        g_NativeReleaseTraceChain.store(traceNativeRelease ? swapChain : nullptr, std::memory_order_relaxed);
         g_TrackedWindow = window;
         g_WitnessGeneration = witness.generation;
         g_RegisteredAtMs = ce::hook_clock::TickCount64();
@@ -427,8 +500,8 @@ bool LogTrace(IDXGISwapChain* swapChain, HWND window, const char* source, bool d
 
 }  // namespace
 
-bool BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source) {
-    return LogTrace(swapChain, nullptr, source, true);
+bool BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source, bool detailed) {
+    return LogTrace(swapChain, nullptr, source, detailed);
 }
 
 bool BackBufferReferenceTrace_LogForWindow(HWND window, const char* source, bool detailed) {

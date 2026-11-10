@@ -519,6 +519,12 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
             !ce::streamline_interposer_takeover::IsSupersededInterposerModule(module)) {
             ce::streamline_lifecycle::QueueInterposerDiagnostics(module, coreHookBatch);
         }
+        // A feature plugin exports neither slSetTag nor slEvaluateFeature, so its generation always
+        // classifies as Unknown. The destroy callback is found through slGetPluginFunction and
+        // verified to live inside the plugin image, which only a 2.x plugin satisfies.
+        if (moduleBaseName && !_stricmp(moduleBaseName, "sl.dlss_g.dll")) {
+            ce::streamline_lifecycle::QueueDlssgDestroyDiagnostic(module, coreHookBatch);
+        }
         hookedAnything |= coreHookBatch.Commit() != 0;
 
         if (shouldHookCoreExports && (originalSetTag || originalEvaluateFeature) && !mayHookAbiSensitive) {

@@ -115,6 +115,7 @@ public:
     // The game's D3D12 setup: the debug layer, WARP device, direct queue, a 3-buffer flip-discard swapchain of
     // `swapchain`.
     bool CreateDeviceAndSwapchain(const GameOptions& options = {});
+    void EnableTraceLogging();
 
     // Replaces the swapchain with one of `kind` on the same device and queue (an FSR swapchain's FFX
     // contexts go with it), as a game does when its frame generation setting changes runtime.

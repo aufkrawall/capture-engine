@@ -85,7 +85,7 @@ std::string DescribeForeignHolders(const std::map<std::string, long>& netByModul
 // and installs the counting hooks once. Call after a successful D3D12 resize.
 void BackBufferReferenceTrace_Track(IDXGISwapChain* swapChain, HWND window, UINT bufferCount, const char* source);
 // Reports only the matching registration, without acquiring COM references.
-bool BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source);
+bool BackBufferReferenceTrace_Log(IDXGISwapChain* swapChain, const char* source, bool detailed = true);
 bool BackBufferReferenceTrace_LogForWindow(HWND window, const char* source, bool detailed);
 // Restores the patched vtable slots (process shutdown).
 void BackBufferReferenceTrace_Uninstall();

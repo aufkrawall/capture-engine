@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-11-10 - GTA second run (0.1.7496): first-output overlay and destroy-order diagnostics
+
+- Session `20261110_171829` (0.1.7496, CE override Streamline 2.14.16-rc2). Startup: DLSS-G handoff to first native output took about 311 ms, the output callback 7 ms. The first replacement output recorded inherited overlay coverage and the next output rebuilt a renderer that was already warm. CE now prepares the replacement chain on its verified native creation queue at the first native output and keeps the renderer across the resize.
+- Switch crash: the same E_ACCESSDENIED chain. `slFreeResources` (11 ms) and `slSetFeatureLoaded(false)` returned success at 17:20:28.336/.347, then the FidelityFX create at .509 was refused with `sl.common.dll=+6` still held, acquired through sl.dlss_g's post-resize path (`sl.common+0x7D57A` from `sl.dlss_g+0x4E567/0x505D2/0x554ED`). The log cannot say whether the proxy died before or after the unload, so it cannot separate a skipped destroy callback from a failed one. New `[SL LIFETIME]` lines (destroy callback enter/return, native Release caller and returned refs) answer that on the next run.
+- Test-found bug in the diagnostic itself: the destroy hook was gated on `mayHookV2Abi`, which is always false for sl.dlss_g (no `slSetTag` export), so it never installed on the real plugin either. Fixed; `FlowDLSS.ResizeAndRetirementReportTheDestroyDispatchBeforeNativeRelease` pins the order free -> destroy -> native Release.
+- Not done, deliberately: reordering the title's `slSetFeatureLoaded(false)` after the proxy Release (NVIDIA's documented order). It would change the call stream into a foreign runtime and a Release-time call is re-entrant into the interposer; decide from the next run's `[SL LIFETIME]` ordering. A/B with the override at 2.14.0 is still pending.
+
 ### 2026-11-10 - GTA DLSS startup timing and DLSS-to-FSR teardown evidence
 
 - Session `20261110_163502` (0.1.7495). The loading swapchain was destroyed at 16:36:48.326. Native DLSS-G create returned at .360, DLSS-G enable was forwarded at .459, and the first native output reached CE at .569 with a successful overlay submission. NGX's FG feature creation took about 80 ms within that interval. The trace does not show what delayed earlier long black screens or what was scanned out during this interval.

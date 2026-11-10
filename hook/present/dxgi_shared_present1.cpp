@@ -159,6 +159,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return ExecuteRuntimeOwnedOutputPresent(pSwapChain, SyncInterval, Flags, pPresentParameters, true);
     }
     const bool originatorFromStreamline = origin.fromStreamline;
+    if (originatorFromStreamline) {
+        ce::fg_session::RecordStreamlineStartupNativePresent(pSwapChain, "Present1");
+    }
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     const bool callerFromStreamlineModule = originatorFromStreamline || callerStreamlineModule;
     const bool callerFromFFXFrameGenerationModule = originatorFromFFXFrameGeneration || callerFFXFrameGenerationModule;

@@ -273,6 +273,9 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     const PresentOrigin& origin =
         IsPresentInterceptedBelowForeignChain() ? ResolvePresentOriginatorBelowForeignChain() : caller.origin;
     const bool originatorFromStreamline = origin.fromStreamline;
+    if (originatorFromStreamline) {
+        ce::fg_session::RecordStreamlineStartupNativePresent(pSwapChain, "Present");
+    }
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     ctx.callerFromStreamlineModule = originatorFromStreamline || caller.streamlineModule;
     ctx.callerFromFFXFrameGenerationModule = originatorFromFFXFrameGeneration || caller.ffxFrameGenerationModule;
@@ -308,11 +311,11 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
         ctx.observerOnlyMode, ctx.streamlineSyntheticReentrant, ctx.callerFromStreamlineModule, ctx.api == APIType::D3D12,
         ctx.streamlineFGRunning, ctx.streamlineStartupHandoffInProgress, ctx.recentLargePresentGap, ctx.matchesExpectedPresentThread,
         ctx.postSLConfirmedRendering);
+    ctx.startupNativeDlssgOutput =
+        ctx.startupTopLevelCandidate && ce::streamline_runtime_policy::IsStreamlineDLSSGFeatureModuleName(origin.module);
     ctx.stalePostFSRStartupHandoffPresentHookRisk = ctx.api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
                                      ctx.presentBypassAvailable, ctx.steamOverlayLoaded, ctx.api == APIType::D3D12,
                                      ctx.inWrapperPresent, ctx.wrappedSwapchain, ctx.hadFSRFGPhase, ctx.startupTopLevelCandidate);
-    ctx.startupNativeDlssgOutput =
-        ctx.startupTopLevelCandidate && ce::streamline_runtime_policy::IsStreamlineDLSSGFeatureModuleName(origin.module);
     ctx.startupHandoffSteamRisk = ctx.staleThirdPartyPresentHookRisk || ctx.stalePostFSRStartupHandoffPresentHookRisk;
     ctx.postFSRRuntimeStartupHandoffRisk = ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
         ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, ctx.startupTopLevelCandidate, ctx.safePostFSRBootstrapPath,
