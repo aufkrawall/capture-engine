@@ -243,7 +243,7 @@ struct SwapchainData {
     // would arrive here.
     std::atomic<uint32_t> presentChainLogState{0};
     // Window/monitor facts that decide whether the compositor may let this
-    // swapchain flip on its own (vulkan_presentation_path_policy.h): the
+    // swapchain flip on its own (presentation_path_policy.h): the
     // signature last logged, and a present counter that re-reads them on a
     // sparse cadence so a window that changes after creation is logged once.
     std::atomic<uint32_t> presentationPathLogState{0};

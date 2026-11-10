@@ -2,11 +2,11 @@
 
 #include <cstring>
 
-#include "hook/vulkan_layer/vulkan_presentation_path_policy.h"
+#include "hook/present/presentation_path_policy.h"
 
 namespace {
 
-using namespace ce::vulkan_presentation_path;
+using namespace ce::presentation_path;
 
 // A borderless window covering a 4K monitor at 150 % scaling, as DXVK creates
 // it for a fullscreen D3D9 title (Mirror's Edge, session 20261018_155920).

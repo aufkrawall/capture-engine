@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <cstdio>
 
-// Why the desktop compositor may be drawing a Vulkan swapchain instead of
-// letting it flip on its own.
+// Why the desktop compositor may be drawing a swapchain instead of letting it
+// flip on its own. Shared by the Vulkan layer and the DXGI scanout-stall report
+// (scanout_stall_report.h); the facts differ in how each collects them, the
+// judgement is one.
 //
 // Mirror's Edge on DXVK (sessions 20261018_155920 and 20261018_161139): the
 // game presented ~1100 times a second with VK_PRESENT_MODE_IMMEDIATE_KHR, yet
@@ -18,7 +20,7 @@
 //
 // Pure: the layer collects the facts with user32, this file only judges them,
 // so the judgement is unit-tested without a window.
-namespace ce::vulkan_presentation_path {
+namespace ce::presentation_path {
 
 struct Rect {
     int32_t left = 0;
@@ -167,4 +169,4 @@ inline uint32_t FactsSignature(const WindowFacts& facts) {
     return hash == 0 ? 1u : hash;
 }
 
-}  // namespace ce::vulkan_presentation_path
+}  // namespace ce::presentation_path

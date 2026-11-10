@@ -241,7 +241,7 @@ stream is unavailable, denied, failed, or two seconds stale.
     restarts `m_display`'s interval.
   - Why a Vulkan swapchain is composed at all: the layer logs `presentation path at <site> ... blockers=` per
     swapchain (window vs monitor in physical pixels, extent vs client, DPI virtualization, `WS_EX_LAYERED`, presenter
-    modules at create; `vulkan_presentation_path_policy.h`, rechecked every 512 presents, change-gated). Open
+    modules at create; `hook/present/presentation_path_policy.h`, rechecked every 512 presents, change-gated). Open
     (2026-10-18): Mirror's Edge/DXVK is composed with CE for the whole session although it presents IMMEDIATE at
     ~1100/s; a CE-free baseline was not taken, so whether CE causes it is unknown. `20261018_162817` logged
     `blockers=none` (window = monitor 3840x2160, extent = client, dpi 144/144, topmost) and `dispbroker.dll=1

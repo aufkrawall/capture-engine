@@ -2,7 +2,7 @@
 #include "vulkan_flip_metering_bridge.h"
 #include "vulkan_queue_depth_pacing.h"
 #include "vulkan_present_boundary.h"
-#include "vulkan_presentation_path_policy.h"
+#include "hook/present/presentation_path_policy.h"
 #include "vulkan_swapchain_result_policy.h"
 
 #include "common/logging/log_meter.h"
@@ -73,7 +73,7 @@ void PublishVblankCeiling(const DeviceDispatch* disp, const VkSwapchainCreateInf
     }
 }
 
-namespace path = ce::vulkan_presentation_path;
+namespace path = ce::presentation_path;
 
 // Reads the window in physical pixels whatever the calling thread's DPI
 // context is, and restores that context. Only queries that never send a window
