@@ -44,7 +44,10 @@ TEST(FlowSwitch, PostFSRDLSSWarmResumeKeepsTheOverlay) {
 // The menu switches of the 0.1.6951 runs, each in one frame: FSR FG on -> DLSS FG on (the FidelityFX swapchain
 // replaced by Streamline's), DLSS FG on -> FSR FG on, FSR FG on -> all off (a native swapchain). Talos composes
 // FSR FG through the present callback, GTA without one over a 1x1 UI placeholder.
-void SwitchRuntimesWithFrameGenerationOn(FlowGame& game, bool presentCallback, FSRUiResource ui) {
+// unloadDlssgFirst: GTA unloads DLSS-G (slFreeResources, slSetFeatureLoaded(false)) while its swapchain proxy is still
+// alive, and the FidelityFX swapchain for the window is created after the proxy's release (session 20261110_182518).
+void SwitchRuntimesWithFrameGenerationOn(FlowGame& game, bool presentCallback, FSRUiResource ui,
+                                         bool unloadDlssgFirst = false) {
     GameOptions options;
     options.streamline = true;
     options.swapchain = SwapchainKind::kFidelityFX;
@@ -61,6 +64,9 @@ void SwitchRuntimesWithFrameGenerationOn(FlowGame& game, bool presentCallback, F
     ExpectPublished(game, 1, 2, "FSR FG -> DLSS FG");
 
     ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    if (unloadDlssgFirst) {
+        ASSERT_TRUE(game.UnloadDLSSG()) << game.Error();
+    }
     ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kFidelityFX)) << game.Error();
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, presentCallback)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
@@ -82,6 +88,12 @@ TEST(FlowSwitch, TalosStyleRuntimeSwitchesKeepTheOverlay) {
 TEST(FlowSwitch, GTAStyleRuntimeSwitchesKeepTheOverlay) {
     FlowGame game(CurrentTestName());
     SwitchRuntimesWithFrameGenerationOn(game, false, FSRUiResource::kPlaceholder);
+}
+
+// GTA V Enhanced's real order at DLSS FG -> FSR FG: DLSS-G is unloaded before its swapchain proxy is released.
+TEST(FlowSwitch, GTAStyleSwitchAfterTheDLSSUnloadKeepsTheOverlayAndCreatesTheFSRChain) {
+    FlowGame game(CurrentTestName());
+    SwitchRuntimesWithFrameGenerationOn(game, false, FSRUiResource::kPlaceholder, true);
 }
 
 TEST(FlowSwitch, FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches) {

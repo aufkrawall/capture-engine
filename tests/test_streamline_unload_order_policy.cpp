@@ -23,6 +23,22 @@ Capabilities Ready() {
     return capabilities;
 }
 
+TEST(StreamlineUnloadOrderPolicy, StreamlineModulesAreRecognisedByName) {
+    using ce::streamline_unload_order::IsStreamlineModuleName;
+    EXPECT_TRUE(IsStreamlineModuleName("sl.interposer.dll"));
+    EXPECT_TRUE(IsStreamlineModuleName("SL.DLSS_G.DLL"));
+    EXPECT_TRUE(IsStreamlineModuleName("sl.common.dll"));
+    EXPECT_FALSE(IsStreamlineModuleName(nullptr));
+    EXPECT_FALSE(IsStreamlineModuleName(""));
+    EXPECT_FALSE(IsStreamlineModuleName("s"));
+    EXPECT_FALSE(IsStreamlineModuleName("sl.dll"));
+    EXPECT_FALSE(IsStreamlineModuleName("sl.x"));
+    EXPECT_FALSE(IsStreamlineModuleName("sl_interposer.dll"));
+    EXPECT_FALSE(IsStreamlineModuleName("dxgi.dll"));
+    EXPECT_FALSE(IsStreamlineModuleName("GTA5_Enhanced.exe"));
+    EXPECT_FALSE(IsStreamlineModuleName("sl.interposer.exe"));
+}
+
 TEST(StreamlineUnloadOrderPolicy, AnUnloadWithALiveChainIsHeld) {
     UnloadOrderPolicy policy;
     const auto outcome = policy.OnUnloadRequested(Ready(), kChain);
@@ -64,6 +80,13 @@ TEST(StreamlineUnloadOrderPolicy, EveryMissingPrerequisiteForwardsTheUnloadAsTod
     {
         UnloadOrderPolicy policy;
         const auto outcome = policy.OnUnloadRequested(Ready(), 0);
+        EXPECT_EQ(outcome.action, RequestAction::kForward);
+        EXPECT_EQ(outcome.reason, ForwardReason::kNoLiveChain);
+    }
+    {
+        // No chain: that is the reason, whichever hook is missing as well.
+        UnloadOrderPolicy policy;
+        const auto outcome = policy.OnUnloadRequested(Capabilities{}, 0);
         EXPECT_EQ(outcome.action, RequestAction::kForward);
         EXPECT_EQ(outcome.reason, ForwardReason::kNoLiveChain);
     }

@@ -6,6 +6,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **GTA V Enhanced crash when switching from DLSS to FSR Frame Generation:** the game unloads DLSS-G before it releases its DLSS swapchain, so Streamline never told DLSS-G that the swapchain was gone and Windows refused the FSR swapchain for the window (`E_ACCESSDENIED`). Capture Engine now holds the unload until that swapchain's proxy released it, which restores Streamline's own order; the game is still answered as if DLSS-G were unloaded. Titles without a live DLSS-G swapchain are unaffected.
+
 - **Inject overlay on the first DirectX 12 DLSS Frame Generation output:** prepare the replacement swapchain's overlay on its verified native presentation queue and reuse the warm renderer across the handoff.
 
 - **False DLSS Frame Generation startup freeze reports:** repeated configuration calls before the first frame no longer trigger a freeze dump. Capture Engine now traces the title's first Present marker and the first Streamline output callback separately.

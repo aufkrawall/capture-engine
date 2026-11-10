@@ -20,6 +20,9 @@ struct StreamlineGame {
     PFun_slGetFeatureFunction* getFeatureFunction = nullptr;
     PFun_slGetNewFrameToken* newFrameToken = nullptr;
     PFun_slSetTagForFrame* setTagForFrame = nullptr;
+    PFun_slSetFeatureLoaded* setFeatureLoaded = nullptr;
+    PFun_slIsFeatureLoaded* isFeatureLoaded = nullptr;
+    PFun_slFreeResources* freeResources = nullptr;
     PFun_slDLSSGSetOptions* dlssgSetOptions = nullptr;
     PFun_slDLSSGGetState* dlssgGetState = nullptr;
     PFun_slReflexSetOptions* reflexSetOptions = nullptr;
@@ -61,6 +64,9 @@ bool FlowGame::BeginStreamline() {
     sl.getFeatureFunction = Export<PFun_slGetFeatureFunction>(module, "slGetFeatureFunction");
     sl.newFrameToken = Export<PFun_slGetNewFrameToken>(module, "slGetNewFrameToken");
     sl.setTagForFrame = Export<PFun_slSetTagForFrame>(module, "slSetTagForFrame");
+    sl.setFeatureLoaded = Export<PFun_slSetFeatureLoaded>(module, "slSetFeatureLoaded");
+    sl.isFeatureLoaded = Export<PFun_slIsFeatureLoaded>(module, "slIsFeatureLoaded");
+    sl.freeResources = Export<PFun_slFreeResources>(module, "slFreeResources");
     sl.createFactory1 = reinterpret_cast<decltype(sl.createFactory1)>(GetProcAddress(module, "CreateDXGIFactory1"));
     sl.createDevice = reinterpret_cast<decltype(sl.createDevice)>(GetProcAddress(module, "D3D12CreateDevice"));
     if (!sl.init || !sl.shutdown || !sl.setDevice || !sl.getFeatureFunction || !sl.newFrameToken ||
@@ -96,6 +102,34 @@ bool FlowGame::SetDLSSFrameGeneration(bool enabled, uint32_t framesToGenerate) {
         streamline_->reflexLowLatency = true;
     }
     return true;
+}
+
+bool FlowGame::UnloadDLSSG() {
+    if (!streamline_ || !streamline_->freeResources || !streamline_->setFeatureLoaded)
+        return Fail("UnloadDLSSG without Streamline", E_NOINTERFACE);
+    // GTA V Enhanced at a DLSS FG -> FSR FG switch (session 20261110_182518): resources freed, then the feature
+    // unloaded, while the swapchain proxy is still alive.
+    if (streamline_->freeResources(sl::kFeatureDLSS_G, streamline_->viewport) != sl::Result::eOk)
+        return Fail("slFreeResources(DLSS-G)", E_FAIL);
+    if (streamline_->setFeatureLoaded(sl::kFeatureDLSS_G, false) != sl::Result::eOk)
+        return Fail("slSetFeatureLoaded(DLSS-G, false)", E_FAIL);
+    return true;
+}
+
+bool FlowGame::LoadDLSSG() {
+    if (!streamline_ || !streamline_->setFeatureLoaded)
+        return Fail("LoadDLSSG without Streamline", E_NOINTERFACE);
+    if (streamline_->setFeatureLoaded(sl::kFeatureDLSS_G, true) != sl::Result::eOk)
+        return Fail("slSetFeatureLoaded(DLSS-G, true)", E_FAIL);
+    return true;
+}
+
+bool FlowGame::DLSSGReportedLoaded() {
+    bool loaded = false;
+    if (!streamline_ || !streamline_->isFeatureLoaded ||
+        streamline_->isFeatureLoaded(sl::kFeatureDLSS_G, loaded) != sl::Result::eOk)
+        return false;
+    return loaded;
 }
 
 bool FlowGame::DisableStreamlineReflex() {

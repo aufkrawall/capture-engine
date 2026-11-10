@@ -53,7 +53,9 @@ TEST(FlowDLSS, ConfigurationBurstsAndLifecycleCallsPreserveRuntimeResults) {
     ASSERT_TRUE(log.is_open());
     const std::string text{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
     EXPECT_EQ(text.find("Present STALLED for"), std::string::npos);
-    EXPECT_NE(text.find("[SL LIFECYCLE] slSetFeatureLoaded returned feature=DLSS-G arg=0 result=0"), std::string::npos);
+    // The DLSS-G chain is alive, so the unload is held until its proxy is released (test_flow_dlss_unload_order.cpp):
+    // the title was answered eOk and "not loaded" above and Streamline has not seen the call.
+    EXPECT_NE(text.find("[SL UNLOAD ORDER] deferred sc="), std::string::npos);
     EXPECT_NE(text.find("[SL LIFECYCLE] slFreeResources returned feature=DLSS-G arg=17 result="), std::string::npos);
 }
 

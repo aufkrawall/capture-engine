@@ -59,6 +59,28 @@ inline const char* ForwardReasonName(ForwardReason reason) {
     return "?";
 }
 
+// Whether a module file name is one of Streamline's own (sl.interposer.dll, sl.dlss_g.dll, sl.common.dll ...): the
+// modules whose Release of the native chain is the proxy dropping it.
+inline bool IsStreamlineModuleName(const char* name) {
+    if (!name) {
+        return false;
+    }
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    if (lower(name[0]) != 's' || lower(name[1]) != 'l' || name[2] != '.') {
+        return false;
+    }
+    uint32_t length = 0;
+    while (name[length] != '\0') {
+        ++length;
+    }
+    if (length < 8) {  // "sl." + at least one character + ".dll"
+        return false;
+    }
+    const char* const extension = name + length - 4;
+    return extension[0] == '.' && lower(extension[1]) == 'd' && lower(extension[2]) == 'l' &&
+           lower(extension[3]) == 'l';
+}
+
 struct Capabilities {
     bool observerInstalled = false;     // DXGI's swapchain Release is observed
     bool destroyHookInstalled = false;  // the DLSS-G plugin's slHookSwapChainDestroyed is observed
@@ -91,14 +113,15 @@ public:
             }
             return {RequestAction::kHold, ForwardReason::kNone};
         }
+        // Without a chain nothing can go wrong, whatever else is missing: say so first.
+        if (!capabilities.liveChain || liveChain == 0) {
+            return {RequestAction::kForward, ForwardReason::kNoLiveChain};
+        }
         if (!capabilities.observerInstalled) {
             return {RequestAction::kForward, ForwardReason::kObserverMissing};
         }
         if (!capabilities.destroyHookInstalled) {
             return {RequestAction::kForward, ForwardReason::kDestroyHookMissing};
-        }
-        if (!capabilities.liveChain || liveChain == 0) {
-            return {RequestAction::kForward, ForwardReason::kNoLiveChain};
         }
         pending_ = true;
         chain_ = liveChain;

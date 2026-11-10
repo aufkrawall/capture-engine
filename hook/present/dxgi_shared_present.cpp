@@ -1,6 +1,7 @@
 #include "dxgi_shared_internal.h"
 #include "hook/fg/fg_transition_trace.h"
 #include "hook/streamline/streamline_runtime_policy.h"
+#include "hook/streamline/streamline_unload_order.h"
 #include "dxgi_shared_forwarded_present.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
@@ -275,6 +276,7 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     const bool originatorFromStreamline = origin.fromStreamline;
     if (originatorFromStreamline) {
         ce::fg_session::RecordStreamlineStartupNativePresent(pSwapChain, "Present");
+        ce::streamline_unload_order::NoteNativePresent(pSwapChain);
     }
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     ctx.callerFromStreamlineModule = originatorFromStreamline || caller.streamlineModule;

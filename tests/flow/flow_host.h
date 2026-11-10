@@ -130,6 +130,12 @@ public:
 
     // slDLSSGSetOptions(eOn/eOff), as a game's menu toggle sends it; the proxy stays alive while off.
     bool SetDLSSFrameGeneration(bool enabled, uint32_t framesToGenerate = 1);
+    // slFreeResources(DLSS-G) then slSetFeatureLoaded(DLSS-G, false) with the swapchain proxy still alive, as GTA V
+    // Enhanced does before it replaces its DLSS-G swapchain; LoadDLSSG is slSetFeatureLoaded(DLSS-G, true).
+    // DLSSGReportedLoaded is slIsFeatureLoaded(DLSS-G) as the title sees it.
+    bool UnloadDLSSG();
+    bool LoadDLSSG();
+    bool DLSSGReportedLoaded();
     bool DisableStreamlineReflex();
 
     // Whether the (fake) DLSS-G runtime itself is in eOn - what reached it, not what the game asked for.

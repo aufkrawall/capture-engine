@@ -346,6 +346,7 @@ HOOK_TEST_LINKED_SOURCES = (
     "hook/runtime/ipc_client.cpp",
     "hook/runtime/process_thread_walk.cpp",
     "hook/runtime/tool_thread_suspension.cpp",
+    "hook/streamline/streamline_unload_order.cpp",
 )
 
 

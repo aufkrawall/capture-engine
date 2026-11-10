@@ -9,6 +9,7 @@
 #include "hook/present/backbuffer_reference_trace.h"
 #include "hook/present/swapchain_lifetime_witness.h"
 #include "hook/present/swapchain_liveness.h"
+#include "hook/streamline/streamline_unload_order.h"
 #include "hook/wrappers/dxgi_swapchain_wrap_internal.h"
 
 namespace {
@@ -85,6 +86,12 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage, bool d
 void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
 if (!pDevice || !pSwapChain)
     return;
+
+// Whatever queue the create used: a chain DLSS-G created is one whose unload order Streamline owns (see
+// streamline_unload_order_policy.h).
+if (captureEvidence.authoritativeStreamlineRuntimeCreator) {
+    ce::streamline_unload_order::NoteDlssgChain(pSwapChain);
+}
 
 ID3D12CommandQueue* pQueue = nullptr;
 HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
