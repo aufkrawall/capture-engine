@@ -240,16 +240,23 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
     // Only the tracked processes' own flips end the composed state, and only
     // once the compositor's flips no longer show them.
     const auto transition = expiryMonitor_.Observe(expired, ownCompletions_, composed_.claimed(), GetTickCount64());
+    // What the compositor and the composition tokens did during the episode, read before End forgets the compositor.
+    DisplayExpiryEpisodeActivity activity;
+    activity.compositorPid = composed_.compositorPid();
+    activity.compositorPresents = composed_.compositorPresents();
+    activity.compositorFlips = composed_.compositorFlips();
+    activity.tokens = tokens_.episode();
     if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
         const uint32_t processId = submissions_.lastExpiredProcessId();
         composed_.Begin(processId, FindCompositorProcessId(processId));
+        tokens_.BeginEpisode();
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Stopped) {
         submissions_.EraseProcess(composed_.compositorPid());
         composed_.End();
     }
     LogSubmissionExpiryTransition(transition, submissions_.lastExpiredProcessId(), composed_.compositorPid(),
                                   expired, expiryMonitor_.lastCompleted(), expiryMonitor_.lastComposedClaimed(),
-                                  expiryMonitor_.refusedStops(), expiryMonitor_.episodeDurationMs());
+                                  expiryMonitor_.refusedStops(), expiryMonitor_.episodeDurationMs(), activity);
 }
 
 void DisplayTimingService::Impl::PruneAssociations(int64_t cutoff) {
@@ -326,6 +333,11 @@ bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
     health.inputBursts = inputBursts_.emitted();
     SetNvidiaFlipSchedule(health, nvidiaSchedule_, qpcFrequency_);
     SetComposedPresentation(health, composed_);
+    health.compositorPresents = composed_.compositorPresents();
+    health.compositorFlips = composed_.compositorFlips();
+    health.tokensCreated = tokens_.created();
+    health.tokensUnmatched = tokens_.unmatched();
+    health.tokens = tokens_.total();
     health.completions = completionsBySource_;
     const uint32_t blankSource = verticalBlanks_.busiestSource();
     health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);

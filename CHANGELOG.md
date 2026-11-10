@@ -58,6 +58,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Screen-change timing log: why a process's frames do not reach the screen:** when presents expire without a flip and the desktop compositor takes over, the `[DisplayTiming]` lines now report how many presents and flips the compositor made during the episode and how it ended the process's presents (composition tokens confirmed, retired or discarded). The periodic health line carries the same counts. This tells "the compositor did not present" from "it discarded the frames" from "Capture Engine failed to attribute them". The shared tracing session subscribes to two more Windows composition events for it.
+
 - **Black-screen diagnostics after a DLSS Frame Generation handoff (GTA V Enhanced):** the log now times the first change of the screen after a Streamline swapchain handoff (`firstScreenChange`), and when the screen stops changing although the game keeps presenting it records one `[SCANOUT STALL]` snapshot per episode: the swapchain's state, the results its Presents returned (Windows drops an occluded window's Presents), the window's visibility, cloaking, foreground state and flip blockers, and the visible windows above the game. Running episodes repeat a short line every two seconds and end with their duration and what changed first.
 
 - **Streamline swapchain-destroy diagnostics:** the log always records when Streamline calls its swapchain-destroy callback; with trace logging it also records which module releases the native chain and how many references it still holds, with the call stack of the releasing frames, and how long the NGX feature creation takes. This shows whether a refused FSR swapchain was pinned by a skipped Streamline cleanup.

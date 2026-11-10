@@ -11,6 +11,7 @@
 #include "display_timing_intervals.h"
 #include "display_timing_nvidia.h"
 #include "display_timing_submissions.h"
+#include "display_timing_tokens.h"
 
 // Which kernel event carried a frame's screen time. Reported per window because
 // only the immediate flip path can take NVIDIA's scheduled-flip announcement,
@@ -55,6 +56,14 @@ struct DisplayTimingHealth {
     // Published own completions kept in composed mode by the service's episode
     // decision. Cumulative, per output, so mixed-completion episodes are visible.
     uint64_t composedOwnPublished = 0;
+    // The compositor's own present packets and flip completions in the current composed episode (kept after it),
+    // and the Win32k composition tokens of the followed processes: created, and how the compositor ended them.
+    // Cumulative for the tokens; see display_timing_tokens.h.
+    uint64_t compositorPresents = 0;
+    uint64_t compositorFlips = 0;
+    uint64_t tokensCreated = 0;
+    uint64_t tokensUnmatched = 0;
+    display_timing_tokens::TokenCounts tokens;
     uint64_t queued = 0;
     uint64_t published = 0;
     uint64_t suppressed = 0;
@@ -256,7 +265,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
         "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
         "fallback(committed=%llu suppressed=%llu) "
-        "composed(pid=%u compositorPid=%u ready=%llu published=%llu superseded=%llu rejected=%llu ownWhileComposed=%llu) "
+        "composed(pid=%u compositorPid=%u ready=%llu published=%llu superseded=%llu rejected=%llu ownWhileComposed=%llu "
+        "compositorPresents=%llu compositorFlips=%llu) "
+        "tokens(created=%llu confirmed=%llu retired=%llu discarded=%llu otherProcess=%llu) "
         "completion(vsyncDpc=%llu vsyncDpcMpo=%llu hsyncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
         "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
         "fieldOffset=%d abandoned=%d) "
@@ -276,7 +287,8 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
         health.fallbackSuppressed, health.composedPid, health.compositorPid, health.composedReady,
         health.composedPublished, health.composedSuperseded, health.composedRejected, health.composedOwnPublished,
-        health.completions[0], health.completions[1],
+        health.compositorPresents, health.compositorFlips, health.tokensCreated, health.tokens.confirmed,
+        health.tokens.retired, health.tokens.discarded, health.tokensUnmatched, health.completions[0], health.completions[1],
         health.completions[2], health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
         static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
         health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0, health.blanksObserved,
@@ -312,13 +324,25 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.milestoneReady, health.milestoneProgrammed);
 }
 
+// What the compositor and the composition tokens did during a composed episode, as read when the transition was
+// observed (before the episode's end forgets the compositor). Separates "the compositor did not present" (zero
+// presents) from "it presented and flipped but no frame of the process was attributed" and, with the token counts,
+// "it retired the process's presents" from "it discarded them" (GTA V Enhanced, session 20261110_182518).
+struct DisplayExpiryEpisodeActivity {
+    uint32_t compositorPid = 0;
+    uint64_t compositorPresents = 0;
+    uint64_t compositorFlips = 0;
+    display_timing_tokens::TokenCounts tokens;
+};
+
 // State transitions only; the log gate never delays the presentation state.
 // compositorPid is the process whose flips now carry the composed frames, or 0
 // when none could be identified.
 inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transition transition,
                                           uint32_t processId, uint32_t compositorPid, uint64_t expired,
                                           uint64_t completed, uint64_t composedClaimed, uint64_t refusedStops,
-                                          uint64_t episodeDurationMs) {
+                                          uint64_t episodeDurationMs,
+                                          const DisplayExpiryEpisodeActivity& activity = {}) {
     if (transition == DisplaySubmissionExpiryMonitor::Transition::None)
         return;
     static std::array<ce::log_meter::ChangeGate, 3> gates{
@@ -342,15 +366,26 @@ inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transi
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Stopped) {
         LogInfo("[DisplayTiming] Flip completions resumed for tracked presents (completed=%llu expired=%llu "
                 "composedShown=0 in the last prune, refusedStops=%llu episodeMs=%llu); screen-change timing "
-                "follows the process's own flips again%s",
+                "follows the process's own flips again; episode: compositor(pid=%u presents=%llu flips=%llu) "
+                "tokens(confirmed=%llu retired=%llu discarded=%llu)%s",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired),
                 static_cast<unsigned long long>(refusedStops), static_cast<unsigned long long>(episodeDurationMs),
-                note.c_str());
+                activity.compositorPid, static_cast<unsigned long long>(activity.compositorPresents),
+                static_cast<unsigned long long>(activity.compositorFlips),
+                static_cast<unsigned long long>(activity.tokens.confirmed),
+                static_cast<unsigned long long>(activity.tokens.retired),
+                static_cast<unsigned long long>(activity.tokens.discarded), note.c_str());
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::StopRefused) {
         LogInfo("[DisplayTiming] Own flip completions while composed (completed=%llu expired=%llu composedShown=%llu "
                 "in the last prune): the compositor still shows the process's frames, so composed timing is kept "
-                "(reported once per composed episode; the resume line carries the total)%s",
+                "(reported once per composed episode; the resume line carries the total); so far compositor(pid=%u "
+                "presents=%llu flips=%llu) tokens(confirmed=%llu retired=%llu discarded=%llu)%s",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired),
-                static_cast<unsigned long long>(composedClaimed), note.c_str());
+                static_cast<unsigned long long>(composedClaimed), activity.compositorPid,
+                static_cast<unsigned long long>(activity.compositorPresents),
+                static_cast<unsigned long long>(activity.compositorFlips),
+                static_cast<unsigned long long>(activity.tokens.confirmed),
+                static_cast<unsigned long long>(activity.tokens.retired),
+                static_cast<unsigned long long>(activity.tokens.discarded), note.c_str());
     }
 }

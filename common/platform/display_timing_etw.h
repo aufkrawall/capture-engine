@@ -62,6 +62,10 @@ inline constexpr uint16_t kMpoPresentIds = 0x182;
 inline constexpr uint16_t kGeneratedFlip = 0x2;
 inline constexpr uint16_t kNvidiaFlipRequest = 0x1;
 inline constexpr uint16_t kRetrieveInputMessage = 0x3f;
+// Win32k composition tokens (PresentMon's Microsoft_Windows_Win32k.h): created when a process presents to a windowed
+// surface, and changing state until the compositor retires or discards them.
+inline constexpr uint16_t kWin32kTokenCreated = 0x00c9;
+inline constexpr uint16_t kWin32kTokenStateChanged = 0x012d;
 inline constexpr uint16_t kKernelProcessStartEventId = 1;
 
 inline constexpr ULONGLONG kRuntimeKeyword = 0x8000000000000002ull;
@@ -70,6 +74,9 @@ inline constexpr ULONGLONG kFrameTypeKeyword = 0x1;
 inline constexpr ULONGLONG kNvidiaDisplayKeyword = 0x1000000000000000ull;
 // RetrieveInputMessage's own keyword set (MessagePump and its companions).
 inline constexpr ULONGLONG kWin32kInputKeyword = 0x0400000040400000ull;
+// The two token events' keywords: TokenStateChanged 0x8000000000001000, TokenCompositionSurfaceObject
+// 0x8000000400001000 (PresentMon's descriptors); the mask covers both.
+inline constexpr ULONGLONG kWin32kTokenKeyword = 0x8000000400001000ull;
 inline constexpr ULONGLONG kKernelProcessKeyword = 0x10;
 
 // FlipEntryStatusAfterFlip values that defer the screen time to the matching
@@ -105,6 +112,81 @@ bool ReadProperty(const EVENT_RECORD* event, const wchar_t* name, T& value,
     ULONG size = sizeof(value);
     return TdhGetProperty(const_cast<EVENT_RECORD*>(event), 0, nullptr, 1, &descriptor, size,
                           reinterpret_cast<PBYTE>(&value)) == ERROR_SUCCESS;
+}
+
+// The two Win32k token events' payloads (PresentMon's Microsoft_Windows_Win32k.h, both version 0), as the provider
+// writes them: packed, the pointers as wide as the emitting process's. Read straight from the event's user data, as
+// PresentMon does: the state events fire for every windowed present on the machine and a property-by-property decode
+// of each is not worth its cost.
+#pragma pack(push, 1)
+template <typename PointerT>
+struct Win32kTokenCreatedPayload {
+    PointerT token;
+    PointerT surface;
+    uint32_t swapChainIndex;
+    uint64_t presentCount;
+    uint64_t surfaceLuid;
+    uint64_t bindId;
+};
+
+template <typename PointerT>
+struct Win32kTokenStatePayload {
+    PointerT surface;
+    uint32_t swapChainIndex;
+    uint32_t presentCount;
+    uint64_t fenceValue;
+    uint32_t newState;
+    uint32_t independentFlip;
+    uint32_t skipIndependentFlip;
+    uint64_t surfaceLuid;
+    uint64_t bindId;
+};
+#pragma pack(pop)
+
+struct Win32kTokenCreated {
+    uint64_t surfaceLuid = 0;
+    uint64_t presentCount = 0;
+    uint64_t bindId = 0;
+};
+
+struct Win32kTokenState {
+    uint64_t surfaceLuid = 0;
+    uint32_t presentCount = 0;
+    uint64_t bindId = 0;
+    uint32_t newState = 0;
+};
+
+namespace detail {
+template <typename PointerT>
+bool DecodeTokenCreated(const void* data, std::size_t length, Win32kTokenCreated& out) {
+    Win32kTokenCreatedPayload<PointerT> payload;
+    if (!data || length < sizeof(payload))
+        return false;
+    std::memcpy(&payload, data, sizeof(payload));
+    out = {payload.surfaceLuid, payload.presentCount, payload.bindId};
+    return true;
+}
+
+template <typename PointerT>
+bool DecodeTokenState(const void* data, std::size_t length, Win32kTokenState& out) {
+    Win32kTokenStatePayload<PointerT> payload;
+    if (!data || length < sizeof(payload))
+        return false;
+    std::memcpy(&payload, data, sizeof(payload));
+    out = {payload.surfaceLuid, payload.presentCount, payload.bindId, payload.newState};
+    return true;
+}
+}  // namespace detail
+
+// False when the payload is shorter than its layout. `pointer64`: the event header's 64-bit flag.
+inline bool DecodeWin32kTokenCreated(const void* data, std::size_t length, bool pointer64, Win32kTokenCreated& out) {
+    return pointer64 ? detail::DecodeTokenCreated<uint64_t>(data, length, out)
+                     : detail::DecodeTokenCreated<uint32_t>(data, length, out);
+}
+
+inline bool DecodeWin32kTokenState(const void* data, std::size_t length, bool pointer64, Win32kTokenState& out) {
+    return pointer64 ? detail::DecodeTokenState<uint64_t>(data, length, out)
+                     : detail::DecodeTokenState<uint32_t>(data, length, out);
 }
 
 #ifndef EVENT_TRACE_USE_MS_FLUSH_TIMER
@@ -210,9 +292,13 @@ inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE sess
         status.nvidiaSchedule =
             EnableFilteredProvider(session, kNvidiaDisplayProvider, kNvidiaDisplayKeyword, {kNvidiaFlipRequest});
         // Without it the PC-latency estimate models the input-to-Present span for
-        // games with no latency markers instead of measuring it.
-        status.inputRetrieval =
-            EnableFilteredProvider(session, kWin32kProvider, kWin32kInputKeyword, {kRetrieveInputMessage});
+        // games with no latency markers instead of measuring it. The composition-token events ride the same
+        // enable (one provider enable per session): they say how the compositor ended a followed process's
+        // presents, which the flip stream cannot (display_timing_tokens.h).
+        status.inputRetrieval = EnableFilteredProvider(session, kWin32kProvider,
+                                                       kWin32kInputKeyword | kWin32kTokenKeyword,
+                                                       {kRetrieveInputMessage, kWin32kTokenCreated,
+                                                        kWin32kTokenStateChanged});
     }
     if (group != ProviderGroup::Display) {
         status.kernelProcess =

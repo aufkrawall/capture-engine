@@ -49,6 +49,8 @@ public:
         processId_ = processId;
         compositorPid_ = compositorPid;
         claimedAtBegin_ = claimed_;
+        compositorPresents_ = 0;
+        compositorFlips_ = 0;
         ready_.clear();
     }
 
@@ -128,6 +130,15 @@ public:
             ready_.pop_front();
     }
 
+    // The compositor's own activity since Begin (kept after End, so the line that ends the episode can read it): the
+    // present packets it submitted and the flips of its presents that completed. When a process's frames never reach
+    // the screen, both zero say the compositor did not present at all; a compositor that presented and flipped while
+    // no frame was attributed to the process says the frames were not composed, or the association failed.
+    void NoteCompositorPresent() noexcept { ++compositorPresents_; }
+    void NoteCompositorFlip() noexcept { ++compositorFlips_; }
+    uint64_t compositorPresents() const noexcept { return compositorPresents_; }
+    uint64_t compositorFlips() const noexcept { return compositorFlips_; }
+
     std::size_t pending() const noexcept { return ready_.size(); }
     uint64_t readyObserved() const noexcept { return readyObserved_; }
     uint64_t claimed() const noexcept { return claimed_; }
@@ -143,4 +154,6 @@ private:
     uint64_t claimedAtBegin_ = 0;
     uint64_t rejectedClaims_ = 0;
     uint64_t superseded_ = 0;
+    uint64_t compositorPresents_ = 0;
+    uint64_t compositorFlips_ = 0;
 };

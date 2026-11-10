@@ -20,6 +20,7 @@
 #include "display_timing_startup.h"
 #include "captureengine/elevation/elevation_client.h"
 #include "display_timing_submissions.h"
+#include "display_timing_tokens.h"
 #include "display_timing_vblank.h"
 
 #include <windows.h>
@@ -89,6 +90,9 @@ private:
     void HandleImmediateFlip(EVENT_RECORD* event);
     void HandleImmediateMpoFlip(EVENT_RECORD* event);
     void HandleInputRetrieval(EVENT_RECORD* event);
+    // Win32k composition tokens: created by a tracked process, ended by the compositor.
+    void HandleCompositionTokenCreated(EVENT_RECORD* event);
+    void HandleCompositionTokenState(EVENT_RECORD* event);
     void PublishInputBurst(const DisplayInputRetrievalBursts::Burst& burst);
     // `programmedTimestamp`: the flip event of an immediate flip, which both
     // programs and completes it.
@@ -156,6 +160,7 @@ private:
     DisplayTimingCorrelation correlation_;
     NvidiaFlipSchedule nvidiaSchedule_;
     ComposedPresentation composed_;
+    display_timing_tokens::CompositionTokenTally tokens_;
     uint64_t ownCompletions_ = 0;
     VerticalBlankClock verticalBlanks_;
     std::vector<PendingTimestamp> pendingTimestamps_;

@@ -26,6 +26,10 @@ void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
     if (IsEqualGUID(header.ProviderId, kWin32kProvider)) {
         if (header.EventDescriptor.Id == kRetrieveInputMessage)
             HandleInputRetrieval(event);
+        else if (header.EventDescriptor.Id == kWin32kTokenCreated)
+            HandleCompositionTokenCreated(event);
+        else if (header.EventDescriptor.Id == kWin32kTokenStateChanged)
+            HandleCompositionTokenState(event);
         return;
     }
     if (IsEqualGUID(header.ProviderId, kRuntimeProvider)) {
@@ -78,6 +82,30 @@ void DisplayTimingService::Impl::HandleInputRetrieval(EVENT_RECORD* event) {
         return;
     inputBursts_.Observe(header.ProcessId, header.ThreadId, header.TimeStamp.QuadPart,
                          [this](const DisplayInputRetrievalBursts::Burst& burst) { PublishInputBurst(burst); });
+}
+
+void DisplayTimingService::Impl::HandleCompositionTokenCreated(EVENT_RECORD* event) {
+    const auto& header = event->EventHeader;
+    // Only version 0 has the layout display_timing_etw.h decodes.
+    if (header.EventDescriptor.Version != 0 || !IsTrackedProcess(header.ProcessId))
+        return;
+    Win32kTokenCreated token;
+    if (DecodeWin32kTokenCreated(event->UserData, event->UserDataLength,
+                                 (header.Flags & EVENT_HEADER_FLAG_64_BIT_HEADER) != 0, token)) {
+        tokens_.ObserveCreated(token.surfaceLuid, token.presentCount, token.bindId);
+    }
+}
+
+void DisplayTimingService::Impl::HandleCompositionTokenState(EVENT_RECORD* event) {
+    const auto& header = event->EventHeader;
+    // Every windowed present of every process on the machine ends here; without a tracked token it is not ours.
+    if (header.EventDescriptor.Version != 0 || !tokens_.HasTrackedTokens())
+        return;
+    Win32kTokenState state;
+    if (DecodeWin32kTokenState(event->UserData, event->UserDataLength,
+                               (header.Flags & EVENT_HEADER_FLAG_64_BIT_HEADER) != 0, state)) {
+        tokens_.ObserveState(state.surfaceLuid, state.presentCount, state.bindId, state.newState);
+    }
 }
 
 void DisplayTimingService::Impl::PublishInputBurst(const DisplayInputRetrievalBursts::Burst& burst) {
@@ -136,6 +164,8 @@ void DisplayTimingService::Impl::HandleQueuePacket(EVENT_RECORD* event) {
     const bool compositor = composed_.IsCompositor(event->EventHeader.ProcessId);
     if (!compositor && !IsTrackedProcess(event->EventHeader.ProcessId))
         return;
+    if (compositor)
+        composed_.NoteCompositorPresent();
     bool isFallback = false;
     if (submissions_.Associate(event->EventHeader.ProcessId, event->EventHeader.ThreadId, submitSequence,
                                event->EventHeader.TimeStamp.QuadPart, &isFallback)) {
@@ -214,6 +244,7 @@ void DisplayTimingService::Impl::HandleMpoSync(EVENT_RECORD* event) {
             continue;
         const uint32_t processId = association->processId;
         if (composed_.IsCompositor(processId)) {
+            composed_.NoteCompositorFlip();
             PublishComposedFrame(association->timestamp, event->EventHeader.TimeStamp.QuadPart, displaySource);
             submissions_.Erase(submitSequence);
             continue;
@@ -351,6 +382,7 @@ void DisplayTimingService::Impl::PublishForSubmit(uint32_t submitSequence, int64
     if (!association)
         return;
     if (composed_.IsCompositor(association->processId)) {
+        composed_.NoteCompositorFlip();
         PublishComposedFrame(association->timestamp, timestamp, displaySource);
         if (erase)
             submissions_.Erase(submitSequence);
