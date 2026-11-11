@@ -1,8 +1,8 @@
 # Raw display trace for stall episodes
 
-Last verified: 2026-11-11 (first live seal: GTA 0.1.7503 `20261111_021555`, 1.42 s silence, 256 MB file covering
-72 s, no events or buffers lost; findings below)
-Stale-risk: medium - one hardware seal so far; the 10 s ongoing seal and a CE-passive comparison are unrecorded.
+Last verified: 2026-11-11 (two live seals: GTA 0.1.7503 `20261111_021555` and `20261111_024650`, 1.42/1.38 s
+silence, no events or buffers lost; one CE-passive run without a stall; findings below)
+Stale-risk: medium - the 10 s ongoing seal is unrecorded; which active CE path delays DWM is not yet isolated.
 
 Why: GTA V Enhanced 0.1.7500 (`20261110_222057`) presented ~131/s for 37 s after a save load while nothing reached the
 screen (`[SCANOUT STALL] ep=1 ... durationUs=38066160 presents=4924`, sensors `composed ready=3563 published=0`). CE's
@@ -75,21 +75,40 @@ relative to the new chain's first present (QPC 6899741153 us).
   BufferCount=6`); DWM then ended the old surface's independent flip (`IndependentFlipTransition Entering=0
   surface=169407265 RequestedByDwm=1`), composed present 153 (`Windowed_Dx_Flip_Consumed`, DWM flip at 1391.8 ms),
   and moved the new surface to independent flip at 1403.9 ms; the game's own flips follow from 1514 ms.
-- The captures recur every ~1.0-1.6 s for the whole 72 s file (51 of them, slower under load). Each is followed within
-  3 ms by a csrss present of model 5 (`D3DKMT_PM_SCREENCAPTUREFENCE`, the fence of a GDI screen read; its counter
-  stood at ~6843, one per second since logon) and a composition present by explorer's thread named `Taskbar` (51/51,
-  never at random times). Requester, identified outside the trace: TrafficMonitor 1.8.6, a taskbar speed meter that
-  embeds a window in the taskbar and, with `auto_set_background_color` + `disable_d2d` + a transparent color (all on
-  in the user's config), calls `::GetPixel(GetDC(NULL), ...)` beside the taskbar in its 1000 ms `MAIN_TIMER`
-  (`CTrafficMonitorDlg::OnTimer`, upstream source) to match the taskbar color; it imports GetPixel/BitBlt and started
-  at logon. The trace itself cannot name the GDI caller. CE does no screen reads while not recording. So the black
-  time ended at the first GDI screen read after DWM switched the window to the new surface - which matches the
-  1.37-1.70 s episodes; without such a reader nothing visible forces the realization (the 38 s episode of 0.1.7500 had
-  no ETL; TrafficMonitor skips the read while it judges the foreground window fullscreen).
+- The captures recur every ~1.0-1.6 s for the whole 72 s file (51; each followed by a csrss model-5 present,
+  `D3DKMT_PM_SCREENCAPTUREFENCE`, and explorer's `Taskbar` thread): GDI screen reads, most likely TrafficMonitor 1.8.6's
+  per-second taskbar color probe. Refuted (second seal): that a capture ended the black time - the 1388 ms one only
+  coincided.
 - Stage verdict: the frames stop in DWM, which does not bind a flip-model chain's new composition surface while the
   window's previous surface sits in independent flip on an overlay plane with kept content. DXGI, DxgKrnl submission,
-  GPU completion and the token hand-off all ran. CE's share is unproven: no ETL with CE passive
-  (`[Diagnostics] overlay_observer_only=1`) or off exists.
+  GPU completion and the token hand-off all ran.
+
+## Second seal and the CE-passive run (2026-11-11)
+
+- `20261111_024650` (0.1.7503, TrafficMonitor closed): `sealed ep=1 pid=24212 reason=ended silenceMs=1384
+  silenceStartQpcUs=8802354064 presents=152`; no `ETWGUID_RTCAPTURE` anywhere in the 35 s file. Same DWM state: old
+  surface 188368582 flipped independently on plane 1 until its chain was destroyed at -274 ms (`KeepExistingContent=1`)
+  and stayed in independent flip, new surface
+  189951950 bound by DXGI at -240/-211 ms, every new token InFrame -> Confirmed -> Discarded. DWM ran one frame per
+  vblank (~48 Hz panel floor once the old chain stopped flipping, none from 58 to 243 ms) and scheduled surface updates
+  only for another process's 1534x898 surface. At 1355.0 ms it forced realization of the new surface and bound it
+  (`CompSurfInfo_ForceUpdateRealization` -> `CompSurfInfo_Binding BufferCount=6`) with no capture and no CE event at
+  that time, ended the old surface's independent flip at 1356.8 ms and flipped the new one from 1371.7 ms. The trigger
+  of that realization is unknown; from first native present to first screen change the active runs took 1435, 1160,
+  1458 and 1420 ms (`013758`, `015744`, `021555`, `024650`).
+- `gtanooverlay` (session `20261111_031447`, 0.1.7503, `[Diagnostics] overlay_observer_only=1`, recorder on): the same
+  cold DLSS-G load showed its first frame 144 ms after the first native present (`[SL STARTUP] handoff=1
+  firstScreenChange sinceHandoffUs=465327 presentsBefore=5`); no `[SCANOUT STALL]`, nothing sealed. One run only, and
+  its DLSS-G base rate was lower (CE estimate 10 fps against 61 in `024650`).
+- What observer-only removes on that handoff: the PostSL draw on the new chain's first native present (prewarmed
+  handoff backend, `present->rt` barrier, submit on the DLSS-G present queue), the Streamline UI bootstrap overlay
+  recorded into UIColorAndAlpha, the Streamline startup policy (GetState reactivation suppression, held SetOptions)
+  and startup-Present routing. Handoffs 2-8 of `20261111_013758` (overlay drawn on the first present of a no-FG chain,
+  DLSS-G on ~2 s later) did not black out, so they cannot separate drawing from DLSS-G on from frame one.
+- Bisection with the staged observer modes (`common/config/config.h::IsOverlayObserverPolicyOnly`): `overlay_observer_only=1`
+  plus `overlay_observer_policy_only=1` restores only the Streamline startup policy; adding
+  `overlay_observer_startup_present_only=1` restores startup-Present routing too. Drawing stays off in both, so two
+  clean runs implicate the first-frame draw.
 - Reading method: `etl_stall_digest.py` ranks the stall correctly (the flip streams' gaps) but the verdict needed
   payloads - Win32k `TokenStateChanged`/`TokenCompositionSurfaceObject` (surface LUID, present count, NewState),
   Dwm-Core `CompSurfInfo_*`, `SCHEDULE_SURFACEUPDATE` (first 8 bytes = surface LUID) and DxgKrnl
@@ -100,7 +119,6 @@ relative to the new chain's first present (QPC 6899741153 us).
 - Not recorded when CE owns its display trace (elevated CE without the service): a leaked file-mode session would keep
   DxgKrnl unfiltered machine-wide, so that path needs the reclaim logic first. Logged once.
 - Event volume per second under DLSS-G at 4K, and whether 256 MB keeps the run-up of a 37 s episode, are unmeasured.
-- The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. A
-  CE-passive run (`overlay_observer_only=1`, recorder still on) is the nearest comparison.
-- Direct proof that TrafficMonitor is the reader (a sealed run with it closed, or with its background auto-color off,
-  should show no `ETWGUID_RTCAPTURE` and a longer black screen).
+- The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The
+  CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
+- Which active CE path delays the binding (see bisection above), and what makes DWM realize the surface at ~1.2-1.5 s.

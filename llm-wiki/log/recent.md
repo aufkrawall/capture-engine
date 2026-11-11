@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA cold DLSS-G black screen: clean with CE passive, screen captures ruled out
+
+- Second seal `20261111_024650` (TrafficMonitor closed, 1.38 s): no screen capture in the whole file, yet DWM forced
+  the new surface's realization at 1355 ms and recovered as before. The capture at 1388 ms in the first seal only
+  coincided; the realization trigger is unknown.
+- `overlay_observer_only=1` (`gtanooverlay`): the same cold DLSS-G load showed its first frame 144 ms after the first
+  present (5 presents), no stall, nothing sealed; all four overlay-active loads took 1.16-1.46 s. One run, lower
+  DLSS-G base rate. Next: the staged observer modes separate the Streamline startup policy and startup-Present
+  routing from the first-frame PostSL draw (`display-stall-trace.md`, "Second seal and the CE-passive run").
+
 ### 2026-11-11 - First sealed display trace: GTA's cold DLSS-G black screen stops in DWM
 
 - `20261111_021555` (0.1.7503) sealed `display_stall_7008_ep1_ended.etl` (1.42 s silence, 157 presents, nothing lost).
@@ -8,9 +18,8 @@
   `KeepExistingContent=1`), no plane flipped at all. Another process's ~1 s screen capture forced the realization at
   1388 ms; DWM then left the old surface's independent flip and composed the new frame. Evidence and method:
   `display-stall-trace.md` ("First live seal"). CE's share is unproven until a passive or CE-off comparison.
-- The ~1 s screen reader: TrafficMonitor (taskbar meter) samples a screen pixel with GDI every second to match the
-  taskbar color; the trace shows its effect (GDI screen-capture fence from csrss, explorer `Taskbar` redraw), not the
-  caller. Without it the black screen would have lasted until some other forced composition.
+- The ~1 s screen reader is most likely TrafficMonitor's per-second GDI taskbar color probe. That it ended the black
+  screen was refuted by the second seal (entry above).
 
 ### 2026-11-11 - GTA 0.1.7501: ownership gate held, cold DLSS-G start still black for 1.7 s
 
