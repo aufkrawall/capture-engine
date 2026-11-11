@@ -264,10 +264,16 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
                                   expired, expiryMonitor_.lastCompleted(), expiryMonitor_.lastComposedClaimed(),
                                   expiryMonitor_.refusedStops(), expiryMonitor_.episodeDurationMs(), activity);
     if (stallTraceActive_) {
-        stallTraceSealer_.Request(stallTracePolicy_.Observe(
-            transition == DisplaySubmissionExpiryMonitor::Transition::Started,
-            transition == DisplaySubmissionExpiryMonitor::Transition::Stopped, expiryMonitor_.expiring(),
-            expiryMonitor_.episodeDurationMs(), composed_.claimed(), submissions_.lastExpiredProcessId()));
+        display_stall_trace::Prune prune;
+        prune.started = transition == DisplaySubmissionExpiryMonitor::Transition::Started;
+        prune.stopped = transition == DisplaySubmissionExpiryMonitor::Transition::Stopped;
+        prune.expiring = expiryMonitor_.expiring();
+        prune.nowUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
+        const int64_t oldestExpiredQpc = submissions_.oldestExpiredInLastPrune();
+        prune.firstUnshownUs = oldestExpiredQpc > 0 ? DisplayTimingQpcToUs(oldestExpiredQpc, qpcFrequency_) : 0;
+        prune.shownTotal = composed_.claimed();
+        prune.processId = submissions_.lastExpiredProcessId();
+        stallTraceSealer_.Request(stallTracePolicy_.Observe(prune));
     }
 }
 
@@ -299,10 +305,10 @@ void DisplayTimingService::Impl::StartStallTrace() {
         },
         std::move(wideFolder));
     stallTraceActive_ = true;
-    LogInfo("[DisplayStallTrace] recording the display pipeline in the elevation service; an episode with nothing on "
-            "screen is sealed into this folder when it ends after %llums or more, and once at %llums while it lasts "
-            "(at most %u per session)",
-            static_cast<unsigned long long>(display_stall_trace::kMinimumEpisodeMs),
+    LogInfo("[DisplayStallTrace] recording the display pipeline in the elevation service; a silence of %llums or more "
+            "(presents that never reach the screen, counted from the first one) is sealed into this folder when it "
+            "ends, and once at %llums while it lasts (at most %u per session)",
+            static_cast<unsigned long long>(display_stall_trace::kMinimumSilenceMs),
             static_cast<unsigned long long>(display_stall_trace::kOngoingSealMs),
             display_stall_trace::kMaximumSealsPerSession);
 }

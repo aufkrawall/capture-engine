@@ -191,10 +191,13 @@ public:
             it = presents.empty() ? pendingPresents_.erase(it) : std::next(it);
         }
         std::size_t expired = 0;
+        oldestExpiredInLastPrune_ = 0;
         for (auto it = associations_.begin(); it != associations_.end();) {
             auto& associations = it->second;
             while (!associations.empty() && associations.front().timestamp < cutoff) {
                 lastExpiredProcessId_ = associations.front().processId;
+                if (oldestExpiredInLastPrune_ == 0 || associations.front().timestamp < oldestExpiredInLastPrune_)
+                    oldestExpiredInLastPrune_ = associations.front().timestamp;
                 associations.pop_front();
                 ++expired;
             }
@@ -217,6 +220,8 @@ public:
     uint64_t rejectedStaleCompletions() const noexcept { return rejectedStaleCompletions_; }
     uint64_t expiredAssociations() const noexcept { return expiredAssociations_; }
     uint32_t lastExpiredProcessId() const noexcept { return lastExpiredProcessId_; }
+    // Submit QPC of the oldest present the last PruneBefore expired; 0 if it expired none.
+    int64_t oldestExpiredInLastPrune() const noexcept { return oldestExpiredInLastPrune_; }
     uint64_t readyMarks() const noexcept { return readyMarks_; }
     uint64_t programmedMarks() const noexcept { return programmedMarks_; }
 
@@ -246,6 +251,7 @@ private:
     uint64_t rejectedStaleCompletions_ = 0;
     uint64_t expiredAssociations_ = 0;
     uint32_t lastExpiredProcessId_ = 0;
+    int64_t oldestExpiredInLastPrune_ = 0;
     uint64_t readyMarks_ = 0;
     uint64_t programmedMarks_ = 0;
 };

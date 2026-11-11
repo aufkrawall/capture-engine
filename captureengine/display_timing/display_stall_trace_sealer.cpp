@@ -101,10 +101,10 @@ void DisplayStallTraceSealer::SealOne(const display_stall_trace::SealRequest& re
     ce::elevation::SealedDisplayTrace sealed;
     const bool exchanged = seal_ && seal_(sealed);
     if (!exchanged || sealed.status != ERROR_SUCCESS || !ce::elevation::IsSealedDisplayTracePath(sealed.path)) {
-        LogWarn("[DisplayStallTrace] seal failed ep=%u pid=%u reason=%s episodeMs=%llu exchanged=%d status=%u "
+        LogWarn("[DisplayStallTrace] seal failed ep=%u pid=%u reason=%s silenceMs=%llu exchanged=%d status=%u "
                 "restart=%u validPath=%d",
                 request.episode, request.processId, display_stall_trace::SealReasonName(request.reason),
-                static_cast<unsigned long long>(request.episodeMs), exchanged ? 1 : 0, sealed.status,
+                static_cast<unsigned long long>(request.silenceMs), exchanged ? 1 : 0, sealed.status,
                 sealed.restartStatus, ce::elevation::IsSealedDisplayTracePath(sealed.path) ? 1 : 0);
         return;
     }
@@ -116,10 +116,11 @@ void DisplayStallTraceSealer::SealOne(const display_stall_trace::SealRequest& re
                 request.episode, moved, Narrow(source).c_str(), Narrow(destination).c_str());
         return;
     }
-    LogInfo("[DisplayStallTrace] sealed ep=%u pid=%u reason=%s episodeMs=%llu shown=%llu file=%s bytes=%llu "
-            "eventsLost=%u buffersLost=%u restart=%u replaced=%u",
+    LogInfo("[DisplayStallTrace] sealed ep=%u pid=%u reason=%s silenceMs=%llu silenceStartQpcUs=%lld shown=%llu "
+            "file=%s bytes=%llu eventsLost=%u buffersLost=%u restart=%u replaced=%u",
             request.episode, request.processId, display_stall_trace::SealReasonName(request.reason),
-            static_cast<unsigned long long>(request.episodeMs), static_cast<unsigned long long>(request.shown),
+            static_cast<unsigned long long>(request.silenceMs), static_cast<long long>(request.silenceStartUs),
+            static_cast<unsigned long long>(request.shown),
             Narrow(DestinationName(request)).c_str(), static_cast<unsigned long long>(sealed.bytes), sealed.eventsLost,
             sealed.buffersLost, sealed.restartStatus, replaced_.load());
 }

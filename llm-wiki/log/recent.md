@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA 0.1.7501: ownership gate held, cold DLSS-G start still black for 1.7 s
+
+- Session `20261111_013758` (DLSS FG on at load, then FSR <-> DLSS <-> off many times, 8 Streamline handoffs): no
+  crash, no device removal, no `[PostSL OWNERSHIP]` refusal. `[FG OWNERSHIP] slDLSSGGetState(ON) starts no DLSS FG`
+  fired on FidelityFX chains in protected disabled startup (`held by=ffx-swapchain lifetime=4/6/10/13`), first at
+  01:40:41.192, 853 ms after the takeover, 32 calls - the 0.1.7500 crash precursor (that one published DLSS FG 1.1 s
+  after the takeover), now refused.
+- Black screen: only the first, cold DLSS-G handoff. FG was enabled through SetOptions 114 ms after the create, before
+  the chain's first present (255 ms); first screen change after 1.69 s and 156 S_OK presents, recovered via composed
+  frames (`[SCANOUT STALL] ep=2 ... firstChange=composed`). The 7 later handoffs, where FG came on 1.5-2 s after the
+  first screen change, showed the screen after 0.20-0.25 s (11-16 presents). The user hears coil whine during the
+  black phase: frames are rendered and presented, scanout never gets them. Same signature as the 37 s in
+  `20261110_222057`; still unattributed (no CE-off comparison, no ETL).
+- The recorder ran but sealed nothing: the expiry monitor started 1.5 s into the silence and counted 531 ms. Fixed the
+  same day - the policy now measures the silence from the oldest expired present (`display-stall-trace.md`).
+
 ### 2026-11-11 - Raw display trace sealed on no-display episodes (pending hardware)
 
 - For the GTA save-load stall (37 s of presents, nothing on screen) the user asked for evidence without external tools.

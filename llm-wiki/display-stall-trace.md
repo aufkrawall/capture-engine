@@ -1,6 +1,7 @@
 # Raw display trace for stall episodes
 
-Last verified: 2026-11-11 (unit tests and the ETL reader against a local Windows ETL; no hardware stall recorded yet)
+Last verified: 2026-11-11 (unit tests and the ETL reader against a local Windows ETL; GTA run 20261111_013758 ran the
+recorder but sealed nothing - trigger fixed afterwards, no live seal yet)
 Stale-risk: high until a GTA run produces a sealed file - provider volume, the circular size and the seal timing are
 unmeasured on hardware.
 
@@ -25,12 +26,20 @@ tools.
   it is a reparse point; a sealed file gets read+delete for the installing user's SID. Limits: one seal per 2 s, 32 per
   recording; uncollected files older than 10 min are removed at the next start.
 - CE sensor (`display_timing_service.cpp::StartStallTrace`): only with `log_level=trace` and the service trace.
-  `display_stall_trace::Policy` (pure) watches the submission-expiry episodes: an episode in which the compositor showed
-  at most 2 of the process's frames per second is sealed once at 10 s (keeps the run-up in the circular file) and when
-  it ends after >= 1.5 s; at most 6 per session. `DisplayStallTraceSealer` does the exchange and the move off the ETW
-  thread; the file lands beside `sensors.log` as `display_stall_<pid>_ep<N>_<ongoing|ended>.etl`.
-- Logs: sensors `[DisplayStallTrace] recording ...|sealed ep= pid= reason= episodeMs= shown= file= bytes= eventsLost=
-  buffersLost= restart=|seal failed ...|move failed ...|no raw display traces ...`; service
+  `display_stall_trace::Policy` (pure) watches the submission-expiry episodes and measures the *silence*: from the
+  oldest present the starting prune expired (`DisplaySubmissionTracker::oldestExpiredInLastPrune`) until the compositor
+  shows one of the process's frames again or its own flips resume. Sealed once at 10 s of silence (keeps the run-up in
+  the circular file) and when the episode ends with >= 1.5 s; at most 6 per session. Recovery frames end the silence,
+  they never count against it.
+- Why the silence and not the monitor's episode clock: the monitor only starts once the first unshown present is older
+  than the completion bound (`kMaxSubmitToCompletionUs` + reorder, ~1.02 s). GTA `20261111_013758` stood still for
+  1.71 s after the first DLSS-G handoff (hook `[SCANOUT STALL] ep=2 durationUs=1714151 presents=156`), the monitor
+  counted `episodeMs=531` with 3 composed recovery frames, and the old rule (episode >= 1.5 s, <= 2 shown/s) sealed
+  nothing.
+- `DisplayStallTraceSealer` does the exchange and the move off the ETW thread; the file lands beside `sensors.log` as
+  `display_stall_<pid>_ep<N>_<ongoing|ended>.etl`.
+- Logs: sensors `[DisplayStallTrace] recording ...|sealed ep= pid= reason= silenceMs= silenceStartQpcUs= shown= file=
+  bytes= eventsLost= buffersLost= restart=|seal failed ...|move failed ...|no raw display traces ...`; service
   `[ElevationService] Display flight recorder on (... providers ...)|sealed (...)|off after N seal(s)`.
 
 ## Reading a sealed file
