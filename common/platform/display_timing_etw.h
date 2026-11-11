@@ -218,15 +218,18 @@ inline TracePropertiesBuffer MakeProperties(const wchar_t* name, ULONG flushTime
     return buffer;
 }
 
+// ETW takes at most this many ids in one event-id filter (MAX_EVENT_FILTER_EVENT_ID_COUNT).
+inline constexpr std::size_t kMaximumFilteredEventIds = 64;
+
 inline ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, ULONGLONG keywords,
-                                    std::initializer_list<USHORT> eventIds) {
-    const std::size_t filterSize = offsetof(EventIdFilter, events) + eventIds.size() * sizeof(USHORT);
+                                    const USHORT* eventIds, std::size_t eventIdCount) {
+    const std::size_t filterSize = offsetof(EventIdFilter, events) + eventIdCount * sizeof(USHORT);
     std::vector<std::byte> filterStorage(filterSize);
     auto* filter = reinterpret_cast<EventIdFilter*>(filterStorage.data());
     filter->filterIn = TRUE;
     filter->reserved = 0;
-    filter->count = static_cast<USHORT>(eventIds.size());
-    std::copy(eventIds.begin(), eventIds.end(), filter->events);
+    filter->count = static_cast<USHORT>(eventIdCount);
+    std::copy(eventIds, eventIds + eventIdCount, filter->events);
 
     EVENT_FILTER_DESCRIPTOR descriptor = {};
     descriptor.Ptr = reinterpret_cast<ULONGLONG>(filter);
@@ -240,6 +243,11 @@ inline ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, U
     parameters.FilterDescCount = 1;
     return EnableTraceEx2(session, &provider, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_VERBOSE, keywords, 0, 0,
                           &parameters);
+}
+
+inline ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, ULONGLONG keywords,
+                                    std::initializer_list<USHORT> eventIds) {
+    return EnableFilteredProvider(session, provider, keywords, eventIds.begin(), eventIds.size());
 }
 
 inline ULONG EnableRuntimePresentProvider(TRACEHANDLE session) {

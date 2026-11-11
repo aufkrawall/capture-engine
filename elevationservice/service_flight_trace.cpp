@@ -99,9 +99,10 @@ DWORD GrantOwnerCollection(const std::filesystem::path& file, const std::wstring
 
 void LogProviders(const display_flight_recorder::ProviderStatus& providers) {
     LogInfo("[ElevationService] Display flight recorder on (circular %luMB, providers dxgi=%lu dxgkrnl=%lu dwm=%lu "
-            "tokens=%lu nvidia=%lu frameType=%lu process=%lu)",
+            "win32k=%lu(%zu events) nvidia=%lu frameType=%lu process=%lu)",
             display_flight_recorder::kMaximumFileMegabytes, providers.runtime, providers.graphicsKernel,
-            providers.compositor, providers.tokens, providers.nvidiaSchedule, providers.frameType, providers.process);
+            providers.compositor, providers.windowManager, display_flight_recorder::kWindowManagerEvents.size(),
+            providers.nvidiaSchedule, providers.frameType, providers.process);
 }
 
 }  // namespace

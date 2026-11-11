@@ -4,6 +4,7 @@
 #include <evntrace.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -19,7 +20,8 @@
 // (20261110_222057). CE's real-time display session decodes only the events its timing needs, so it could tell that the
 // tracked presents stopped completing, not where between the runtime, the compositor and the display driver they
 // stopped. This recorder writes everything those stages emit - DXGI presents, DxgKrnl submission, history, flips and
-// vblanks, DWM composition, Win32k composition tokens, NVIDIA's flip schedule, process starts - into a circular file
+// vblanks, DWM composition, Win32k composition tokens and surface bindings, NVIDIA's flip schedule, process starts - into
+// a circular file
 // (the newest kMaximumFileMegabytes), so the run-up to an episode is in it when the episode is noticed. Sealing stops the
 // session (ETW finalizes the file), moves the file aside and starts recording again. Timestamps are QPC
 // (ClientContext 1), the clock of CE's own logs.
@@ -36,11 +38,60 @@ inline constexpr ULONGLONG kGraphicsKernelRecordKeywords = 0x8000000000000001ull
 inline constexpr ULONG kMaximumFileMegabytes = 256;
 inline constexpr ULONG kBufferKilobytes = 256;
 
+// Microsoft-Windows-Win32k, by event id: the composition tokens, and the window manager's side of a window's surface -
+// which swapchain is bound to which window and when the compositor took it, sprites and logical surfaces, visibility
+// regions, focus and fullscreen, and every process's composition batch. GTA's cold DLSS-G load (2026-11-11) showed DWM
+// binding the new chain's surface only while processing a batch ~1.4 s later; these events name that batch's sender
+// and the binding states. Other Win32k events (messages, input, GDI regions) fire for every window on the machine.
+inline constexpr std::array<USHORT, 36> kWindowManagerEvents = {
+    2,     // FocusChange
+    18,    // SwapChainBind (hWnd, binding)
+    19,    // SwapChainUnBind
+    26,    // FocusedProcessChange
+    27,    // DwmSpriteCreate
+    28,    // DwmSpriteDestroy
+    29,    // LogicalSurfCreate
+    30,    // LogicalSurfDestroy
+    31,    // LogicalSurfPhysSurfBind
+    32,    // LogicalSurfPhysSurfUnbind
+    46,    // BindLogicalSurface (hWnd, surface)
+    47,    // UnBindLogicalSurface
+    48,    // BindLogicalSurfaceRH
+    49,    // DwmSpriteLogicalSurfBind
+    50,    // DwmSpriteLogicalSurfUnBind
+    52,    // PhysicalSurfCreate
+    55,    // SwapChainBindingOpen (size, format, buffer count)
+    56,    // SwapChainBindingRelease (compositor status)
+    57,    // SwapChainBindingStatus
+    58,    // DesktopResolutionFailure
+    151,   // DCompCommitBatch (the committing process is the event's)
+    201,   // TokenCompositionSurfaceObject
+    205,   // ForegroundWindowFullScreen start
+    206,   // ForegroundWindowFullScreen stop
+    301,   // TokenStateChanged
+    400,   // DCompDeferBatch
+    413,   // TokenIndependentFlipSkipComplete
+    461,   // DwmVisRgnUpdate
+    462,   // DwmVisRgnDirty
+    487,   // CompositionTargetGlitch
+    511,   // FlipManagerContentRebind
+    522,   // FlipManagerContentFlip
+    525,   // FlipManagerContentUnbind
+    528,   // TokenManagerDisableScanoutToken
+    551,   // SmoothResizeTimeout
+    10002  // WindowLayoutChange
+};
+static_assert(kWindowManagerEvents.size() <= display_timing_etw::kMaximumFilteredEventIds);
+// Updates (tokens, bindings, batches) | Focus | UserActivity | UIUnresponsiveness | Rendering (visibility regions) |
+// ResponseTime (layout). The id filter decides; the keywords only have to cover the ids.
+inline constexpr ULONGLONG kWindowManagerKeywords =
+    display_timing_etw::kWin32kTokenKeyword | 0x2000ull | 0x20000ull | 0x40000ull | 0x100000ull | 0x0001000000000000ull;
+
 struct ProviderStatus {
     ULONG runtime = ERROR_SUCCESS;         // Microsoft-Windows-DXGI
     ULONG graphicsKernel = ERROR_SUCCESS;  // Microsoft-Windows-DxgKrnl
     ULONG compositor = ERROR_SUCCESS;      // Microsoft-Windows-Dwm-Core
-    ULONG tokens = ERROR_SUCCESS;          // Microsoft-Windows-Win32k composition tokens
+    ULONG windowManager = ERROR_SUCCESS;   // Microsoft-Windows-Win32k (kWindowManagerEvents)
     ULONG nvidiaSchedule = ERROR_SUCCESS;  // NVIDIA display driver (absent on other adapters)
     ULONG frameType = ERROR_SUCCESS;       // Intel-PresentMon frame type
     ULONG process = ERROR_SUCCESS;         // Microsoft-Windows-Kernel-Process
@@ -53,7 +104,7 @@ inline ULONG EnableProvider(TRACEHANDLE session, const GUID& provider, UCHAR lev
 }
 
 // Unfiltered by event id, unlike the real-time set: the point is the events CE does not decode yet. Win32k stays limited
-// to the composition tokens, its other keywords fire for every window message on the machine.
+// to kWindowManagerEvents, its other keywords fire for every window message on the machine.
 inline ProviderStatus EnableProviders(TRACEHANDLE session) {
     namespace dte = display_timing_etw;
     ProviderStatus status;
@@ -61,8 +112,8 @@ inline ProviderStatus EnableProviders(TRACEHANDLE session) {
     status.graphicsKernel =
         EnableProvider(session, dte::kGraphicsKernelProvider, TRACE_LEVEL_VERBOSE, kGraphicsKernelRecordKeywords);
     status.compositor = EnableProvider(session, kCompositorProvider, TRACE_LEVEL_INFORMATION, ~0ull);
-    status.tokens = dte::EnableFilteredProvider(session, dte::kWin32kProvider, dte::kWin32kTokenKeyword,
-                                                {dte::kWin32kTokenCreated, dte::kWin32kTokenStateChanged});
+    status.windowManager = dte::EnableFilteredProvider(session, dte::kWin32kProvider, kWindowManagerKeywords,
+                                                       kWindowManagerEvents.data(), kWindowManagerEvents.size());
     status.nvidiaSchedule =
         EnableProvider(session, dte::kNvidiaDisplayProvider, TRACE_LEVEL_VERBOSE, dte::kNvidiaDisplayKeyword);
     status.frameType = EnableProvider(session, dte::kFrameTypeProvider, TRACE_LEVEL_VERBOSE, dte::kFrameTypeKeyword);

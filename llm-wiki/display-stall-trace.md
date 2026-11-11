@@ -14,9 +14,12 @@ tools.
 
 - `common/platform/display_flight_recorder.h`: one circular file-mode ETW session (`CE_DisplayFlight_Elevation`,
   256 MB, 256 KB buffers, QPC clock, independent-session mode) with DXGI (`kRuntimeKeyword`, verbose), DxgKrnl
-  (Base | Performance, verbose, unfiltered), Dwm-Core (`{9e9bba3c-...}`, all keywords, information), Win32k composition
-  tokens only (0xc9/0x12d id filter - other Win32k keywords fire per window message), NVIDIA display schedule,
-  Intel-PresentMon frame type, Kernel-Process. Seal = stop (ETW writes the file), move, restart.
+  (Base | Performance, verbose, unfiltered), Dwm-Core (`{9e9bba3c-...}`, all keywords, information), Win32k by event id
+  (`kWindowManagerEvents`, 36 ids: composition tokens, SwapChainBind/UnBind, SwapChainBindingOpen/Release/Status, DWM
+  sprite and logical-surface binds, visibility regions, focus/fullscreen, DCompCommitBatch, layout - other Win32k
+  events fire per window message), NVIDIA display schedule, Intel-PresentMon frame type, Kernel-Process. Seal = stop
+  (ETW writes the file), move, restart. The Win32k filter was checked live (2026-11-11, unelevated Performance Log Users
+  real-time probe): accepted, ~184 events/s on an idle desktop, nearly all tokens.
 - Elevation service (`elevationservice/service_flight_trace.cpp`): ops `StartDisplayFlightTrace` /
   `SealDisplayFlightTrace` (protocol values 10/11, `kDisplayFlightTraceCapability = 32`, no payloads, outcome in the
   answer - a reply error would drop the connection and the client's display lease). Start needs the connection's
