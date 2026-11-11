@@ -17,13 +17,15 @@ tools.
 - `common/platform/display_flight_recorder.h`: one circular file-mode ETW session (`CE_DisplayFlight_Elevation`,
   256 MB, 256 KB buffers, QPC clock, independent-session mode) with DXGI (`kRuntimeKeyword`, verbose), DxgKrnl
   (Base | Performance, verbose, unfiltered), Dwm-Core (`{9e9bba3c-...}`, all keywords, information), Win32k by event id
-  (`kWindowManagerEvents`, 36 ids: composition tokens, SwapChainBind/UnBind, SwapChainBindingOpen/Release/Status, DWM
-  sprite and logical-surface binds, visibility regions, focus/fullscreen, DCompCommitBatch, layout - other Win32k
+  (`kWindowManagerEvents`, 35 ids: composition tokens, SwapChainBind/UnBind, SwapChainBindingOpen/Release/Status, DWM
+  sprite and logical-surface binds, visibility regions, focus/fullscreen, DCompDeferBatch, layout - other Win32k
   events fire per window message), NVIDIA display schedule, Intel-PresentMon frame type, Kernel-Process. Seal = stop
   (ETW writes the file), move, restart. The Win32k filter was checked live (2026-11-11, unelevated Performance Log Users
-  real-time probe): accepted, ~184 events/s on an idle desktop, nearly all tokens. Under GTA at 4K, though,
-  `DCompCommitBatch` (id 151) ran at ~36 k/s from DWM: 1.09 M of the 1.74 M events in a sealed file, leaving ~30 s of
-  full-detail history (35-72 s without the Win32k events).
+  real-time probe): accepted, ~184 events/s on an idle desktop, nearly all tokens. Left out since 2026-11-11:
+  `DCompCommitBatch` (id 151, `kDwmBatchCommitEvent`, a static_assert keeps it out). In both reference seals one DWM
+  thread committed on its own channel at 60/s, then ~1 k/s from 22 s and ~63 k/s from 19 s before the switch until it
+  (GTA's save load, observer and normal mode alike): 1.09 M of 1.74 M events, cutting full-detail history to ~30 s
+  (35-72 s without it), with only a channel and batch id per event.
 - Elevation service (`elevationservice/service_flight_trace.cpp`): ops `StartDisplayFlightTrace` /
   `SealDisplayFlightTrace` (protocol values 10/11, `kDisplayFlightTraceCapability = 32`, no payloads, outcome in the
   answer - a reply error would drop the connection and the client's display lease). Start needs the connection's
@@ -175,8 +177,10 @@ relative to the new chain's first present (QPC 6899741153 us).
 
 - Not recorded when CE owns its display trace (elevated CE without the service): a leaked file-mode session would keep
   DxgKrnl unfiltered machine-wide, so that path needs the reclaim logic first. Logged once.
-- With `DCompCommitBatch` the file keeps ~30 s under GTA at 4K, too short for the run-up of a 37 s episode (the 10 s
-  ongoing seal keeps ~20 s). It is DWM's own batch bookkeeping (channel, batch id) and is the candidate to drop.
+- History without `DCompCommitBatch` under GTA at 4K is not yet measured (expected near the 35-72 s of the earlier
+  files); whether it keeps the run-up of a 37 s episode is open (the 10 s ongoing seal keeps the first 10 s).
+- What DWM's batch-commit storm during GTA's save load is (one DWM thread, its own channel, ~63 k/s); it ran in clean
+  loads of both modes, so it is not the black-screen discriminator.
 - The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The
   CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
 - Why DWM, in some Windows sessions, does not take a new flip-model surface into the window's visual at bind time,

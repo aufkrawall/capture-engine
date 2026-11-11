@@ -40,10 +40,13 @@ inline constexpr ULONG kBufferKilobytes = 256;
 
 // Microsoft-Windows-Win32k, by event id: the composition tokens, and the window manager's side of a window's surface -
 // which swapchain is bound to which window and when the compositor took it, sprites and logical surfaces, visibility
-// regions, focus and fullscreen, and every process's composition batch. GTA's cold DLSS-G load (2026-11-11) showed DWM
-// binding the new chain's surface only while processing a batch ~1.4 s later; these events name that batch's sender
-// and the binding states. Other Win32k events (messages, input, GDI regions) fire for every window on the machine.
-inline constexpr std::array<USHORT, 36> kWindowManagerEvents = {
+// regions, focus and fullscreen, and the compositor's deferred batches. GTA's cold DLSS-G load (2026-11-11) showed DWM
+// binding the new chain's surface only while processing a batch ~1.4 s later; these events give the binding states.
+// Other Win32k events (messages, input, GDI regions) fire for every window on the machine. Left out: DCompCommitBatch
+// (151) - one DWM thread committed ~63 k/s on its own channel through GTA's whole save load (both 2026-11-11 reference
+// seals), 63% of the file, cutting its history to ~30 s, with nothing but a channel and batch id in each event.
+inline constexpr USHORT kDwmBatchCommitEvent = 151;
+inline constexpr std::array<USHORT, 35> kWindowManagerEvents = {
     2,     // FocusChange
     18,    // SwapChainBind (hWnd, binding)
     19,    // SwapChainUnBind
@@ -64,7 +67,6 @@ inline constexpr std::array<USHORT, 36> kWindowManagerEvents = {
     56,    // SwapChainBindingRelease (compositor status)
     57,    // SwapChainBindingStatus
     58,    // DesktopResolutionFailure
-    151,   // DCompCommitBatch (the committing process is the event's)
     201,   // TokenCompositionSurfaceObject
     205,   // ForegroundWindowFullScreen start
     206,   // ForegroundWindowFullScreen stop
@@ -82,6 +84,15 @@ inline constexpr std::array<USHORT, 36> kWindowManagerEvents = {
     10002  // WindowLayoutChange
 };
 static_assert(kWindowManagerEvents.size() <= display_timing_etw::kMaximumFilteredEventIds);
+static_assert(
+    [] {
+        for (const USHORT id : kWindowManagerEvents) {
+            if (id == kDwmBatchCommitEvent)
+                return false;
+        }
+        return true;
+    }(),
+    "DCompCommitBatch floods the recording (see kWindowManagerEvents)");
 // Updates (tokens, bindings, batches) | Focus | UserActivity | UIUnresponsiveness | Rendering (visibility regions) |
 // ResponseTime (layout). The id filter decides; the keywords only have to cover the ids.
 inline constexpr ULONGLONG kWindowManagerKeywords =
