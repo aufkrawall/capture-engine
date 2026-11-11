@@ -172,6 +172,11 @@ relative to the new chain's first present (QPC 6899741153 us).
   Status and the sprite/logical-surface binds never fired. A black load with this recorder is what is missing.
 - Reading method (scratch, not in the tool): DWM's `CompSurfInfo_*` and `SCHEDULE_SURFACEUPDATE` by surface LUID
   against the game's `TokenCompositionSurfaceObject` LUIDs and the DXGI bind events, relative to `silenceStartQpcUs`.
+- Verdict (2026-11-11): no CE cause in evidence. What CE does is identical in clean and black loads up to the bind, and
+  the failure precedes its first draw; a CE change would only nudge DWM (a workaround with side effects), so none was
+  made. Since `0c4e828d` the sensor logs `[DisplayTiming] Surface onset: ...` for every new swapchain binding at any
+  log level (first shown after N ms, presents discarded before; [display-change-timing-tokens.md](display-change-timing-tokens.md)),
+  so black loads and CE modes can be compared from ordinary sessions; the raw seal adds the DWM/Win32k detail.
 
 ## Open questions
 
@@ -185,4 +190,5 @@ relative to the new chain's first present (QPC 6899741153 us).
   CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
 - Why DWM, in some Windows sessions, does not take a new flip-model surface into the window's visual at bind time,
   what makes it do so at ~1.36 s (38 s in an earlier session), and whether CE contributes. Needs a black load sealed
-  with the Win32k events; none has occurred since the 14:34 start.
+  with the Win32k events (none since the 14:34 start), and `Surface onset` lines from several loads per Windows
+  session in both normal and observer mode.

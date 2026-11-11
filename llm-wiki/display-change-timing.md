@@ -797,4 +797,4 @@ millisecond CPU handoff stall in that trace, not CE GPU interference or an FSR/g
 - Coverage in `tests/test_graph_scroll_policy.cpp`: one-slot-per-draw under presentation timing, near-constant
   velocity under the measured burst pattern, the arming transient, no rewind under any arrival pattern, the trail
   staying at its floor without frame generation and growing to the observed group, the stall hold and its recovery,
-  stream restart, and the absolute-index history window the plot reads through. Compositor presents and Win32k composition tokens (2026-11-10, pending hardware): [display-change-timing-tokens.md](display-change-timing-tokens.md).
+  stream restart, and the absolute-index history window the plot reads through. Compositor presents, Win32k composition tokens and surface onsets (2026-11-11, pending hardware): [display-change-timing-tokens.md](display-change-timing-tokens.md).
