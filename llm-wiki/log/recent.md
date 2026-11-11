@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA cold DLSS-G black screen: decided at DWM's bind, PostSL trigger refuted
+
+- 0.1.7504 sealed two `switch` references: `20261111_153003` (observer flags) and `20261111_153313` (normal mode, the
+  PostSL back-buffer draw ran exactly as in the black `024650`), first frame after 90/78 ms. The draw is not
+  sufficient for the black screen.
+- All four recordings agree: in clean loads DWM touches the new composition surface 6-27 ms after DXGI binds it
+  (`CompSurfInfo_ForceUpdateRealization bindId=0`), in black loads only at ~1.36 s, 180-250 ms before CE draws anything.
+- The 4/4 vs 3/3 split followed a Windows session: every black load ran between 01:37 and 02:49 (shutdown 03:22); all
+  four loads after the 14:34 start were clean. Next evidence: a black load sealed with the Win32k events.
+- `DCompCommitBatch` is 63% of the recorder's events under GTA (~36 k/s), cutting full history to ~30 s.
+
 ### 2026-11-11 - Display recorder: Win32k surface-binding events and switch references
 
 - To find why DWM leaves GTA's new DLSS-G chain unbound, the recorder now takes 36 Win32k events by id (swapchain and

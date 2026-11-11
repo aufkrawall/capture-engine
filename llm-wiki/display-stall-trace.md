@@ -1,8 +1,10 @@
 # Raw display trace for stall episodes
 
 Last verified: 2026-11-11 (two live seals: GTA 0.1.7503 `20261111_021555` and `20261111_024650`, 1.42/1.38 s
-silence, no events or buffers lost; one CE-passive run without a stall; findings below)
-Stale-risk: medium - the 10 s ongoing seal is unrecorded; which active CE path delays DWM is not yet isolated.
+silence, no events or buffers lost; two `switch` references on 0.1.7504, `20261111_153003` and `20261111_153313`;
+findings below)
+Stale-risk: medium - the 10 s ongoing seal is unrecorded; no black load has been recorded with the Win32k events, and
+whether CE contributes to DWM's missed bind is open.
 
 Why: GTA V Enhanced 0.1.7500 (`20261110_222057`) presented ~131/s for 37 s after a save load while nothing reached the
 screen (`[SCANOUT STALL] ep=1 ... durationUs=38066160 presents=4924`, sensors `composed ready=3563 published=0`). CE's
@@ -19,7 +21,9 @@ tools.
   sprite and logical-surface binds, visibility regions, focus/fullscreen, DCompCommitBatch, layout - other Win32k
   events fire per window message), NVIDIA display schedule, Intel-PresentMon frame type, Kernel-Process. Seal = stop
   (ETW writes the file), move, restart. The Win32k filter was checked live (2026-11-11, unelevated Performance Log Users
-  real-time probe): accepted, ~184 events/s on an idle desktop, nearly all tokens.
+  real-time probe): accepted, ~184 events/s on an idle desktop, nearly all tokens. Under GTA at 4K, though,
+  `DCompCommitBatch` (id 151) ran at ~36 k/s from DWM: 1.09 M of the 1.74 M events in a sealed file, leaving ~30 s of
+  full-detail history (35-72 s without the Win32k events).
 - Elevation service (`elevationservice/service_flight_trace.cpp`): ops `StartDisplayFlightTrace` /
   `SealDisplayFlightTrace` (protocol values 10/11, `kDisplayFlightTraceCapability = 32`, no payloads, outcome in the
   answer - a reply error would drop the connection and the client's display lease). Start needs the connection's
@@ -120,7 +124,8 @@ relative to the new chain's first present (QPC 6899741153 us).
   the overlay into DLSS-G's UIColorAndAlpha ~500 times. Left as the trigger: the PostSL callback - CE's draw straight
   onto the new DLSS-G chain's output back buffers from its first native present (RTVs on all 6 buffers, submit on the
   DLSS-G present queue); the Present transport is `normalChain` in every mode. Cold DLSS-G starts with it: 4/4 black;
-  without it: 3/3 clean.
+  without it: 3/3 clean. Superseded: `20261111_153313` ran this draw and was clean, and the split followed a Windows
+  restart (next section).
 - Not explained yet: why DWM reacts. DWM normally binds a re-bound surface 2-7 ms after DXGI's
   `BindBackBuffersToDwm` (another process did so five times in `024650`); the game's DLSS-G surface, bound at -240 and
   -211 ms while the old surface sat in independent flip, was realized only at 1355 ms. In both seals that realization
@@ -128,19 +133,52 @@ relative to the new chain's first present (QPC 6899741153 us).
   `021555` 0.46 ms *before* the screen capture began - no capture ever ended the black time. The recorder filters
   Win32k to composition tokens, so the window-manager update that forced it is not in the file.
 - Duration: 38.05 and 38.12 s in 0.1.7500 (`20261110_221616`, `20261110_222057`), 1.16-1.46 s from 0.1.7501 on. Between
-  them: `ca274de0` (presenter ownership) and `4f16603b` (this recorder). Whether either shortened it is unproven.
+  them: `ca274de0` (presenter ownership) and `4f16603b` (this recorder). Whether either shortened it is unproven; the
+  38 s loads also ran in a different Windows session (uptime 7.7 h).
 - Reading method: `etl_stall_digest.py` ranks the stall correctly (the flip streams' gaps) but the verdict needed
   payloads - Win32k `TokenStateChanged`/`TokenCompositionSurfaceObject` (surface LUID, present count, NewState),
   Dwm-Core `CompSurfInfo_*`, `SCHEDULE_SURFACEUPDATE` (first 8 bytes = surface LUID) and DxgKrnl
   `IndependentFlipTransition`, decoded with TDH property info (scratch decoder, not in the tool yet).
 
+## Reference seals: the black screen is decided at bind time (2026-11-11)
+
+- `20261111_153003` (0.1.7504, all three observer flags) and `20261111_153313` (0.1.7504, normal mode) each sealed a
+  `switch` reference (`silenceMs=90` / `78`, 5 presents; `[SL STARTUP] firstScreenChange` 400/350 ms after the handoff).
+  `153313` ran the full active path with the same lines as the black `024650`: prewarmed PostSL backend, exact PostSL
+  back-buffer draw submitted before the first Present. That draw is not sufficient for the black screen.
+- The DXGI side is identical in clean and black loads: old chain `UnBind KeepExistingContent=1` with its surface in
+  independent flip on plane 1, `CreateDirectFlipResource`, `SwapChainBind` + `BindBackBuffersToDwm` + `DWMRedirection`,
+  ResizeBuffers unbind/rebind 25-30 ms later, first token `BindId=2`. DWM is not:
+
+| Load | Mode | DWM's first `CompSurfInfo_*` on the new surface | First token after InFrame | First change |
+|---|---|---|---|---|
+| `153003` | observer | -254 ms, 6 ms after the bind | bound at 14 ms | 90 ms |
+| `153313` | normal | -184 ms, 27 ms after the first bind | `SCHEDULE_SURFACEUPDATE`, bound 0.4 ms later | 78 ms |
+| `021555` | normal | 1388 ms | Confirmed -> Discarded, no surface update | 1416 ms |
+| `024650` | normal | 1355 ms | Confirmed -> Discarded, no surface update | 1384 ms |
+
+- The early event is `CompSurfInfo_ForceUpdateRealization surfaceLuid=<new> bindId=0 applied=0` (twice) inside DWM's
+  channel-batch processing: DWM's visual tree already references the new composition surface, so its first token is
+  scheduled and bound at once. In a black load DWM has no record of the surface until ~1.36 s and discards every token.
+  The divergence lies 180-250 ms before CE's first draw on the chain, and CE's lines on the chain-creating thread (SL
+  lifecycle, old chain release, CreateSwapChainForHwnd, hook refresh, queue adoption) are identical in both.
+- Confound: all four black loads ran in one Windows session (uptime 1.3-2.45 h, ended by a shutdown at 03:22); its
+  only clean load was observer-only (`gtanooverlay`, 2.9 h). Since the next start (14:34) all four loads were clean,
+  normal mode included. Whether CE contributes at all rests on that single observer-only contrast.
+- The Win32k events show nothing else on the clean path: `SwapChainBind` (hWnd, binding handle), `DCompDeferBatch`
+  (frame-deadline deferrals, reasons 1/3, under one frame) and one `CompositionTargetGlitch`; SwapChainBindingOpen/
+  Status and the sprite/logical-surface binds never fired. A black load with this recorder is what is missing.
+- Reading method (scratch, not in the tool): DWM's `CompSurfInfo_*` and `SCHEDULE_SURFACEUPDATE` by surface LUID
+  against the game's `TokenCompositionSurfaceObject` LUIDs and the DXGI bind events, relative to `silenceStartQpcUs`.
+
 ## Open questions
 
 - Not recorded when CE owns its display trace (elevated CE without the service): a leaked file-mode session would keep
   DxgKrnl unfiltered machine-wide, so that path needs the reclaim logic first. Logged once.
-- Event volume per second under DLSS-G at 4K, and whether 256 MB keeps the run-up of a 37 s episode, are unmeasured.
+- With `DCompCommitBatch` the file keeps ~30 s under GTA at 4K, too short for the run-up of a 37 s episode (the 10 s
+  ongoing seal keeps ~20 s). It is DWM's own batch bookkeeping (channel, batch id) and is the candidate to drop.
 - The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The
   CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
-- Why CE's PostSL draw on the new chain's buffers keeps DWM from binding it, and which window-manager update makes
-  DWM realize it at ~1.2-1.5 s (38 s in 0.1.7500). Next run pair: a staged observer load (seals a `switch` reference)
-  and a normal one (seals `ended`), both with the Win32k binding events; compare the bind/batch sequences.
+- Why DWM, in some Windows sessions, does not take a new flip-model surface into the window's visual at bind time,
+  what makes it do so at ~1.36 s (38 s in an earlier session), and whether CE contributes. Needs a black load sealed
+  with the Win32k events; none has occurred since the 14:34 start.
