@@ -184,7 +184,7 @@ relative to the new chain's first present (QPC 6899741153 us).
 - Verdict (2026-11-11): no CE cause in evidence. What CE does is identical in clean and black loads up to the bind, and
   the failure precedes its first draw; a CE change would only nudge DWM (a workaround with side effects), so none was
   made. Since `0c4e828d` the sensor logs `[DisplayTiming] Surface onset: ...` for every new swapchain binding at any
-  log level (first shown after N ms, presents discarded before; [display-change-timing-tokens.md](display-change-timing-tokens.md)),
+  log level (on screen by N ms, presents discarded before; [display-change-timing-tokens.md](display-change-timing-tokens.md)),
   so black loads and CE modes can be compared from ordinary sessions; the raw seal adds the DWM/Win32k detail.
 
 ## Open questions

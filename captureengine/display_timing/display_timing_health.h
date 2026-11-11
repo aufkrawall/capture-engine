@@ -403,9 +403,12 @@ inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transi
 // A finished surface onset (display_timing_tokens.h): how long the compositor took to show the first frame of a
 // process's new swapchain binding, and how many of its presents it discarded unshown before that. GTA's cold DLSS-G
 // loads were black for ~1.4 s with ~150 presents discarded this way; a healthy switch shows within a few frames.
+// Windows reports a composed present retired when the compositor builds its next frame, and an independently flipped
+// one released when the next flip replaces it, so the time is an upper bound about one refresh after the scanout
+// (GTA trace 20261111_162241: on the display at 20.4 ms, retired at 29.0 ms).
 inline void LogSurfaceOnset(const display_timing_tokens::SurfaceOnset& onset) {
     if (onset.shownUs != 0) {
-        LogInfo("[DisplayTiming] Surface onset: PID %u composition surface %llu bind %llu first shown %.1f ms after "
+        LogInfo("[DisplayTiming] Surface onset: PID %u composition surface %llu bind %llu on screen by %.1f ms after "
                 "its first present (by %s; presents=%llu discardedBefore=%llu)",
                 onset.processId, static_cast<unsigned long long>(onset.surfaceLuid),
                 static_cast<unsigned long long>(onset.bindId),

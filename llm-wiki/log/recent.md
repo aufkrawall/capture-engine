@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA + ReShade FSR overlay at rendered rate; display trace opt-in; onset wording
+
+- `gtafsroverlaystutteryghosty` (0.1.7505, DLSS FG -> FSR FG with ReShade): the final-batch route never armed
+  (`trace unusable ... runtimeBatch=0 relayed=1`); AMD's Present call lay beyond the 20 stack frames searched behind
+  Social Club, Epic's overlay, Streamline and ReShade. Deeper search `05276970`, flow scenario with a 40-frame chain
+  ([overlay-rendering.md](../overlay-rendering.md)). Hardware retest pending; "ghosting" not explained by the logs.
+- Raw display trace now opt-in: `[Diagnostics] display_stall_trace=false` by default (`e68f3a8f`).
+- `Surface onset` says "on screen by N ms" (an upper bound, about one refresh late).
+- Not done after a closer look: tokens marking composed presents for screen times (needs a present-identity
+  correlation and changes the composed state the latency and graph use; gain ~100 ms per switch), and quieting the
+  pre-first-present `no screen-change timestamp published yet` warning (would also hide a trace delivering no presents).
+
 ### 2026-11-11 - Token fix verified on hardware; composed first frames missed by two readouts
 
 - GTA 0.1.7505 `20261111_162241` (normal mode, DLSS-G save load, clean): `tokens(created=6415 ... flipped=6406

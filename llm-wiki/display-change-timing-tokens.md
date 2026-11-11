@@ -57,14 +57,15 @@ at that pair's first retired or flipped present, or unshown when the same proces
 `sensors.log` line each, at any log level, at most 64 per session (`surfaceOnsets(logged unlogged dropped)` in the
 health line):
 
-- `[DisplayTiming] Surface onset: PID <pid> composition surface <luid> bind <id> first shown <ms> ms after its first
+- `[DisplayTiming] Surface onset: PID <pid> composition surface <luid> bind <id> on screen by <ms> ms after its first
   present (by composition|independent flip; presents=<n> discardedBefore=<n>)`
 - `... was left before any of its presents was shown (presents=<n> discarded=<n>)`
 
-"First shown" is therefore an upper bound, about one refresh after the real scanout (28.6 ms logged, 20.4 ms on the
-display in `162241`). Expected: a healthy swapchain switch shows in tens of ms with `presents` 1-2 (`162241`: 14.7 and
-28.6 ms by composition); the black loads would read ~1.4 s with ~150 discarded. A ResizeBuffers rebind is a new pair and logs too.
-This is the per-load answer to "did DWM take the new swapchain late", without a raw trace or trace logging.
+The logged time ("on screen by", since 2026-11-11) is therefore an upper bound, about one refresh after the real
+scanout (28.6 ms logged, 20.4 ms on the display in `162241`). Expected: a healthy swapchain switch shows in tens of ms
+with `presents` 1-2 (`162241`: 14.7 and 28.6 ms by composition); the black loads would read ~1.4 s with ~150
+discarded. A ResizeBuffers rebind is a new pair and logs too. This is the per-load answer to "did DWM take the new
+swapchain late", without a raw trace or trace logging.
 
 ## Source anchors
 
