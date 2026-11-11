@@ -1,8 +1,8 @@
 # Raw display trace for stall episodes
 
 Last verified: 2026-11-11 (two live seals: GTA 0.1.7503 `20261111_021555` and `20261111_024650`, 1.42/1.38 s
-silence, no events or buffers lost; two `switch` references on 0.1.7504, `20261111_153003` and `20261111_153313`;
-findings below)
+silence, no events or buffers lost; two `switch` references on 0.1.7504, `20261111_153003` and `20261111_153313`, and
+one on 0.1.7505 without `DCompCommitBatch`, `20261111_162241`; findings below)
 Stale-risk: medium - the 10 s ongoing seal is unrecorded; no black load has been recorded with the Win32k events, and
 whether CE contributes to DWM's missed bind is open.
 
@@ -158,6 +158,14 @@ relative to the new chain's first present (QPC 6899741153 us).
 | `153313` | normal | -184 ms, 27 ms after the first bind | `SCHEDULE_SURFACEUPDATE`, bound 0.4 ms later | 78 ms |
 | `021555` | normal | 1388 ms | Confirmed -> Discarded, no surface update | 1416 ms |
 | `024650` | normal | 1355 ms | Confirmed -> Discarded, no surface update | 1384 ms |
+| `162241` | normal | -244 ms, 1.6 ms after `CreateDirectFlipResource` | bound 0.9 ms after the first present | 110 ms |
+
+- "First change" is the sealer's `silenceMs`. It sees the process's own flips and composed episodes started by expired
+  presents, not the composed frames right after a switch: in `162241` (0.1.7505) DWM bound the new surface at 0.9 ms,
+  ended the old surface's independent flip at 1.4 ms (`IndependentFlipTransition Entering=0`), and its frame with the
+  first present reached the display with the MMIO flip at 20.4 ms; the token retired at 29.0 ms (`Surface onset ...
+  28.6 ms`), while `silenceMs=110` and `[SL STARTUP] firstScreenChange` (178 ms after the first present) waited for
+  the first independent flip. The black rows are unaffected (nothing reached the screen until DWM bound the surface).
 
 - The early event is `CompSurfInfo_ForceUpdateRealization surfaceLuid=<new> bindId=0 applied=0` (twice) inside DWM's
   channel-batch processing: DWM's visual tree already references the new composition surface, so its first token is
@@ -182,8 +190,9 @@ relative to the new chain's first present (QPC 6899741153 us).
 
 - Not recorded when CE owns its display trace (elevated CE without the service): a leaked file-mode session would keep
   DxgKrnl unfiltered machine-wide, so that path needs the reclaim logic first. Logged once.
-- History without `DCompCommitBatch` under GTA at 4K is not yet measured (expected near the 35-72 s of the earlier
-  files); whether it keeps the run-up of a 37 s episode is open (the 10 s ongoing seal keeps the first 10 s).
+- History without `DCompCommitBatch` (`20261111_162241`, GTA 4K save load with DLSS-G): 256 MiB, 1.14 M events, span
+  72 s, full DxgKrnl detail for the last 49 s (was ~30 s), nothing lost. Whether it keeps the run-up of a 37 s episode
+  is open (the 10 s ongoing seal keeps the first 10 s).
 - What DWM's batch-commit storm during GTA's save load is (one DWM thread, its own channel, ~63 k/s); it ran in clean
   loads of both modes, so it is not the black-screen discriminator.
 - The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The

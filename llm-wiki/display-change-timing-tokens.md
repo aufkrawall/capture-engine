@@ -1,8 +1,9 @@
 # Display change timing: compositor activity and composition tokens
 
-Last verified: 2026-11-11 (code, unit tests and the token payloads of two live GTA traces; the fixed sensor has **no
-hardware run yet**). Stale-risk: high until `sensors.log` of a run on 0c4e828d or later shows `tokens(created=...)`
-non-zero and `Surface onset:` lines. Parent page: [display-change-timing.md](display-change-timing.md).
+Last verified: 2026-11-11 on hardware: GTA 0.1.7505 `20261111_162241` (normal mode, DLSS-G save load) logged
+`tokens(created=6415 confirmed=869 retired=6 flipped=6406 discarded=1 otherProcess=3911 undecodable=0)` and two onsets
+(14.7 ms and 28.6 ms, by composition), checked against the sealed trace of the same switch. Stale-risk: low; no black
+load has run on this build yet. Parent page: [display-change-timing.md](display-change-timing.md).
 
 ## Summary
 
@@ -36,6 +37,13 @@ shared provider set.
 | independent flip | Completed -> InFrame -> Discarded, `IndependentFlip=1` (with TokenIndependentFlipSkipComplete) | `flipped` |
 | not shown | Discarded without either | `discarded` |
 
+When the states arrive (`20261111_162241` trace): Retired comes with DWM's next composed frame, not at scanout - the
+first token of the new chain was Confirmed at 2.9 ms with DWM's `FlipMultiPlaneOverlay`, reached the display with the
+MMIO flip at 20.4 ms and retired at 29.0 ms; an independent-flip token is Discarded when the next flip replaces it
+(~7 ms after its own MMIO flip at 144 Hz). Confirmed -> Discarded means composed but never scanned out, not lost: a
+composed window of another process behind GTA's independent flip ended every token that way and retired only once
+DWM's frames reached the display again.
+
 `confirmed` counts tokens taken into a compositor frame. Before the fix a retired token's release would have counted as
 `otherProcess`, and every independent-flip present as discarded. Presents a newer one replaced before the compositor's
 next frame also end as `discarded`; a black screen is `discarded` with nothing retired or flipped - GTA's cold DLSS-G
@@ -53,8 +61,9 @@ health line):
   present (by composition|independent flip; presents=<n> discardedBefore=<n>)`
 - `... was left before any of its presents was shown (presents=<n> discarded=<n>)`
 
-Expected: a healthy swapchain switch shows in tens of ms with `presents` 1-2 (the clean GTA references: 25 ms by
-composition); the black loads would read ~1.4 s with ~150 discarded. A ResizeBuffers rebind is a new pair and logs too.
+"First shown" is therefore an upper bound, about one refresh after the real scanout (28.6 ms logged, 20.4 ms on the
+display in `162241`). Expected: a healthy swapchain switch shows in tens of ms with `presents` 1-2 (`162241`: 14.7 and
+28.6 ms by composition); the black loads would read ~1.4 s with ~150 discarded. A ResizeBuffers rebind is a new pair and logs too.
 This is the per-load answer to "did DWM take the new swapchain late", without a raw trace or trace logging.
 
 ## Source anchors
@@ -70,5 +79,10 @@ This is the per-load answer to "did DWM take the new swapchain late", without a 
 - Tests: `tests/test_display_timing_tokens.cpp`.
 - Consumers: `tools/log_digest.py` does not parse these lines specially; read `sensors.log` onset, expiry and health
   lines. Token counts feed only logs, no timing decision.
-- Open: the state events are per-present on the whole machine while tokens are tracked; the cost on a busy desktop is
-  unmeasured (a linear search over at most 256 tracked tokens per event).
+- Cost: the state events are per-present on the whole machine while tokens are tracked (a linear search over at most
+  256 tracked tokens per event); `162241` delivered ~350 events/s with GTA presenting ~95/s (3-4 states per token, 3911
+  other-process events in 68 s). A busy multi-window desktop is unmeasured.
+- Open: the composed frames right after a switch reach the screen-change stream only once submissions expire, so
+  `[SL STARTUP] firstScreenChange` and the stall sealer's `silenceMs` report the first independent flip instead
+  (178 ms / 110 ms vs 20 ms on the display in `162241`; [display-stall-trace.md](display-stall-trace.md)). The tokens
+  identify a composed present at Confirmed; the timing service does not use them for that yet.

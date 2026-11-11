@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-11-11 - Token fix verified on hardware; composed first frames missed by two readouts
+
+- GTA 0.1.7505 `20261111_162241` (normal mode, DLSS-G save load, clean): `tokens(created=6415 ... flipped=6406
+  undecodable=0)`, `Surface onset` 14.7 / 28.6 ms by composition. The sealed reference keeps 49 s of full detail (was
+  ~30 s with `DCompCommitBatch`).
+- The trace shows the onset is an upper bound: Retired comes with DWM's next frame (29.0 ms), the first frame was on
+  the display at 20.4 ms. `[SL STARTUP] firstScreenChange` (178 ms) and the sealer's `silenceMs` (110 ms) wait for the
+  first independent flip because composed frames enter the screen-change stream only after presents expire.
+- Clean and black loads still match up to the first present; only DWM's bind differs (0.9 ms here, ~1.36 s black).
+
 ### 2026-11-11 - Composition tokens were never read; surface onsets; recorder drops DCompCommitBatch
 
 - The sensor's Win32k token counts were zero in every session: Windows 11 build 26300 sends both token events as
