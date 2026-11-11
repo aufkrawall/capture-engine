@@ -26,6 +26,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/diagnostics/logger_process_host.cpp",
     "captureengine/diagnostics/logger_ring_source.cpp",
     "captureengine/diagnostics/logger_service.cpp",
+    "captureengine/display_timing/display_stall_trace_sealer.cpp",
     "captureengine/display_timing/display_timing_compositor.cpp",
     "captureengine/display_timing/display_timing_refresh.cpp",
     "captureengine/display_timing/display_timing_service.cpp",

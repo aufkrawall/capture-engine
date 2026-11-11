@@ -61,15 +61,44 @@ TEST(ElevationProtocolTest, RefusesVersionsOpcodesSizesAndReplyErrorsInRequests)
     }
 }
 
-// A client sends RestoreConfig only to a service that advertises it: an older one drops the connection instead.
-TEST(ElevationProtocolTest, ConfigRestoreIsAdvertisedAndIsTheLastOperation) {
+// A client sends RestoreConfig and the flight-trace operations only to a service that advertises them: an older one
+// drops the connection instead. None of them carries a payload.
+TEST(ElevationProtocolTest, AppendedOperationsAreAdvertisedAndCarryNoPayload) {
     EXPECT_NE(Capabilities{}.features & kConfigRestoreCapability, 0u);
+    EXPECT_NE(Capabilities{}.features & kDisplayFlightTraceCapability, 0u);
     Header header;
     header.sequence = 1;
-    header.operation = Operation::RestoreConfig;
-    EXPECT_TRUE(ValidateHeader(header, false));
-    header.operation = static_cast<Operation>(static_cast<uint32_t>(Operation::RestoreConfig) + 1);
+    for (Operation operation :
+         {Operation::RestoreConfig, Operation::StartDisplayFlightTrace, Operation::SealDisplayFlightTrace}) {
+        header.operation = operation;
+        header.size = 0;
+        EXPECT_TRUE(ValidateHeader(header, false));
+        header.size = 4;
+        EXPECT_FALSE(ValidateHeader(header, false));
+    }
+    header.size = 0;
+    header.operation = static_cast<Operation>(static_cast<uint32_t>(Operation::SealDisplayFlightTrace) + 1);
     EXPECT_FALSE(ValidateHeader(header, false));
+}
+
+// The client moves the sealed file the service names; only the service's own folder and file pattern qualify.
+TEST(ElevationProtocolTest, OnlyTheServicesSealedTracePathIsAccepted) {
+    const auto make = [](const wchar_t* text) {
+        std::array<wchar_t, 260> path{};
+        wcsncpy_s(path.data(), path.size(), text, _TRUNCATE);
+        return path;
+    };
+    EXPECT_TRUE(IsSealedDisplayTracePath(make(L"C:\\Program Files\\Capture Engine\\DisplayTraces\\display_trace_7.etl")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"C:\\Program Files\\Capture Engine\\DisplayTraces\\display_trace_.etl")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"C:\\Program Files\\Capture Engine\\DisplayTraces\\display_trace_7.dll")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"C:\\Windows\\System32\\display_trace_7.etl")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"C:\\x\\DisplayTraces\\..\\display_trace_7.etl")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"\\\\server\\DisplayTraces\\display_trace_7.etl")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"DisplayTraces\\display_trace_7.etl")));
+    EXPECT_FALSE(IsSealedDisplayTracePath(make(L"C:/x/DisplayTraces/display_trace_7.etl")));
+    std::array<wchar_t, 260> unterminated;
+    unterminated.fill(L'7');
+    EXPECT_FALSE(IsSealedDisplayTracePath(unterminated));
 }
 
 TEST(ElevationProtocolTest, SensorSelectorsAreBoundedAndCannotCarryPathsOrCommands) {

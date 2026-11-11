@@ -51,7 +51,10 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
         TraceManager& manager;
         bool display = false;
         bool processStart = false;
+        bool flight = false;
         ~TraceLease() {
+            if (flight)
+                manager.ReleaseFlight();
             if (display)
                 manager.Release(TraceKind::Display);
             if (processStart)
@@ -75,6 +78,8 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
         reply.size = 0;
         sequence = request.sequence;
         SensorSample sample;
+        SealedDisplayTrace sealed;
+        FlightTraceStatus flightStatus;
         Capabilities capabilities;
         capabilities.serverPid = GetCurrentProcessId();
         const void* output = &sample;
@@ -129,6 +134,10 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
                     }
                     break;
                 case Operation::ReleaseTrace:
+                    if (trace.flight) {
+                        traces.ReleaseFlight();
+                        trace.flight = false;
+                    }
                     if (trace.display) {
                         traces.Release(TraceKind::Display);
                         trace.display = false;
@@ -148,6 +157,25 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
                     break;
                 case Operation::RestoreConfig:
                     reply.error = RestoreConfig();
+                    break;
+                // Only for a connection holding the display lease: the recorder records the display providers.
+                case Operation::StartDisplayFlightTrace:
+                    if (!trace.display) {
+                        flightStatus.status = ERROR_INVALID_STATE;
+                    } else if (!trace.flight) {
+                        flightStatus.status = traces.AcquireFlight();
+                        trace.flight = flightStatus.status == ERROR_SUCCESS;
+                    }
+                    reply.size = sizeof(flightStatus);
+                    output = &flightStatus;
+                    break;
+                case Operation::SealDisplayFlightTrace:
+                    if (trace.flight)
+                        sealed = traces.SealFlight();
+                    else
+                        sealed.status = ERROR_INVALID_STATE;
+                    reply.size = sizeof(sealed);
+                    output = &sealed;
                     break;
                 default:
                     reply.error = ERROR_INVALID_FUNCTION;

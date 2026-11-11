@@ -112,6 +112,10 @@ a missing `config.ini` from the service's own embedded template in the folder it
 replaces a file. Hardening and the client side: `configuration.md` first-run invariants. An older service lacks the
 capability bit, so the client never sends it there (an unknown opcode drops the connection).
 
+`StartDisplayFlightTrace`/`SealDisplayFlightTrace` (2026-11-11, `kDisplayFlightTraceCapability`) also take no payload:
+the service records into and seals within `<installation>\DisplayTraces`, never a client path, and reports the outcome
+in the answer instead of the reply error. See `display-stall-trace.md`.
+
 LocalSystem creates, enables, flushes and stops the ETW session. The installing SID
 gets only read rights (WMIGUID_QUERY | WMIGUID_NOTIFICATION | TRACELOG_ACCESS_REALTIME, kConsumerTraceRights) on the fixed CE session GUID; OpenTrace succeeds without them but ProcessTrace returns ACCESS_DENIED (observed 2026-10-01 with realtime-only rights; the widened mask is unverified on hardware); teardown removes
 that permission. Desktop queries remain interactive. A service trace the worker cannot consume is not retried for that service PID; the local

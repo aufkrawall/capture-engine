@@ -73,6 +73,12 @@ void DisplayTimingService::Impl::Start() {
         return;
     }
 
+    if (brokerTrace_)
+        StartStallTrace();
+    else if (Log_IsEnabled(LogLevel::Trace))
+        LogInfo("[DisplayStallTrace] no raw display traces for stall episodes: this display trace is CE's own, and the "
+                "recorder runs in the elevation service");
+
     stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!stopEvent_) {
         SetStartupFailure(GetLastError());
@@ -257,6 +263,48 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
     LogSubmissionExpiryTransition(transition, submissions_.lastExpiredProcessId(), composed_.compositorPid(),
                                   expired, expiryMonitor_.lastCompleted(), expiryMonitor_.lastComposedClaimed(),
                                   expiryMonitor_.refusedStops(), expiryMonitor_.episodeDurationMs(), activity);
+    if (stallTraceActive_) {
+        stallTraceSealer_.Request(stallTracePolicy_.Observe(
+            transition == DisplaySubmissionExpiryMonitor::Transition::Started,
+            transition == DisplaySubmissionExpiryMonitor::Transition::Stopped, expiryMonitor_.expiring(),
+            expiryMonitor_.episodeDurationMs(), composed_.claimed(), submissions_.lastExpiredProcessId()));
+    }
+}
+
+// Only with trace logging: the recording enables DxgKrnl, DWM and DXGI events machine-wide while a game is tracked, a
+// diagnostic cost. The sealed files land beside sensors.log, so a stall in a trace run needs nothing else.
+void DisplayTimingService::Impl::StartStallTrace() {
+    const std::string folder = Log_GetDirectory();
+    if (!Log_IsEnabled(LogLevel::Trace) || folder.empty())
+        return;
+    DWORD status = ERROR_SUCCESS;
+    {
+        std::lock_guard<std::mutex> lock(brokerMutex_);
+        status = broker_.StartDisplayFlightTrace();
+    }
+    if (status != ERROR_SUCCESS) {
+        LogInfo("[DisplayStallTrace] no raw display traces for stall episodes (status=%lu%s)", status,
+                status == ERROR_NOT_SUPPORTED ? ": the elevation service predates them" : "");
+        return;
+    }
+    // Log_Init's path is in the Windows code page (role_host.cpp).
+    const int wideLength = MultiByteToWideChar(CP_ACP, 0, folder.c_str(), static_cast<int>(folder.size()), nullptr, 0);
+    std::wstring wideFolder(wideLength > 0 ? static_cast<size_t>(wideLength) : 0, L'\0');
+    if (wideLength > 0)
+        MultiByteToWideChar(CP_ACP, 0, folder.c_str(), static_cast<int>(folder.size()), wideFolder.data(), wideLength);
+    stallTraceSealer_.Start(
+        [this](ce::elevation::SealedDisplayTrace& sealed) {
+            std::lock_guard<std::mutex> lock(brokerMutex_);
+            return broker_.SealDisplayFlightTrace(sealed);
+        },
+        std::move(wideFolder));
+    stallTraceActive_ = true;
+    LogInfo("[DisplayStallTrace] recording the display pipeline in the elevation service; an episode with nothing on "
+            "screen is sealed into this folder when it ends after %llums or more, and once at %llums while it lasts "
+            "(at most %u per session)",
+            static_cast<unsigned long long>(display_stall_trace::kMinimumEpisodeMs),
+            static_cast<unsigned long long>(display_stall_trace::kOngoingSealMs),
+            display_stall_trace::kMaximumSealsPerSession);
 }
 
 void DisplayTimingService::Impl::PruneAssociations(int64_t cutoff) {
@@ -386,6 +434,9 @@ void DisplayTimingService::Impl::StopTraceSession() {
 }
 
 void DisplayTimingService::Impl::StopNoexcept() noexcept {
+    // Before broker_ is released: the sealer's thread uses it.
+    stallTraceSealer_.Stop();
+    stallTraceActive_ = false;
     if (stopEvent_)
         SetEvent(stopEvent_);
     if (flushThread_.joinable())
@@ -431,7 +482,12 @@ void DisplayTimingService::UpdateTargets(const std::vector<DisplayTimingTarget>&
 bool DisplayTimingService::Impl::NeedsRestart() const {
     const bool configured = ce::elevation::ServiceEnabled();
     if (configured != brokerConfigured_) return true;
-    if (brokerTrace_ && (!broker_.Connected() || !consuming_.load(std::memory_order_acquire))) return true;
+    bool brokerConnected = false;
+    {
+        std::lock_guard<std::mutex> lock(brokerMutex_);
+        brokerConnected = broker_.Connected();
+    }
+    if (brokerTrace_ && (!brokerConnected || !consuming_.load(std::memory_order_acquire))) return true;
     const uint32_t pid = configured ? ce::elevation::ServiceProcessId() : 0;
     return configured && !brokerTrace_ && pid != 0 && pid != attemptedServicePid_;
 }

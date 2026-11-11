@@ -5,6 +5,7 @@
 #include "common/ipc/elevation_windows.h"
 #include "captureengine/sensors/sensor_plugin.h"
 #include "common/config/config.h"
+#include "common/platform/display_flight_recorder.h"
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -29,10 +30,16 @@ public:
     DWORD Acquire(TraceKind kind);
     void Release(TraceKind kind);
     bool ProcessStartAvailable();
+    // The display flight recorder (service_flight_trace.cpp), leased by connections that hold the display lease and
+    // asked for it; the last such lease, or the display lease's end, stops it.
+    DWORD AcquireFlight();
+    void ReleaseFlight();
+    SealedDisplayTrace SealFlight();
 
 private:
     DWORD StartSessionLocked();
     DWORD EnableDisplayLocked();
+    void StopFlightLocked();
     void Stop();
     std::wstring owner_;
     std::mutex mutex_;
@@ -41,5 +48,9 @@ private:
     bool processStartAvailable_ = false;
     Handle stop_;
     std::thread flush_;
+    display_flight_recorder::Recorder flight_;
+    uint32_t flightUsers_ = 0;
+    uint32_t flightSeals_ = 0;
+    uint64_t lastSealTickMs_ = 0;
 };
 }  // namespace ce::elevation

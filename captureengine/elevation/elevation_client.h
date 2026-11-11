@@ -16,6 +16,11 @@ public:
     void ReleaseTrace();
     // Operation::RestoreConfig: ERROR_NOT_SUPPORTED from an older service, else the service's result.
     DWORD RestoreConfig();
+    // The display flight recorder for this connection's display lease (common/platform/display_flight_recorder.h).
+    // ERROR_NOT_SUPPORTED from a service that does not advertise it.
+    DWORD StartDisplayFlightTrace();
+    // False when the exchange failed; the seal's own outcome is in `sealed.status`.
+    bool SealDisplayFlightTrace(SealedDisplayTrace& sealed);
     bool Connected() const {
         return static_cast<bool>(pipe_) && serverProcess_ &&
                WaitForSingleObject(serverProcess_.Get(), 0) == WAIT_TIMEOUT;

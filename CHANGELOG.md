@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7160).
 
+### New
+
+- **Automatic display trace when the screen stops updating:** with trace logging on, the elevation service keeps a bounded recording of the display pipeline (DirectX, graphics kernel, compositor and display driver events) while a game is tracked. When the game keeps presenting but nothing reaches the screen for 1.5 seconds or more, Capture Engine saves that recording into the session's log folder, so a black screen like GTA V Enhanced's after a save load can be traced without running any extra tool.
+
 ### Fixed
 
 - **GTA V Enhanced crash after switching from DLSS to FSR Frame Generation:** the game kept reporting DLSS-G as on through its state queries for about a second after it unloaded DLSS-G, and Capture Engine took that for DLSS Frame Generation on the new FSR swapchain: it showed DLSS FG, moved the overlay to Streamline's route and drew on the FSR swapchain through the old DLSS queue, which removed the GPU device. Capture Engine now tracks which runtime created the window's current swapchain and whether DLSS-G is still loaded in Streamline; a DLSS-G state report never takes over a swapchain another runtime presents, the overlay stays on the FSR route and the FSR status stays correct. A DLSS-G enabled only through its state reports is still recognised on its own swapchain. A route submit that removes the device no longer counts as a working route.

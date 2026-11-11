@@ -244,6 +244,21 @@ DWORD RestoreConfigThroughService() {
     return client.RestoreConfig();
 }
 
+DWORD Client::StartDisplayFlightTrace() {
+    if ((features_ & kDisplayFlightTraceCapability) == 0)
+        return ERROR_NOT_SUPPORTED;
+    if (!trace_)
+        return ERROR_INVALID_STATE;
+    FlightTraceStatus status;
+    if (!Exchange(Operation::StartDisplayFlightTrace, nullptr, 0, &status, sizeof(status)))
+        return ERROR_GEN_FAILURE;
+    return status.status;
+}
+bool Client::SealDisplayFlightTrace(SealedDisplayTrace& sealed) {
+    if ((features_ & kDisplayFlightTraceCapability) == 0)
+        return false;
+    return Exchange(Operation::SealDisplayFlightTrace, nullptr, 0, &sealed, sizeof(sealed));
+}
 bool Client::Subscribe(const SensorRequest& request) {
     return Exchange(Operation::SubscribeSensors, &request, sizeof(request), nullptr, 0);
 }

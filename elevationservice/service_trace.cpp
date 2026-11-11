@@ -111,6 +111,7 @@ DWORD TraceManager::Acquire(TraceKind kind) {
 }
 
 void TraceManager::Stop() {
+    StopFlightLocked();
     processStartAvailable_ = false;
     leases_.Reset();
     if (stop_)
@@ -130,6 +131,9 @@ void TraceManager::Stop() {
 void TraceManager::Release(TraceKind kind) {
     std::lock_guard<std::mutex> guard(mutex_);
     const TraceLeaseCounter::ReleasePlan plan = leases_.Release(kind == TraceKind::Display);
+    // The flight recorder records the display providers' events; it never outlives them.
+    if (plan.disableDisplay || plan.stopSession)
+        StopFlightLocked();
     if (plan.disableDisplay) {
         display_timing_etw::DisableDisplayTimingProviders(session_);
         LogInfo("[ElevationService] Display timing providers disabled; the process provider stays on");

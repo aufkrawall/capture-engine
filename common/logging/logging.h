@@ -37,6 +37,8 @@ void Log_Shutdown();
 void Log_SetLevel(LogLevel level);
 LogLevel Log_GetLevel();
 bool Log_IsEnabled(LogLevel level);
+// The folder of the file Log_Init opened (this session's log folder), or empty before Log_Init or without a file.
+std::string Log_GetDirectory();
 
 void Log(LogLevel level, const char* format, ...) __attribute__((format(printf, 2, 3)));
 void LogInfo(const char* format, ...) __attribute__((format(printf, 1, 2)));

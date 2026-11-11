@@ -11,6 +11,7 @@
 
 static FILE* g_LogFile = nullptr;
 static std::mutex g_LogMutex;
+static std::string g_LogDirectory;  // guarded by g_LogMutex
 static std::atomic<bool> g_LoggingEnabled{false};
 static std::atomic<LogLevel> g_LogLevel{LogLevel::Trace};
 
@@ -70,6 +71,8 @@ void Log_Init(const std::string& filename, LogLevel level) {
     if (g_LogFile)
         fclose(g_LogFile);
     g_LogFile = OpenLogFile(filename);
+    const size_t separator = filename.find_last_of("\\/");
+    g_LogDirectory = g_LogFile && separator != std::string::npos ? filename.substr(0, separator) : std::string();
     g_LogLevel.store(level, std::memory_order_release);
     g_LoggingEnabled.store(g_LogFile != nullptr, std::memory_order_release);
 }
@@ -85,6 +88,11 @@ void Log_Shutdown() {
 
 void Log_SetLevel(LogLevel level) {
     g_LogLevel.store(level, std::memory_order_release);
+}
+
+std::string Log_GetDirectory() {
+    std::lock_guard<std::mutex> lock(g_LogMutex);
+    return g_LogDirectory;
 }
 
 LogLevel Log_GetLevel() {

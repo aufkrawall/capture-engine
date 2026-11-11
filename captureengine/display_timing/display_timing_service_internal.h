@@ -18,6 +18,8 @@
 #include "display_timing_refresh.h"
 #include "display_timing_session_reclaim.h"
 #include "display_timing_startup.h"
+#include "display_stall_trace_policy.h"
+#include "display_stall_trace_sealer.h"
 #include "captureengine/elevation/elevation_client.h"
 #include "display_timing_submissions.h"
 #include "display_timing_tokens.h"
@@ -134,11 +136,18 @@ private:
     void FlushLoop();
     void StopTraceSession();
     void StopNoexcept() noexcept;
+    // The raw display trace for stall episodes (display_stall_trace_policy.h), recorded by the elevation service.
+    void StartStallTrace();
 
     std::atomic<bool> started_{false};
     std::atomic<DisplayTimingStatus> startupStatus_{DisplayTimingStatus::Unavailable};
     TRACEHANDLE session_ = 0;
     ce::elevation::Client broker_;
+    // broker_ is also used by the stall-trace sealer's thread.
+    mutable std::mutex brokerMutex_;
+    display_stall_trace::Policy stallTracePolicy_;
+    DisplayStallTraceSealer stallTraceSealer_;
+    bool stallTraceActive_ = false;
     bool brokerConfigured_ = false;
     bool brokerTrace_ = false;
     uint32_t attemptedServicePid_ = 0;

@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-11 - Raw display trace sealed on no-display episodes (pending hardware)
+
+- For the GTA save-load stall (37 s of presents, nothing on screen) the user asked for evidence without external tools.
+  The elevation service now keeps a circular raw ETL of DXGI/DxgKrnl/DWM/Win32k-token/NVIDIA events with trace logging
+  on; the sensor seals it into the session folder when an expiry episode shows <= 2 composed frames/s (once at 10 s,
+  at the end if >= 1.5 s). Read with `tools/tracing/etl_stall_digest.py`. Details and open questions:
+  `display-stall-trace.md`. Unit tests (policy, sealer, protocol, path validation) pass; no live seal yet.
+
 ### 2026-11-11 - GTA late DLSS -> FSR device removal: stale GetState took FidelityFX's chain
 
 - Session `20261110_222057` (0.1.7500): the unload-order fix worked (forwarded at proxy release, FFX create ok,
