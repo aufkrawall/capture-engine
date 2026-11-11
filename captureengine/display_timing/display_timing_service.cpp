@@ -390,7 +390,11 @@ bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
     health.compositorFlips = composed_.compositorFlips();
     health.tokensCreated = tokens_.created();
     health.tokensUnmatched = tokens_.unmatched();
+    health.tokensUndecodable = tokensUndecodable_;
     health.tokens = tokens_.total();
+    health.surfaceOnsetsLogged = surfaceOnsetLines_;
+    health.surfaceOnsetsUnlogged = surfaceOnsetsUnlogged_;
+    health.surfaceOnsetsDropped = tokens_.onsetsDropped();
     health.completions = completionsBySource_;
     const uint32_t blankSource = verticalBlanks_.busiestSource();
     health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);

@@ -93,25 +93,51 @@ void DisplayTimingService::Impl::HandleInputRetrieval(EVENT_RECORD* event) {
 
 void DisplayTimingService::Impl::HandleCompositionTokenCreated(EVENT_RECORD* event) {
     const auto& header = event->EventHeader;
-    // Only version 0 has the layout display_timing_etw.h decodes.
-    if (header.EventDescriptor.Version != 0 || !IsTrackedProcess(header.ProcessId))
+    if (!IsTrackedProcess(header.ProcessId))
         return;
+    if (!IsDecodableWin32kTokenVersion(header.EventDescriptor.Version)) {
+        // Said once: a version this build rejected is how every token count stayed at zero on Windows build 26300.
+        if (tokensUndecodable_++ == 0) {
+            LogWarn("[DisplayTiming] Win32k composition-token events of PID %u arrive as version %u; this build reads "
+                    "versions up to %u, so token counts and surface onsets stay empty (counted as tokens undecodable=)",
+                    static_cast<unsigned>(header.ProcessId), static_cast<unsigned>(header.EventDescriptor.Version),
+                    static_cast<unsigned>(kWin32kTokenNewestDecodableVersion));
+        }
+        return;
+    }
     Win32kTokenCreated token;
     if (DecodeWin32kTokenCreated(event->UserData, event->UserDataLength,
                                  (header.Flags & EVENT_HEADER_FLAG_64_BIT_HEADER) != 0, token)) {
-        tokens_.ObserveCreated(token.surfaceLuid, token.presentCount, token.bindId);
+        tokens_.ObserveCreated(header.ProcessId, token.surfaceLuid, token.presentCount, token.bindId,
+                               DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_));
+        LogFinishedSurfaceOnsets();
     }
 }
 
 void DisplayTimingService::Impl::HandleCompositionTokenState(EVENT_RECORD* event) {
     const auto& header = event->EventHeader;
     // Every windowed present of every process on the machine ends here; without a tracked token it is not ours.
-    if (header.EventDescriptor.Version != 0 || !tokens_.HasTrackedTokens())
+    if (!tokens_.HasTrackedTokens() || !IsDecodableWin32kTokenVersion(header.EventDescriptor.Version))
         return;
     Win32kTokenState state;
     if (DecodeWin32kTokenState(event->UserData, event->UserDataLength,
                                (header.Flags & EVENT_HEADER_FLAG_64_BIT_HEADER) != 0, state)) {
-        tokens_.ObserveState(state.surfaceLuid, state.presentCount, state.bindId, state.newState);
+        tokens_.ObserveState(state.surfaceLuid, state.presentCount, state.bindId, state.newState,
+                             state.independentFlip, DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_));
+        LogFinishedSurfaceOnsets();
+    }
+}
+
+void DisplayTimingService::Impl::LogFinishedSurfaceOnsets() {
+    // One line per new swapchain binding is rare; a process that rebinds every few frames must not flood the log.
+    constexpr uint64_t kMaxSurfaceOnsetLines = 64;
+    while (const auto onset = tokens_.TakeOnset()) {
+        if (surfaceOnsetLines_ >= kMaxSurfaceOnsetLines) {
+            ++surfaceOnsetsUnlogged_;
+            continue;
+        }
+        ++surfaceOnsetLines_;
+        LogSurfaceOnset(*onset);
     }
 }
 

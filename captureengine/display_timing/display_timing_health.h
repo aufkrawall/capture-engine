@@ -63,7 +63,12 @@ struct DisplayTimingHealth {
     uint64_t compositorFlips = 0;
     uint64_t tokensCreated = 0;
     uint64_t tokensUnmatched = 0;
+    uint64_t tokensUndecodable = 0;  // created events of a layout version this build does not read
     display_timing_tokens::TokenCounts tokens;
+    // Surface onsets (display_timing_tokens.h): lines written, finished past the line cap, lost to the queue bound.
+    uint64_t surfaceOnsetsLogged = 0;
+    uint64_t surfaceOnsetsUnlogged = 0;
+    uint64_t surfaceOnsetsDropped = 0;
     uint64_t queued = 0;
     uint64_t published = 0;
     uint64_t suppressed = 0;
@@ -267,7 +272,8 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "fallback(committed=%llu suppressed=%llu) "
         "composed(pid=%u compositorPid=%u ready=%llu published=%llu superseded=%llu rejected=%llu ownWhileComposed=%llu "
         "compositorPresents=%llu compositorFlips=%llu) "
-        "tokens(created=%llu confirmed=%llu retired=%llu discarded=%llu otherProcess=%llu) "
+        "tokens(created=%llu confirmed=%llu retired=%llu flipped=%llu discarded=%llu otherProcess=%llu undecodable=%llu) "
+        "surfaceOnsets(logged=%llu unlogged=%llu dropped=%llu) "
         "completion(vsyncDpc=%llu vsyncDpcMpo=%llu hsyncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
         "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
         "fieldOffset=%d abandoned=%d) "
@@ -288,7 +294,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.fallbackSuppressed, health.composedPid, health.compositorPid, health.composedReady,
         health.composedPublished, health.composedSuperseded, health.composedRejected, health.composedOwnPublished,
         health.compositorPresents, health.compositorFlips, health.tokensCreated, health.tokens.confirmed,
-        health.tokens.retired, health.tokens.discarded, health.tokensUnmatched, health.completions[0], health.completions[1],
+        health.tokens.retired, health.tokens.flipped, health.tokens.discarded, health.tokensUnmatched,
+        health.tokensUndecodable, health.surfaceOnsetsLogged, health.surfaceOnsetsUnlogged, health.surfaceOnsetsDropped,
+        health.completions[0], health.completions[1],
         health.completions[2], health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
         static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
         health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0, health.blanksObserved,
@@ -367,25 +375,48 @@ inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transi
         LogInfo("[DisplayTiming] Flip completions resumed for tracked presents (completed=%llu expired=%llu "
                 "composedShown=0 in the last prune, refusedStops=%llu episodeMs=%llu); screen-change timing "
                 "follows the process's own flips again; episode: compositor(pid=%u presents=%llu flips=%llu) "
-                "tokens(confirmed=%llu retired=%llu discarded=%llu)%s",
+                "tokens(confirmed=%llu retired=%llu flipped=%llu discarded=%llu)%s",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired),
                 static_cast<unsigned long long>(refusedStops), static_cast<unsigned long long>(episodeDurationMs),
                 activity.compositorPid, static_cast<unsigned long long>(activity.compositorPresents),
                 static_cast<unsigned long long>(activity.compositorFlips),
                 static_cast<unsigned long long>(activity.tokens.confirmed),
                 static_cast<unsigned long long>(activity.tokens.retired),
+                static_cast<unsigned long long>(activity.tokens.flipped),
                 static_cast<unsigned long long>(activity.tokens.discarded), note.c_str());
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::StopRefused) {
         LogInfo("[DisplayTiming] Own flip completions while composed (completed=%llu expired=%llu composedShown=%llu "
                 "in the last prune): the compositor still shows the process's frames, so composed timing is kept "
                 "(reported once per composed episode; the resume line carries the total); so far compositor(pid=%u "
-                "presents=%llu flips=%llu) tokens(confirmed=%llu retired=%llu discarded=%llu)%s",
+                "presents=%llu flips=%llu) tokens(confirmed=%llu retired=%llu flipped=%llu discarded=%llu)%s",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired),
                 static_cast<unsigned long long>(composedClaimed), activity.compositorPid,
                 static_cast<unsigned long long>(activity.compositorPresents),
                 static_cast<unsigned long long>(activity.compositorFlips),
                 static_cast<unsigned long long>(activity.tokens.confirmed),
                 static_cast<unsigned long long>(activity.tokens.retired),
+                static_cast<unsigned long long>(activity.tokens.flipped),
                 static_cast<unsigned long long>(activity.tokens.discarded), note.c_str());
+    }
+}
+
+// A finished surface onset (display_timing_tokens.h): how long the compositor took to show the first frame of a
+// process's new swapchain binding, and how many of its presents it discarded unshown before that. GTA's cold DLSS-G
+// loads were black for ~1.4 s with ~150 presents discarded this way; a healthy switch shows within a few frames.
+inline void LogSurfaceOnset(const display_timing_tokens::SurfaceOnset& onset) {
+    if (onset.shownUs != 0) {
+        LogInfo("[DisplayTiming] Surface onset: PID %u composition surface %llu bind %llu first shown %.1f ms after "
+                "its first present (by %s; presents=%llu discardedBefore=%llu)",
+                onset.processId, static_cast<unsigned long long>(onset.surfaceLuid),
+                static_cast<unsigned long long>(onset.bindId),
+                static_cast<double>(onset.shownUs - onset.firstPresentUs) / 1000.0,
+                onset.shownByIndependentFlip ? "independent flip" : "composition",
+                static_cast<unsigned long long>(onset.presents), static_cast<unsigned long long>(onset.discardedBefore));
+    } else {
+        LogInfo("[DisplayTiming] Surface onset: PID %u composition surface %llu bind %llu was left before any of its "
+                "presents was shown (presents=%llu discarded=%llu)",
+                onset.processId, static_cast<unsigned long long>(onset.surfaceLuid),
+                static_cast<unsigned long long>(onset.bindId), static_cast<unsigned long long>(onset.presents),
+                static_cast<unsigned long long>(onset.discardedBefore));
     }
 }

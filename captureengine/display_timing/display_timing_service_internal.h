@@ -95,6 +95,8 @@ private:
     // Win32k composition tokens: created by a tracked process, ended by the compositor.
     void HandleCompositionTokenCreated(EVENT_RECORD* event);
     void HandleCompositionTokenState(EVENT_RECORD* event);
+    // One line per finished surface onset (display_timing_tokens.h), capped per session.
+    void LogFinishedSurfaceOnsets();
     void PublishInputBurst(const DisplayInputRetrievalBursts::Burst& burst);
     // `programmedTimestamp`: the flip event of an immediate flip, which both
     // programs and completes it.
@@ -170,6 +172,9 @@ private:
     NvidiaFlipSchedule nvidiaSchedule_;
     ComposedPresentation composed_;
     display_timing_tokens::CompositionTokenTally tokens_;
+    uint64_t tokensUndecodable_ = 0;  // token events of a layout version this build does not read
+    uint64_t surfaceOnsetLines_ = 0;
+    uint64_t surfaceOnsetsUnlogged_ = 0;  // past kMaxSurfaceOnsetLines
     uint64_t ownCompletions_ = 0;
     VerticalBlankClock verticalBlanks_;
     std::vector<PendingTimestamp> pendingTimestamps_;

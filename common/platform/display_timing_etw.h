@@ -118,6 +118,15 @@ bool ReadProperty(const EVENT_RECORD* event, const wchar_t* name, T& value,
 // writes them: packed, the pointers as wide as the emitting process's. Read straight from the event's user data, as
 // PresentMon does: the state events fire for every windowed present on the machine and a property-by-property decode
 // of each is not worth its cost.
+// Version 1 (Windows 11 build 26300, 56-byte payloads in a 2026-11-11 GTA trace) only appends fields -
+// TokenCompositionSurfaceObject FlipInterval/DestWidth/DestHeight, TokenStateChanged EarlyComposition - so the prefix
+// below reads both. Rejecting version 1 had left every token count at zero on that build. A later version may move
+// fields; it is refused and counted (DisplayTimingHealth::tokensUndecodable) rather than misread.
+inline constexpr UCHAR kWin32kTokenNewestDecodableVersion = 1;
+
+inline bool IsDecodableWin32kTokenVersion(UCHAR version) noexcept {
+    return version <= kWin32kTokenNewestDecodableVersion;
+}
 #pragma pack(push, 1)
 template <typename PointerT>
 struct Win32kTokenCreatedPayload {
@@ -154,6 +163,7 @@ struct Win32kTokenState {
     uint32_t presentCount = 0;
     uint64_t bindId = 0;
     uint32_t newState = 0;
+    bool independentFlip = false;  // the present went to the screen by independent flip, not composition
 };
 
 namespace detail {
@@ -173,7 +183,7 @@ bool DecodeTokenState(const void* data, std::size_t length, Win32kTokenState& ou
     if (!data || length < sizeof(payload))
         return false;
     std::memcpy(&payload, data, sizeof(payload));
-    out = {payload.surfaceLuid, payload.presentCount, payload.bindId, payload.newState};
+    out = {payload.surfaceLuid, payload.presentCount, payload.bindId, payload.newState, payload.independentFlip != 0};
     return true;
 }
 }  // namespace detail
