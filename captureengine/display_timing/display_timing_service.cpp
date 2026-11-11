@@ -303,10 +303,11 @@ void DisplayTimingService::Impl::StartStallTrace() {
     LogInfo("[DisplayStallTrace] recording the display pipeline in the elevation service; when the foreground game "
             "keeps presenting and the screen does not change for %lldms or more (from its first unshown present), the "
             "recording is sealed into this folder when the screen changes again, and once at %lldms while it lasts "
-            "(at most %u per session)",
+            "(at most %u per session); a swapchain switch whose first frame shows sooner is sealed as a reference "
+            "(reason=switch, at most %u per session)",
             static_cast<long long>(display_stall_trace::kMinimumSilenceUs / 1000),
             static_cast<long long>(display_stall_trace::kOngoingSealUs / 1000),
-            display_stall_trace::kMaximumSealsPerSession);
+            display_stall_trace::kMaximumSealsPerSession, display_stall_trace::kMaximumSwitchSealsPerSession);
 }
 
 void DisplayTimingService::Impl::PruneAssociations(int64_t cutoff) {

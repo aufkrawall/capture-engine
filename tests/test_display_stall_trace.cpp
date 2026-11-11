@@ -176,6 +176,103 @@ TEST(DisplayStallTracePolicyTest, ANewProcessTakesTheLeastRecentSlot) {
     EXPECT_EQ(seals[0].processId, kGame);
 }
 
+constexpr uint64_t kLoadingChain = 0x1455aca26b0;
+constexpr uint64_t kDlssgChain = 0x1498745fb50;
+
+// Presents on one swapchain every `intervalMs` in [fromMs, toMs); with `shown`, each reaches the screen 7 ms later.
+void PresentOn(Policy& policy, uint64_t chain, int64_t fromMs, int64_t toMs, int64_t intervalMs = 7,
+               bool shown = false, uint32_t pid = kGame) {
+    for (int64_t ms = fromMs; ms < toMs; ms += intervalMs) {
+        policy.OnPresent(pid, Ms(ms), chain);
+        if (shown)
+            policy.OnScreenChange(pid, Ms(ms + 7));
+    }
+}
+
+TEST(DisplayStallTracePolicyTest, AQuickSwapchainSwitchIsSealedAsAReference) {
+    // 20261111_145243 (overlay observer modes): the DLSS-G chain's first frame showed 130 ms after its first present.
+    Policy policy;
+    PresentOn(policy, kLoadingChain, -1'000, 0, 16, true);
+    PresentOn(policy, kDlssgChain, 207, 337, 22);
+    EXPECT_TRUE(Prune(policy, 0, 250).empty());
+    policy.OnScreenChange(kGame, Ms(337));
+    const auto seals = Prune(policy, 500, 500);
+    ASSERT_EQ(seals.size(), 1u);
+    EXPECT_EQ(seals[0].reason, SealReason::kSwitch);
+    EXPECT_EQ(seals[0].processId, kGame);
+    EXPECT_EQ(seals[0].silenceStartUs, Ms(207));
+    EXPECT_EQ(seals[0].silenceMs, 130u);
+    EXPECT_EQ(seals[0].presents, 6u);
+    EXPECT_EQ(DisplayStallTraceSealer::DestinationName(seals[0]), L"display_stall_1220_ep1_switch.etl");
+    // The chain keeps showing: nothing more.
+    PresentOn(policy, kDlssgChain, 340, 3'000, 7, true);
+    EXPECT_TRUE(Prune(policy, 750, 3'000).empty());
+    EXPECT_EQ(policy.switchSeals(), 1u);
+    EXPECT_EQ(policy.seals(), 0u);
+}
+
+TEST(DisplayStallTracePolicyTest, ASlowSwitchIsSealedAsTheStallOnly) {
+    // 20261111_024650: the DLSS-G chain's first frame after 1.42 s and 152 presents.
+    Policy policy;
+    PresentOn(policy, kLoadingChain, -1'000, 0, 16, true);
+    PresentOn(policy, kDlssgChain, 0, 1'420, 9);
+    policy.OnScreenChange(kGame, Ms(1'420));
+    const auto seals = Prune(policy, 1'500, 1'750);
+    ASSERT_EQ(seals.size(), 1u);
+    EXPECT_EQ(seals[0].reason, SealReason::kEnded);
+    EXPECT_EQ(policy.switchSeals(), 0u);
+}
+
+TEST(DisplayStallTracePolicyTest, TheFirstSwapchainAndUnknownPointersAreNoSwitch) {
+    Policy policy;
+    PresentOn(policy, kLoadingChain, 0, 300, 16);  // the game's first chain: nothing shown before it
+    policy.OnScreenChange(kGame, Ms(310));
+    PresentOn(policy, 0, 320, 600, 16, true);  // the runtime's pointer unread
+    PresentOn(policy, kLoadingChain, 600, 900, 16, true);
+    EXPECT_TRUE(Prune(policy, 0, 1'000).empty());
+}
+
+TEST(DisplayStallTracePolicyTest, ReturningToARecentSwapchainIsNoSwitch) {
+    Policy policy;
+    PresentOn(policy, kLoadingChain, -1'000, 0, 16, true);
+    PresentOn(policy, kDlssgChain, 10, 200, 16);
+    policy.OnScreenChange(kGame, Ms(200));
+    ASSERT_EQ(Prune(policy, 250, 250).size(), 1u);
+    PresentOn(policy, kDlssgChain, 200, 400, 16, true);
+    PresentOn(policy, kLoadingChain, 410, 500, 16);  // back to the earlier chain (FG off again)
+    policy.OnScreenChange(kGame, Ms(500));
+    EXPECT_TRUE(Prune(policy, 750, 750).empty());
+}
+
+TEST(DisplayStallTracePolicyTest, SwitchReferencesHaveTheirOwnLimit) {
+    Policy policy;
+    PresentOn(policy, 0x1000, -1'000, 0, 16, true);
+    for (uint64_t i = 1; i <= display_stall_trace::kMaximumSwitchSealsPerSession + 2; ++i) {
+        const int64_t base = static_cast<int64_t>(i) * 1'000;
+        PresentOn(policy, 0x1000 + i * 0x10, base, base + 100, 16);
+        policy.OnScreenChange(kGame, Ms(base + 100));
+        PresentOn(policy, 0x1000 + i * 0x10, base + 100, base + 500, 16, true);
+        Prune(policy, base + 750, base + 750);
+    }
+    EXPECT_EQ(policy.switchSeals(), display_stall_trace::kMaximumSwitchSealsPerSession);
+    EXPECT_EQ(policy.refusedForLimit(), 2u);
+    // The stall seals are untouched.
+    PresentOn(policy, 0x1000 + 0x10, 9'000, 10'500, 7);
+    policy.OnScreenChange(kGame, Ms(10'500));
+    const auto seals = Prune(policy, 10'750, 10'750);
+    ASSERT_EQ(seals.size(), 1u);
+    EXPECT_EQ(seals[0].reason, SealReason::kEnded);
+}
+
+TEST(DisplayStallTracePolicyTest, ABackgroundSwitchIsNoReference) {
+    Policy policy;
+    PresentOn(policy, kLoadingChain, -1'000, 0, 16, true);
+    PresentOn(policy, kDlssgChain, 10, 400, 16);
+    EXPECT_TRUE(Prune(policy, 250, 250, kOther).empty());
+    policy.OnScreenChange(kGame, Ms(400));
+    EXPECT_TRUE(Prune(policy, 500, 750).empty());
+}
+
 std::array<wchar_t, 260> ServicePath(const wchar_t* text) {
     std::array<wchar_t, 260> path{};
     wcsncpy_s(path.data(), path.size(), text, _TRUNCATE);

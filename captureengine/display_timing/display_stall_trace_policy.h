@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 // When a stretch with nothing on screen deserves its raw trace (common/platform/display_flight_recorder.h).
@@ -19,6 +21,12 @@
 // A silence counts only while the process owns the foreground window (an alt-tabbed or minimized game's presents never
 // show) and keeps presenting (a gap longer than kMaximumPresentGapUs starts it over: a loading hitch is no display
 // stall). Pure; the display timing service feeds it.
+//
+// The same recording of a swapchain switch that reached the screen quickly is the comparison a stall needs: GTA's two
+// sealed black screens showed DWM binding the new DLSS-G chain only after ~1.4 s, but nothing showed what DWM does when
+// the same switch works (Overlay observer runs: first frame after 130-142 ms). So the first presents of a swapchain new
+// to a process that already had frames on screen are watched too, and when that chain's first frame shows within
+// kMinimumSilenceUs the recording is sealed as a "switch" reference, at most kMaximumSwitchSealsPerSession times.
 namespace display_stall_trace {
 
 inline constexpr int64_t kMinimumSilenceUs = 1'000'000;
@@ -26,9 +34,13 @@ inline constexpr int64_t kOngoingSealUs = 10'000'000;
 inline constexpr uint32_t kMinimumPresents = 8;
 inline constexpr int64_t kMaximumPresentGapUs = 500'000;
 inline constexpr uint32_t kMaximumSealsPerSession = 6;
+inline constexpr uint32_t kMaximumSwitchSealsPerSession = 2;
 inline constexpr std::size_t kMaximumProcesses = 4;
+// Swapchains a process presented on recently: presenting on one of them again is no switch (a game alternating two
+// chains, or an overlay's own chain).
+inline constexpr std::size_t kRememberedSwapchains = 4;
 
-enum class SealReason : uint8_t { kNone, kOngoing, kEnded };
+enum class SealReason : uint8_t { kNone, kOngoing, kEnded, kSwitch };
 
 inline const char* SealReasonName(SealReason reason) {
     switch (reason) {
@@ -36,12 +48,15 @@ inline const char* SealReasonName(SealReason reason) {
             return "ongoing";
         case SealReason::kEnded:
             return "ended";
+        case SealReason::kSwitch:
+            return "switch";
         case SealReason::kNone:
         default:
             return "none";
     }
 }
 
+// For kSwitch the silence is the new chain's: from its first present to its first screen change.
 struct SealRequest {
     SealReason reason = SealReason::kNone;
     uint32_t episode = 0;
@@ -54,12 +69,14 @@ struct SealRequest {
 
 class Policy {
 public:
-    // A present of a tracked process, at its PresentStart (QPC microseconds).
-    void OnPresent(uint32_t processId, int64_t us) {
+    // A present of a tracked process, at its PresentStart (QPC microseconds). `swapchain`: the runtime's swapchain
+    // pointer (0 when unknown, which never counts as a switch).
+    void OnPresent(uint32_t processId, int64_t us, uint64_t swapchain = 0) {
         Process* process = Find(processId, true);
         if (!process)
             return;
         process->lastSeenUs = us;
+        process->NoteSwapchain(swapchain, us);
         if (process->lastChangeUs == 0 || us <= process->lastChangeUs)
             return;  // nothing shown yet to measure from, or a present the published change already covers
         if (process->firstUs == 0 || us - process->lastPresentUs > kMaximumPresentGapUs)
@@ -80,6 +97,13 @@ public:
             if (process->Qualifies(silenceUs) && !pending_)
                 pending_ = Take(*process, SealReason::kEnded, silenceUs);
             process->firstUs = 0;
+        }
+        if (process->switchFirstUs != 0 && us > process->switchFirstUs) {
+            // A slow switch is the stall above; only one that showed in time is a reference.
+            const int64_t switchUs = us - process->switchFirstUs;
+            if (!process->background && switchUs < kMinimumSilenceUs && !pending_)
+                pending_ = TakeSwitch(*process, switchUs);
+            process->switchFirstUs = 0;
         }
         if (us > process->lastChangeUs)
             process->lastChangeUs = us;
@@ -108,6 +132,7 @@ public:
     }
 
     uint32_t seals() const noexcept { return seals_; }
+    uint32_t switchSeals() const noexcept { return switchSeals_; }
     uint32_t refusedForLimit() const noexcept { return refusedForLimit_; }
 
 private:
@@ -121,6 +146,27 @@ private:
         uint32_t episode = 0;
         bool background = false;
         bool ongoingSealed = false;
+        std::array<uint64_t, kRememberedSwapchains> swapchains{};  // most recent first
+        int64_t switchFirstUs = 0;  // first present on a new swapchain whose frames have not shown yet; 0: none
+        uint32_t switchPresents = 0;
+
+        void NoteSwapchain(uint64_t swapchain, int64_t us) {
+            if (swapchain == 0)
+                return;
+            if (swapchain != swapchains[0]) {
+                const auto known = std::find(swapchains.begin(), swapchains.end(), swapchain);
+                // A chain new to a process that already had frames on screen: a switch.
+                if (known == swapchains.end() && swapchains[0] != 0 && lastChangeUs != 0) {
+                    switchFirstUs = us;
+                    switchPresents = 0;
+                }
+                std::rotate(swapchains.begin(), known == swapchains.end() ? swapchains.end() - 1 : known,
+                            known == swapchains.end() ? swapchains.end() : known + 1);
+                swapchains[0] = swapchain;
+            }
+            if (switchFirstUs != 0)
+                ++switchPresents;
+        }
 
         void StartSilence(int64_t us) {
             firstUs = us;
@@ -163,10 +209,22 @@ private:
                 process.firstUs, process.presents};
     }
 
+    // Its own episode number and limit: references never use up the stall seals.
+    SealRequest TakeSwitch(const Process& process, int64_t switchUs) {
+        if (switchSeals_ >= kMaximumSwitchSealsPerSession) {
+            ++refusedForLimit_;
+            return {};
+        }
+        ++switchSeals_;
+        return {SealReason::kSwitch,   ++episodes_, process.processId, static_cast<uint64_t>(switchUs / 1000),
+                process.switchFirstUs, process.switchPresents};
+    }
+
     std::array<Process, kMaximumProcesses> processes_{};
     SealRequest pending_;
     uint32_t episodes_ = 0;
     uint32_t seals_ = 0;
+    uint32_t switchSeals_ = 0;
     uint32_t refusedForLimit_ = 0;
 };
 

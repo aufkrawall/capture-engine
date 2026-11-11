@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-11-11 - Display recorder: Win32k surface-binding events and switch references
+
+- To find why DWM leaves GTA's new DLSS-G chain unbound, the recorder now takes 36 Win32k events by id (swapchain and
+  logical-surface binds, binding status, visibility regions, focus/fullscreen, DCompCommitBatch), and the sensor seals
+  a `switch` reference when a new swapchain's first frame shows within 1 s (2 per session), so a clean run yields the
+  comparison trace. Details: `display-stall-trace.md`.
+
 ### 2026-11-11 - GTA cold DLSS-G black screen: the PostSL back-buffer draw is the trigger
 
 - Staged observer runs `20261111_144926` (policy-only) and `20261111_145243` (startup-present-only): clean, first frame

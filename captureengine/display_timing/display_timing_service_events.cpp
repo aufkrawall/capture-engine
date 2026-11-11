@@ -48,9 +48,13 @@ void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
                                                     header.TimeStamp.QuadPart, presentSync, presentFlags)) {
                 return;
             }
-            if (stallTraceActive_)
+            if (stallTraceActive_) {
+                // The runtime's swapchain pointer, as wide as the presenting process's: a new one is a switch.
+                uint64_t swapchain = 0;
+                ReadProperty(event, L"pIDXGISwapChain", swapchain);
                 stallTracePolicy_.OnPresent(header.ProcessId,
-                                            DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_));
+                                            DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_), swapchain);
+            }
             // The same frames the published series is built from, measured
             // one stage earlier. Several tracked processes would interleave
             // into one meaningless series, so the accumulator follows the

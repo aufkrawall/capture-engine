@@ -35,6 +35,11 @@ tools.
   foreground window (checked each 250 ms prune) and keeps presenting (a gap > 500 ms restarts it), with >= 8 presents.
   Sealed when the screen changes again after >= 1 s, and once at 10 s while it lasts (keeps the run-up in the circular
   file); at most 6 per session.
+- Switch references (`reason=switch`, own limit of 2 per session): a present on a swapchain pointer the process has not
+  used among its last 4 (DXGI PresentStart's `pIDXGISwapChain`), after the process already had frames on screen, whose
+  first screen change comes within 1 s, seals the same recording as a known-good comparison. `silenceMs` and
+  `silenceStartQpcUs` are then the new chain's first present to first change. A pointer the runtime reuses for a new
+  chain is not seen as a switch.
 - Evidence for the threshold: the published screen-change gaps of the three GTA sessions are 38.06 s, 1.70 s and 1.38 s
   for the cold DLSS-G loads (all black on screen) and <= 0.66 s for every other FG switch.
 - Rejected (2026-11-11): watching the submission-expiry episodes. The monitor starts only once a present is older than
@@ -46,7 +51,7 @@ tools.
   reached 1 s, and a false seal costs one file (capped).
 - `DisplayStallTraceSealer` does the exchange and the move off the ETW thread; the file lands beside `sensors.log` as
   `display_stall_<pid>_ep<N>_<ongoing|ended>.etl`.
-- Logs: sensors `[DisplayStallTrace] recording ...|sealed ep= pid= reason= silenceMs= silenceStartQpcUs= presents= file=
+- Logs: sensors `[DisplayStallTrace] recording ...|sealed ep= pid= reason=ongoing|ended|switch silenceMs= silenceStartQpcUs= presents= file=
   bytes= eventsLost= buffersLost= restart=|seal failed ...|move failed ...|no raw display traces ...`; service
   `[ElevationService] Display flight recorder on (... providers ...)|sealed (...)|off after N seal(s)`.
 
@@ -137,5 +142,5 @@ relative to the new chain's first present (QPC 6899741153 us).
 - The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The
   CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
 - Why CE's PostSL draw on the new chain's buffers keeps DWM from binding it, and which window-manager update makes
-  DWM realize it at ~1.2-1.5 s (38 s in 0.1.7500). Needs a clean-run trace to compare (a fast handoff seals nothing)
-  and window events the recorder does not take.
+  DWM realize it at ~1.2-1.5 s (38 s in 0.1.7500). Next run pair: a staged observer load (seals a `switch` reference)
+  and a normal one (seals `ended`), both with the Win32k binding events; compare the bind/batch sequences.
