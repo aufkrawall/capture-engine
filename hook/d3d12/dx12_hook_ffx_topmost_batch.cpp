@@ -125,10 +125,26 @@ bool IsInRuntimeImage(uintptr_t address, uintptr_t base, uintptr_t end) {
     return address >= base && address < end;
 }
 
+// The nearest return address inside the runtime image on this thread's stack, or 0. A runtime submission relayed by a
+// queue proxy reaches CE within a few frames, but the runtime's Present passes every layer wrapping the swapchain it
+// presents to. GTA V Enhanced with ReShade (session gtafsroverlaystutteryghosty) wraps it in Social Club, Epic's
+// overlay, Streamline and ReShade: AMD's Present call lay beyond the 20 frames searched before, so no relayed batch
+// could be told apart from the Present chain's, the final-batch route never armed, and the overlay stayed in the UI
+// resource at the rendered rate. A short walk keeps the common case cheap; a long one covers deep chains.
 uintptr_t FindRuntimeReturnAddress(uintptr_t base, uintptr_t end) {
-    void* frames[20] = {};
-    const USHORT count = CaptureStackBackTrace(1, static_cast<DWORD>(std::size(frames)), frames, nullptr);
-    for (USHORT i = 0; i < count; ++i) {
+    constexpr DWORD kNearFrames = 16;
+    constexpr DWORD kFarFrames = 112;
+    void* frames[kFarFrames] = {};
+    const USHORT nearCount = CaptureStackBackTrace(1, kNearFrames, frames, nullptr);
+    for (USHORT i = 0; i < nearCount; ++i) {
+        const auto address = reinterpret_cast<uintptr_t>(frames[i]);
+        if (IsInRuntimeImage(address, base, end))
+            return address;
+    }
+    if (nearCount < kNearFrames)
+        return 0;  // the stack ended
+    const USHORT farCount = CaptureStackBackTrace(1 + kNearFrames, kFarFrames, frames, nullptr);
+    for (USHORT i = 0; i < farCount; ++i) {
         const auto address = reinterpret_cast<uintptr_t>(frames[i]);
         if (IsInRuntimeImage(address, base, end))
             return address;
@@ -392,6 +408,8 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     const bool runtimeImageKnown = DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd);
     ce::dx12_overlay_policy::FinalECLBatchSignature observed = {};
     size_t anchorIndex = t_PresenterFrameTrace.count;
+    uintptr_t runtimePresentSite = 0;
+    size_t relayedBatches = 0;
     if (routeEligible && swapChain && traceUsable) {
         std::array<ce::dx12_overlay_policy::PresenterBatch, kMaxObservedECLBatches> batches = {};
         for (size_t i = 0; i < t_PresenterFrameTrace.count; ++i) {
@@ -399,10 +417,12 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
             batches[i] = {batch.callSite, reinterpret_cast<uintptr_t>(batch.queue),
                           runtimeImageKnown && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd),
                           batch.relayed};
+            relayedBatches += batch.relayed ? 1 : 0;
         }
-        const uintptr_t runtimePresentSite =
-            t_PresenterFrameTrace.relayedBatchSeen && !t_PresenterFrameTrace.directRuntimeBatchSeen &&
-                    runtimeImageKnown ? FindRuntimeReturnAddress(runtimeBase, runtimeEnd) : 0;
+        runtimePresentSite = t_PresenterFrameTrace.relayedBatchSeen && !t_PresenterFrameTrace.directRuntimeBatchSeen &&
+                                     runtimeImageKnown
+                                 ? FindRuntimeReturnAddress(runtimeBase, runtimeEnd)
+                                 : 0;
         observed = ce::dx12_overlay_policy::ChooseTopmostAnchorBatch(batches.data(), t_PresenterFrameTrace.count,
                                                                      runtimeImageKnown, runtimePresentSite,
                                                                      &anchorIndex);
@@ -413,11 +433,14 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
             static std::atomic<int> s_unusableTraceLogCount{0};
             const int logCount = s_unusableTraceLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 300) == 0) {
+                // presentSite=0 with relayed batches: the runtime's Present call was not found on this stack, so
+                // its relayed batches cannot be told apart from the Present chain's.
                 HookLogImportant(
                     "DX12: No-callback FSR final-batch trace unusable (sc=%p batches=%zu overflow=%d "
-                    "runtimeBatch=%d relayed=%d runtimeImage=%p log=%d); proxy overlay baseline remains active",
+                    "anchor=%d relayed=%zu presentSite=%p runtimeImage=%p log=%d); proxy overlay baseline remains "
+                    "active",
                     swapChain, t_PresenterFrameTrace.count, t_PresenterFrameTrace.overflow ? 1 : 0,
-                    anchorFound ? 1 : 0, t_PresenterFrameTrace.relayedBatchSeen ? 1 : 0,
+                    anchorFound ? 1 : 0, relayedBatches, reinterpret_cast<void*>(runtimePresentSite),
                     reinterpret_cast<void*>(runtimeBase), logCount + 1);
             }
         }

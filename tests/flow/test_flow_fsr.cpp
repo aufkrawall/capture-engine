@@ -115,6 +115,19 @@ TEST(FlowFSR, RelayedCompositionKeepsTheOverlayAtOutputRateWhenAForeignOverlaySt
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 
+// GTA V Enhanced with ReShade after DLSS FG -> FSR FG (session gtafsroverlaystutteryghosty): ReShade's queue proxy
+// relays AMD's composition, and the swapchain AMD presents to sits under Social Club, Epic's overlay, Streamline and
+// ReShade. The runtime's Present call lay beyond the 20 frames CE searched, so no batch could be told apart from the
+// Present chain's, the final-batch route never armed and the overlay stayed in the UI resource at the rendered rate.
+TEST(FlowFSR, RelayedCompositionUnderADeepPresentChainKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kFullSize, FSRUiBuffering::kSwapchainCopy);
+    options.fsrRelayOutputSubmissions = true;
+    options.fsrPresentChainDepth = 40;
+    options.fsrPresentChainOverlayOutputs = 120;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
 // OptiScaler feeding DLSS-G inputs to FSR FG registers a UI resource without a resource every frame.
 TEST(FlowFSR, TogglesWithoutAPresentCallbackAndAnEmptyUiResourceDrawEveryOutputAfterComposition) {
     FlowGame game(CurrentTestName());

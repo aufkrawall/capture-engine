@@ -230,19 +230,24 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Each published display sample also retains the runtime `PresentStart` selected by the same process/thread-aware reducer. The PC-latency marker path uses that association as its causal upper bound, so a newer marker submitted while an older DLSS-G frame is still queued cannot be paired with the older frame merely because its eventual screen timestamp is later. Samples without an association retain the timestamp-only fallback behavior.
 - Measured on this hardware (144 Hz VRR, NVIDIA): `VSyncDPCMultiPlane` reports `FlipEntryCount=0` and `VSyncDPC` reports `FlipFenceId=0`, so the usable completions arrive on `HSyncDPCMultiPlane` and `MMIOFlipMultiPlaneOverlay`. Stale-risk/unverified: a display path that emits neither - only `VSyncDPCMultiPlane` with a zero entry count - would need the `InterruptTargetPresentId` route, which is deliberately not implemented because it can double-count against the submit-sequence route.
 
-### FidelityFX submissions through a queue proxy (2026-11-09)
+### FidelityFX submissions through a queue proxy (2026-11-09, deep Present chains 2026-11-11)
 
-The Witcher 3 with Steam, ReShade and Streamline kept using the no-UI-resource backbuffer route under
-FSR FG. The final-batch observer saw two or three submissions per output without an immediate return
-address in the runtime image. The display stream reached about 83 FPS while the graph rebuilt at
-about 41 FPS on the proxy prework thread.
+The Witcher 3 with Steam, ReShade and Streamline kept the no-UI-resource backbuffer route under FSR FG: the
+final-batch observer saw two or three submissions per output without an immediate return address in the runtime
+image (display ~83 FPS, graph rebuilt at ~41 FPS). `dx12_hook_ffx_topmost_batch.cpp` recovers the runtime return
+address on the native queue from the authoritative FFX swapchain takeover when a forwarding layer hides the
+submitter, and excludes submissions whose runtime return address is the one at the physical Present (made inside the
+Present chain). Direct runtime batches keep precedence; the learned signature reports `anchor=runtime-via-queue-proxy`.
 
-`dx12_hook_ffx_topmost_batch.cpp` uses the native queue from the authoritative FFX swapchain takeover
-to recover the runtime return address when a forwarding layer hides the immediate submitter. The
-runtime return address at the physical Present excludes submissions made from inside the Present chain.
-Direct runtime batches retain precedence. The learned signature reports `anchor=runtime-via-queue-proxy`.
-`FlowFSR.RelayedCompositionKeepsTheOverlayAtOutputRateWhenAForeignOverlayStops` exercises the handoff
-through a forwarding layer and the last frame of a foreign overlay. Hardware retest pending.
+GTA V Enhanced + ReShade after DLSS FG -> FSR FG (`gtafsroverlaystutteryghosty`, 0.1.7505): `final-batch trace
+unusable (... runtimeBatch=0 relayed=1)` for the whole FSR run, overlay in the game's UI texture at the rendered rate
+(644 overlay frames per 10 s at ~125 output FPS; user: stuttery). Social Club, Epic's overlay, Streamline and ReShade
+wrap AMD's real swapchain, so AMD's Present call lay beyond the 20 frames `FindRuntimeReturnAddress` searched, and
+without that site no relayed batch qualified. It walks 16 frames, then up to 112 more. The unusable line prints
+`anchor= relayed=<count> presentSite=` (0: the Present call was not found). Flow: `FlowFSR.RelayedComposition*`
+(`...UnderADeepPresentChainKeepsTheOverlayAtOutputRate`, 40 extra frames, failed before). Hardware retest pending.
+Under FSR FG the overlay joins AMD's batch, before Present-chain layers draw, so ReShade's Present-time effects process
+it; without FG CE draws at the physical Present after the chain, on top of ReShade's output.
 
 ## PC latency source hierarchy
 

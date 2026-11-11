@@ -71,6 +71,10 @@ struct GameOptions {
     uint32_t fsrPassthroughFramesAfterEnable = 0;
     uint32_t fsrPresentChainOverlayOutputs = 0;
     bool fsrRelayOutputSubmissions = false;  // a foreign queue layer forwards AMD's composition batch
+    // With fsrRelayOutputSubmissions: stack frames the runtime's Present passes through before the swapchain, the
+    // Present-chain overlay submitting at the deepest one (GTA V Enhanced: Social Club, Epic's overlay, Streamline
+    // and ReShade wrap the swapchain AMD presents to).
+    uint32_t fsrPresentChainDepth = 0;
     // streamline: the DLSS-G functions slGetFeatureFunction returns come from a tool's module (fakes/tool).
     DLSSGApiTool dlssgApiTool = DLSSGApiTool::kNone;
     // kXeFG: hand XeFG a swapchain the game created (xefgSwapChainD3D12InitFromSwapChain) instead of a description.

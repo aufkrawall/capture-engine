@@ -13,6 +13,23 @@
 namespace {
 std::atomic<uint64_t> g_physicalPresents{0};
 std::atomic<uint64_t> g_runtimePresenterLifetimes{0};
+std::atomic<uint32_t> g_presentChainDepth{0};  // GameOptions::fsrPresentChainDepth
+volatile uint32_t g_presentChainSink = 0;
+
+// One frame per layer of a wrapped swapchain's Present chain; the work after the call keeps each frame on the stack.
+[[clang::noinline, clang::disable_tail_calls]] HRESULT PresentThroughLayers(uint32_t layers, IDXGISwapChain* swapchain,
+                                                                           UINT sync, UINT flags,
+                                                                           ID3D12CommandQueue* queue,
+                                                                           ID3D12CommandList* list) {
+    if (layers != 0) {
+        const HRESULT hr = PresentThroughLayers(layers - 1, swapchain, sync, flags, queue, list);
+        g_presentChainSink = layers;
+        return hr;
+    }
+    if (list)
+        queue->ExecuteCommandLists(1, &list);
+    return swapchain->Present(sync, flags);
+}
 }  // namespace
 
 // Every Present on a real swapchain, CE's or not: the game's own, or a fake runtime's (fake_clock.h).
@@ -34,9 +51,8 @@ extern "C" __declspec(dllexport) void CEFlowGame_ExecuteRelayedBatch(ID3D12Comma
 
 extern "C" __declspec(dllexport) [[clang::disable_tail_calls]] HRESULT CEFlowGame_PresentThroughOverlay(
     IDXGISwapChain* swapchain, UINT sync, UINT flags, ID3D12CommandQueue* queue, ID3D12CommandList* list) {
-    if (list)
-        queue->ExecuteCommandLists(1, &list);
-    return swapchain->Present(sync, flags);
+    return PresentThroughLayers(g_presentChainDepth.load(std::memory_order_relaxed), swapchain, sync, flags, queue,
+                                list);
 }
 
 namespace ce::flow {
@@ -253,6 +269,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
         SetEnvironmentVariableA("CE_FLOW_FFX_PRESENT_CHAIN_OVERLAY_OUTPUTS",
                                 std::to_string(options.fsrPresentChainOverlayOutputs).c_str());
         SetEnvironmentVariableA("CE_FLOW_FFX_RELAY_OUTPUT_SUBMISSIONS", options.fsrRelayOutputSubmissions ? "1" : nullptr);
+        g_presentChainDepth.store(options.fsrPresentChainDepth, std::memory_order_relaxed);
     }
     if (options.streamline && !BeginStreamline())
         return false;
