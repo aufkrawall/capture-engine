@@ -8,6 +8,9 @@
   `KeepExistingContent=1`), no plane flipped at all. Another process's ~1 s screen capture forced the realization at
   1388 ms; DWM then left the old surface's independent flip and composed the new frame. Evidence and method:
   `display-stall-trace.md` ("First live seal"). CE's share is unproven until a passive or CE-off comparison.
+- The ~1 s screen reader: TrafficMonitor (taskbar meter) samples a screen pixel with GDI every second to match the
+  taskbar color; the trace shows its effect (GDI screen-capture fence from csrss, explorer `Taskbar` redraw), not the
+  caller. Without it the black screen would have lasted until some other forced composition.
 
 ### 2026-11-11 - GTA 0.1.7501: ownership gate held, cold DLSS-G start still black for 1.7 s
 

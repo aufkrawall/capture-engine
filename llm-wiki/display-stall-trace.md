@@ -75,10 +75,17 @@ relative to the new chain's first present (QPC 6899741153 us).
   BufferCount=6`); DWM then ended the old surface's independent flip (`IndependentFlipTransition Entering=0
   surface=169407265 RequestedByDwm=1`), composed present 153 (`Windowed_Dx_Flip_Consumed`, DWM flip at 1391.8 ms),
   and moved the new surface to independent flip at 1403.9 ms; the game's own flips follow from 1514 ms.
-- The captures come from another process every ~1.0-1.6 s for the whole 72 s file (51 of them, slower under load); CE
-  does no screen reads while not recording. So the black time ended at the first capture after DWM switched the
-  window to the new surface - which matches the 1.37-1.70 s episodes; without such a reader nothing visible forces the
-  realization (the 38 s episode of 0.1.7500 had no ETL).
+- The captures recur every ~1.0-1.6 s for the whole 72 s file (51 of them, slower under load). Each is followed within
+  3 ms by a csrss present of model 5 (`D3DKMT_PM_SCREENCAPTUREFENCE`, the fence of a GDI screen read; its counter
+  stood at ~6843, one per second since logon) and a composition present by explorer's thread named `Taskbar` (51/51,
+  never at random times). Requester, identified outside the trace: TrafficMonitor 1.8.6, a taskbar speed meter that
+  embeds a window in the taskbar and, with `auto_set_background_color` + `disable_d2d` + a transparent color (all on
+  in the user's config), calls `::GetPixel(GetDC(NULL), ...)` beside the taskbar in its 1000 ms `MAIN_TIMER`
+  (`CTrafficMonitorDlg::OnTimer`, upstream source) to match the taskbar color; it imports GetPixel/BitBlt and started
+  at logon. The trace itself cannot name the GDI caller. CE does no screen reads while not recording. So the black
+  time ended at the first GDI screen read after DWM switched the window to the new surface - which matches the
+  1.37-1.70 s episodes; without such a reader nothing visible forces the realization (the 38 s episode of 0.1.7500 had
+  no ETL; TrafficMonitor skips the read while it judges the foreground window fullscreen).
 - Stage verdict: the frames stop in DWM, which does not bind a flip-model chain's new composition surface while the
   window's previous surface sits in independent flip on an overlay plane with kept content. DXGI, DxgKrnl submission,
   GPU completion and the token hand-off all ran. CE's share is unproven: no ETL with CE passive
@@ -95,5 +102,5 @@ relative to the new chain's first present (QPC 6899741153 us).
 - Event volume per second under DLSS-G at 4K, and whether 256 MB keeps the run-up of a 37 s episode, are unmeasured.
 - The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. A
   CE-passive run (`overlay_observer_only=1`, recorder still on) is the nearest comparison.
-- Which process reads the screen every ~1 s on the user's PC (the trace does not name the requester of
-  `ETWGUID_RTCAPTURE`).
+- Direct proof that TrafficMonitor is the reader (a sealed run with it closed, or with its background auto-color off,
+  should show no `ETWGUID_RTCAPTURE` and a longer black screen).
