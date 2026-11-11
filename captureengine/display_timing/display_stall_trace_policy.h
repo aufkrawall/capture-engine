@@ -1,25 +1,32 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
-// When a display episode deserves its raw trace (common/platform/display_flight_recorder.h).
+// When a stretch with nothing on screen deserves its raw trace (common/platform/display_flight_recorder.h).
 //
-// The submission-expiry monitor (display_timing_submissions.h) starts an episode when a tracked process's presents
-// stop completing as flips of their own and ends it when they do again. Most episodes are the compositor showing the
-// process (windowed, an overlay above it): its frames still reach the screen. The ones worth a trace are those where
-// the screen stood still while the game presented (GTA V Enhanced, 20261110_222057: 37 s, 4925 successful presents,
-// 3 composed frames at the very end).
+// The same judgement as the hook's [SCANOUT STALL] (hook/present/scanout_stall_policy.h), made in the sensor from the
+// two streams it already has: the tracked process's presents (DXGI PresentStart) and the screen changes the display
+// timing service publishes for it (its own flips and, while the compositor is followed, its composed frames). A
+// silence starts at the first present after the last screen change and ends at the next change.
 //
-// The silence is measured from the first present that expired unshown until the compositor shows one of the process's
-// frames again (or its own flips resume). The monitor notices an episode only once that present is older than the
-// completion bound (~1 s), so its own episode clock misses most of a short stall: 20261111_013758 stood still for
-// 1.71 s, the monitor counted 531 ms and no trace was sealed. The recovery frames end the silence; they do not
-// count against it.
+// GTA V Enhanced loads into the game with DLSS-G already on and the screen stands still while it presents:
+// 38.06 s (20261110_222057), 1.70 s (20261111_013758), 1.38 s (20261111_015744). Every other FG switch in those
+// sessions stayed under 0.66 s. The first version of this trigger watched the submission-expiry episodes instead,
+// which only start once a present is older than the completion bound (~1 s) and run every 250 ms: it counted the
+// 1.70 s silence as 531 ms and never saw the 1.38 s one.
+//
+// A silence counts only while the process owns the foreground window (an alt-tabbed or minimized game's presents never
+// show) and keeps presenting (a gap longer than kMaximumPresentGapUs starts it over: a loading hitch is no display
+// stall). Pure; the display timing service feeds it.
 namespace display_stall_trace {
 
-inline constexpr uint64_t kMinimumSilenceMs = 1'500;
-inline constexpr uint64_t kOngoingSealMs = 10'000;
+inline constexpr int64_t kMinimumSilenceUs = 1'000'000;
+inline constexpr int64_t kOngoingSealUs = 10'000'000;
+inline constexpr uint32_t kMinimumPresents = 8;
+inline constexpr int64_t kMaximumPresentGapUs = 500'000;
 inline constexpr uint32_t kMaximumSealsPerSession = 6;
+inline constexpr std::size_t kMaximumProcesses = 4;
 
 enum class SealReason : uint8_t { kNone, kOngoing, kEnded };
 
@@ -41,72 +48,124 @@ struct SealRequest {
     uint32_t processId = 0;
     uint64_t silenceMs = 0;
     int64_t silenceStartUs = 0;  // QPC microseconds of the first present that never reached the screen
-    uint64_t shown = 0;          // the compositor's frames of the process during the episode
+    uint32_t presents = 0;       // presents during the silence
     explicit operator bool() const noexcept { return reason != SealReason::kNone; }
-};
-
-// One prune of the submission tracker, as the display timing service sees it.
-struct Prune {
-    bool started = false;   // the expiry monitor started an episode in this prune
-    bool stopped = false;   // ... or ended it
-    bool expiring = false;  // an episode is running after this prune
-    int64_t nowUs = 0;      // QPC microseconds of the prune
-    // On a start: QPC microseconds of the oldest present that expired in this prune; 0 if unknown.
-    int64_t firstUnshownUs = 0;
-    uint64_t shownTotal = 0;  // cumulative composed frames of the followed process
-    uint32_t processId = 0;
 };
 
 class Policy {
 public:
-    SealRequest Observe(const Prune& prune) {
-        if (prune.started) {
-            ++episode_;
-            processId_ = prune.processId;
-            shownAtStart_ = prune.shownTotal;
-            silenceStartUs_ = prune.firstUnshownUs > 0 && prune.firstUnshownUs <= prune.nowUs ? prune.firstUnshownUs
-                                                                                                 : prune.nowUs;
-            silenceEndUs_ = 0;
-            ongoingSealed_ = false;
-            inEpisode_ = true;
+    // A present of a tracked process, at its PresentStart (QPC microseconds).
+    void OnPresent(uint32_t processId, int64_t us) {
+        Process* process = Find(processId, true);
+        if (!process)
+            return;
+        process->lastSeenUs = us;
+        if (process->lastChangeUs == 0 || us <= process->lastChangeUs)
+            return;  // nothing shown yet to measure from, or a present the published change already covers
+        if (process->firstUs == 0 || us - process->lastPresentUs > kMaximumPresentGapUs)
+            process->StartSilence(us);
+        process->lastPresentUs = us;
+        ++process->presents;
+    }
+
+    // A screen change published for a tracked process (its own flip or a composed frame), at its screen time.
+    void OnScreenChange(uint32_t processId, int64_t us) {
+        Process* process = Find(processId, true);
+        if (!process)
+            return;
+        if (us > process->lastSeenUs)
+            process->lastSeenUs = us;
+        if (process->firstUs != 0 && us > process->firstUs) {
+            const int64_t silenceUs = us - process->firstUs;
+            if (process->Qualifies(silenceUs) && !pending_)
+                pending_ = Take(*process, SealReason::kEnded, silenceUs);
+            process->firstUs = 0;
         }
-        if (!inEpisode_ || (!prune.expiring && !prune.stopped))
+        if (us > process->lastChangeUs)
+            process->lastChangeUs = us;
+    }
+
+    // Every prune: the foreground window's process. Returns at most one seal.
+    SealRequest Observe(int64_t nowUs, uint32_t foregroundProcessId) {
+        for (Process& process : processes_) {
+            if (process.processId != 0 && process.processId != foregroundProcessId)
+                process.background = true;
+        }
+        if (pending_) {
+            const SealRequest request = pending_;
+            pending_ = {};
+            return request;
+        }
+        Process* process = Find(foregroundProcessId, false);
+        if (!process || process->firstUs == 0 || process->ongoingSealed)
             return {};
-        inEpisode_ = !prune.stopped;
-        const uint64_t shown = prune.shownTotal - shownAtStart_;
-        if (silenceEndUs_ == 0 && (shown != 0 || prune.stopped))
-            silenceEndUs_ = prune.nowUs;
-        const int64_t endUs = silenceEndUs_ != 0 ? silenceEndUs_ : prune.nowUs;
-        const uint64_t silenceMs = endUs > silenceStartUs_ ? static_cast<uint64_t>(endUs - silenceStartUs_) / 1000 : 0;
-        if (prune.stopped)
-            return silenceMs >= kMinimumSilenceMs ? Take(SealReason::kEnded, silenceMs, shown) : SealRequest{};
-        if (!ongoingSealed_ && silenceEndUs_ == 0 && silenceMs >= kOngoingSealMs) {
-            ongoingSealed_ = true;
-            return Take(SealReason::kOngoing, silenceMs, shown);
-        }
-        return {};
+        const int64_t silenceUs = nowUs - process->firstUs;
+        if (silenceUs < kOngoingSealUs || nowUs - process->lastPresentUs > kMaximumPresentGapUs ||
+            !process->Qualifies(silenceUs))
+            return {};
+        process->ongoingSealed = true;
+        return Take(*process, SealReason::kOngoing, silenceUs);
     }
 
     uint32_t seals() const noexcept { return seals_; }
     uint32_t refusedForLimit() const noexcept { return refusedForLimit_; }
 
 private:
-    SealRequest Take(SealReason reason, uint64_t silenceMs, uint64_t shown) {
+    struct Process {
+        uint32_t processId = 0;
+        int64_t lastChangeUs = 0;
+        int64_t firstUs = 0;  // 0: no silence running
+        int64_t lastPresentUs = 0;
+        int64_t lastSeenUs = 0;  // the latest present or change: the least recent process makes room for a new one
+        uint32_t presents = 0;
+        uint32_t episode = 0;
+        bool background = false;
+        bool ongoingSealed = false;
+
+        void StartSilence(int64_t us) {
+            firstUs = us;
+            presents = 0;
+            episode = 0;
+            background = false;
+            ongoingSealed = false;
+        }
+        bool Qualifies(int64_t silenceUs) const {
+            return !background && silenceUs >= kMinimumSilenceUs && presents >= kMinimumPresents;
+        }
+    };
+
+    Process* Find(uint32_t processId, bool create) {
+        if (processId == 0)
+            return nullptr;
+        Process* oldest = &processes_[0];
+        for (Process& process : processes_) {
+            if (process.processId == processId)
+                return &process;
+            if (oldest->processId != 0 && (process.processId == 0 || process.lastSeenUs < oldest->lastSeenUs))
+                oldest = &process;
+        }
+        if (!create)
+            return nullptr;
+        *oldest = Process{};
+        oldest->processId = processId;
+        return oldest;
+    }
+
+    SealRequest Take(Process& process, SealReason reason, int64_t silenceUs) {
+        if (process.episode == 0)
+            process.episode = ++episodes_;
         if (seals_ >= kMaximumSealsPerSession) {
             ++refusedForLimit_;
             return {};
         }
         ++seals_;
-        return {reason, episode_, processId_, silenceMs, silenceStartUs_, shown};
+        return {reason,          process.episode, process.processId, static_cast<uint64_t>(silenceUs / 1000),
+                process.firstUs, process.presents};
     }
 
-    uint32_t episode_ = 0;
-    uint32_t processId_ = 0;
-    uint64_t shownAtStart_ = 0;
-    int64_t silenceStartUs_ = 0;
-    int64_t silenceEndUs_ = 0;
-    bool inEpisode_ = false;
-    bool ongoingSealed_ = false;
+    std::array<Process, kMaximumProcesses> processes_{};
+    SealRequest pending_;
+    uint32_t episodes_ = 0;
     uint32_t seals_ = 0;
     uint32_t refusedForLimit_ = 0;
 };

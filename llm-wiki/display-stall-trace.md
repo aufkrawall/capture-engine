@@ -1,7 +1,7 @@
 # Raw display trace for stall episodes
 
-Last verified: 2026-11-11 (unit tests and the ETL reader against a local Windows ETL; GTA run 20261111_013758 ran the
-recorder but sealed nothing - trigger fixed afterwards, no live seal yet)
+Last verified: 2026-11-11 (unit tests and the ETL reader against a local Windows ETL; GTA runs 20261111_013758 and
+_015744 ran the recorder but sealed nothing - trigger replaced afterwards, no live seal yet)
 Stale-risk: high until a GTA run produces a sealed file - provider volume, the circular size and the seal timing are
 unmeasured on hardware.
 
@@ -26,19 +26,25 @@ tools.
   it is a reparse point; a sealed file gets read+delete for the installing user's SID. Limits: one seal per 2 s, 32 per
   recording; uncollected files older than 10 min are removed at the next start.
 - CE sensor (`display_timing_service.cpp::StartStallTrace`): only with `log_level=trace` and the service trace.
-  `display_stall_trace::Policy` (pure) watches the submission-expiry episodes and measures the *silence*: from the
-  oldest present the starting prune expired (`DisplaySubmissionTracker::oldestExpiredInLastPrune`) until the compositor
-  shows one of the process's frames again or its own flips resume. Sealed once at 10 s of silence (keeps the run-up in
-  the circular file) and when the episode ends with >= 1.5 s; at most 6 per session. Recovery frames end the silence,
-  they never count against it.
-- Why the silence and not the monitor's episode clock: the monitor only starts once the first unshown present is older
-  than the completion bound (`kMaxSubmitToCompletionUs` + reorder, ~1.02 s). GTA `20261111_013758` stood still for
-  1.71 s after the first DLSS-G handoff (hook `[SCANOUT STALL] ep=2 durationUs=1714151 presents=156`), the monitor
-  counted `episodeMs=531` with 3 composed recovery frames, and the old rule (episode >= 1.5 s, <= 2 shown/s) sealed
-  nothing.
+  `display_stall_trace::Policy` (pure) makes the hook's `[SCANOUT STALL]` judgement from the sensor's own streams: the
+  tracked process's DXGI PresentStart events (`OnPresent`, service_events.cpp) and every screen change published for it
+  (`OnScreenChange` in `PublishPending`: own flips, and composed frames while the compositor is followed). A *silence*
+  runs from the first present after the last change to the next change. It counts only while the process owns the
+  foreground window (checked each 250 ms prune) and keeps presenting (a gap > 500 ms restarts it), with >= 8 presents.
+  Sealed when the screen changes again after >= 1 s, and once at 10 s while it lasts (keeps the run-up in the circular
+  file); at most 6 per session.
+- Evidence for the threshold: the published screen-change gaps of the three GTA sessions are 38.06 s, 1.70 s and 1.38 s
+  for the cold DLSS-G loads (all black on screen) and <= 0.66 s for every other FG switch.
+- Rejected (2026-11-11): watching the submission-expiry episodes. The monitor starts only once a present is older than
+  the completion bound (~1.02 s) and prunes every 250 ms; it counted the 1.70 s silence (`20261111_013758`) as 531 ms
+  and never started for the 1.38 s one (`20261111_015744`: 116 presents expired in prunes that already saw the
+  recovery flips). Measuring from the oldest expired present fixed the first case only.
+- Known blind spot: composed frames are published only while the expiry monitor follows the compositor, so a game that
+  moves from independent flip to composition can look silent for ~1-1.3 s; in the GTA sessions such transitions never
+  reached 1 s, and a false seal costs one file (capped).
 - `DisplayStallTraceSealer` does the exchange and the move off the ETW thread; the file lands beside `sensors.log` as
   `display_stall_<pid>_ep<N>_<ongoing|ended>.etl`.
-- Logs: sensors `[DisplayStallTrace] recording ...|sealed ep= pid= reason= silenceMs= silenceStartQpcUs= shown= file=
+- Logs: sensors `[DisplayStallTrace] recording ...|sealed ep= pid= reason= silenceMs= silenceStartQpcUs= presents= file=
   bytes= eventsLost= buffersLost= restart=|seal failed ...|move failed ...|no raw display traces ...`; service
   `[ElevationService] Display flight recorder on (... providers ...)|sealed (...)|off after N seal(s)`.
 

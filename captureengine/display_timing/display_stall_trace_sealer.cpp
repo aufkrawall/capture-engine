@@ -116,11 +116,11 @@ void DisplayStallTraceSealer::SealOne(const display_stall_trace::SealRequest& re
                 request.episode, moved, Narrow(source).c_str(), Narrow(destination).c_str());
         return;
     }
-    LogInfo("[DisplayStallTrace] sealed ep=%u pid=%u reason=%s silenceMs=%llu silenceStartQpcUs=%lld shown=%llu "
+    LogInfo("[DisplayStallTrace] sealed ep=%u pid=%u reason=%s silenceMs=%llu silenceStartQpcUs=%lld presents=%u "
             "file=%s bytes=%llu eventsLost=%u buffersLost=%u restart=%u replaced=%u",
             request.episode, request.processId, display_stall_trace::SealReasonName(request.reason),
             static_cast<unsigned long long>(request.silenceMs), static_cast<long long>(request.silenceStartUs),
-            static_cast<unsigned long long>(request.shown),
+            request.presents,
             Narrow(DestinationName(request)).c_str(), static_cast<unsigned long long>(sealed.bytes), sealed.eventsLost,
             sealed.buffersLost, sealed.restartStatus, replaced_.load());
 }

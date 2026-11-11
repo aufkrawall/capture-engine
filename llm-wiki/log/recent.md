@@ -13,8 +13,11 @@
   first screen change, showed the screen after 0.20-0.25 s (11-16 presents). The user hears coil whine during the
   black phase: frames are rendered and presented, scanout never gets them. Same signature as the 37 s in
   `20261110_222057`; still unattributed (no CE-off comparison, no ETL).
-- The recorder ran but sealed nothing: the expiry monitor started 1.5 s into the silence and counted 531 ms. Fixed the
-  same day - the policy now measures the silence from the oldest expired present (`display-stall-trace.md`).
+- The recorder ran but sealed nothing: the expiry monitor started 1.5 s into the silence and counted 531 ms.
+- `20261111_015744` (0.1.7502): the same cold start, black for 1.37 s (121 presents, ended by the game's own flip, the
+  game again toggled Reflex off and DLSS-G off/on in the first frames). The expiry monitor never started, so even the
+  corrected expiry trigger sealed nothing. The trigger now measures the silence directly from presents and published
+  screen changes, as the hook's `[SCANOUT STALL]` does, with a 1 s threshold (`display-stall-trace.md`).
 
 ### 2026-11-11 - Raw display trace sealed on no-display episodes (pending hardware)
 

@@ -6,7 +6,7 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
-- **Automatic display trace when the screen stops updating:** with trace logging on, the elevation service keeps a bounded recording of the display pipeline (DirectX, graphics kernel, compositor and display driver events) while a game is tracked. When the game keeps presenting but nothing reaches the screen for 1.5 seconds or more, counted from the first frame that never appeared, Capture Engine saves that recording into the session's log folder, so a black screen like GTA V Enhanced's after a save load can be traced without running any extra tool.
+- **Automatic display trace when the screen stops updating:** with trace logging on, the elevation service keeps a bounded recording of the display pipeline (DirectX, graphics kernel, compositor and display driver events) while a game is tracked. When the game is in the foreground and keeps presenting but the screen does not change for a second or more, Capture Engine saves that recording into the session's log folder, so a black screen like GTA V Enhanced's after a save load can be traced without running any extra tool.
 
 ### Fixed
 

@@ -229,11 +229,8 @@ TEST(DisplayTimingSubmissionsTest, PruneReportsExpiredSubmissionsAndTheirProcess
     EXPECT_EQ(tracker.PruneBefore(250), 2u);
     EXPECT_EQ(tracker.expiredAssociations(), 2u);
     EXPECT_EQ(tracker.lastExpiredProcessId(), 400u);
-    // Where a stall's silence began: the oldest submission the prune expired (display_stall_trace_policy.h).
-    EXPECT_EQ(tracker.oldestExpiredInLastPrune(), 100);
     EXPECT_EQ(tracker.PruneBefore(250), 0u);
     EXPECT_EQ(tracker.expiredAssociations(), 2u);
-    EXPECT_EQ(tracker.oldestExpiredInLastPrune(), 0);
     ASSERT_NE(tracker.Find(12), nullptr);
 }
 

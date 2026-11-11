@@ -1,7 +1,7 @@
-// When a display episode gets its raw trace (display_stall_trace_policy.h) and how the sealed file reaches the session
-// folder (display_stall_trace_sealer.h). GTA V Enhanced 20261110_222057: 37 s of presents that never reached the
-// screen, 3 composed frames at the very end - the case the trace exists for. 20261111_013758: the same stall for
-// 1.71 s, which the expiry monitor only noticed after 1.5 s and counted as 531 ms, so nothing was sealed.
+// When a stretch with nothing on screen gets its raw trace (display_stall_trace_policy.h) and how the sealed file
+// reaches the session folder (display_stall_trace_sealer.h). GTA V Enhanced loading into the game with DLSS-G on:
+// the screen stood still for 38.06 s (20261110_222057), 1.70 s (20261111_013758) and 1.38 s (20261111_015744) while
+// the game kept presenting; every other FG switch stayed under 0.66 s.
 
 #include <gtest/gtest.h>
 
@@ -16,134 +16,164 @@
 namespace {
 
 using display_stall_trace::Policy;
-using display_stall_trace::Prune;
 using display_stall_trace::SealReason;
+using display_stall_trace::SealRequest;
 
-constexpr int64_t kFirstUnshownMs = 4'649'600;  // QPC milliseconds of the first present that never reached the screen
+constexpr uint32_t kGame = 1220;
+constexpr uint32_t kOther = 4242;
 
-int64_t At(int64_t sinceFirstUnshownMs) {
-    return (kFirstUnshownMs + sinceFirstUnshownMs) * 1000;
+int64_t Ms(int64_t ms) {
+    return 5'827'000'000 + ms * 1000;  // QPC microseconds, as the display timing service hands them over
 }
 
-// The expiry monitor starts an episode once the first unshown present is older than the completion bound.
-Prune Start(int64_t sinceFirstUnshownMs, uint64_t shownTotal = 0) {
-    Prune prune;
-    prune.started = true;
-    prune.expiring = true;
-    prune.nowUs = At(sinceFirstUnshownMs);
-    prune.firstUnshownUs = At(0);
-    prune.shownTotal = shownTotal;
-    prune.processId = 6612;
-    return prune;
+// The game presents every `intervalMs` in [fromMs, toMs); with `shown`, every present reaches the screen 7 ms later.
+void Present(Policy& policy, int64_t fromMs, int64_t toMs, int64_t intervalMs = 7, bool shown = false,
+             uint32_t pid = kGame) {
+    for (int64_t ms = fromMs; ms < toMs; ms += intervalMs) {
+        policy.OnPresent(pid, Ms(ms));
+        if (shown)
+            policy.OnScreenChange(pid, Ms(ms + 7));
+    }
 }
 
-Prune Expiring(int64_t sinceFirstUnshownMs, uint64_t shownTotal = 0) {
-    Prune prune;
-    prune.expiring = true;
-    prune.nowUs = At(sinceFirstUnshownMs);
-    prune.shownTotal = shownTotal;
-    return prune;
+// Prunes every 250 ms over [fromMs, toMs] and collects what they seal.
+std::vector<SealRequest> Prune(Policy& policy, int64_t fromMs, int64_t toMs, uint32_t foreground = kGame) {
+    std::vector<SealRequest> seals;
+    for (int64_t ms = fromMs; ms <= toMs; ms += 250) {
+        if (const SealRequest request = policy.Observe(Ms(ms), foreground))
+            seals.push_back(request);
+    }
+    return seals;
 }
 
-Prune Stop(int64_t sinceFirstUnshownMs, uint64_t shownTotal = 0) {
-    Prune prune;
-    prune.stopped = true;
-    prune.nowUs = At(sinceFirstUnshownMs);
-    prune.shownTotal = shownTotal;
-    return prune;
-}
-
-TEST(DisplayStallTracePolicyTest, ALongSilentEpisodeIsSealedOnceWhileItLastsAndAgainWhenItEnds) {
+TEST(DisplayStallTracePolicyTest, AShortBlackScreenIsSealedWhenTheScreenChangesAgain) {
+    // 20261111_015744: the old chain's last frame reached the screen at 0 ms, the DLSS-G chain presented ~121 times
+    // and its first own flip showed at 1372 ms.
     Policy policy;
-    EXPECT_FALSE(policy.Observe(Start(1'024, 100)));
-    EXPECT_FALSE(policy.Observe(Expiring(9'999, 100)));
-    const auto ongoing = policy.Observe(Expiring(10'000, 100));
-    ASSERT_TRUE(ongoing);
-    EXPECT_EQ(ongoing.reason, SealReason::kOngoing);
-    EXPECT_EQ(ongoing.episode, 1u);
-    EXPECT_EQ(ongoing.processId, 6612u);
-    EXPECT_EQ(ongoing.silenceMs, 10'000u);
-    EXPECT_EQ(ongoing.silenceStartUs, At(0));
-    EXPECT_FALSE(policy.Observe(Expiring(20'000, 100)));
-    // Recovery: the compositor shows three frames, then the game's own flips resume.
-    EXPECT_FALSE(policy.Observe(Expiring(37'047, 103)));
-    const auto ended = policy.Observe(Stop(37'300, 103));
-    ASSERT_TRUE(ended);
-    EXPECT_EQ(ended.reason, SealReason::kEnded);
-    EXPECT_EQ(ended.silenceMs, 37'047u);
-    EXPECT_EQ(ended.shown, 3u);
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 207, 1'365, 9);
+    EXPECT_TRUE(Prune(policy, 0, 1'250).empty());
+    policy.OnScreenChange(kGame, Ms(1'372));
+    const auto seals = Prune(policy, 1'500, 1'500);
+    ASSERT_EQ(seals.size(), 1u);
+    EXPECT_EQ(seals[0].reason, SealReason::kEnded);
+    EXPECT_EQ(seals[0].episode, 1u);
+    EXPECT_EQ(seals[0].processId, kGame);
+    EXPECT_EQ(seals[0].silenceStartUs, Ms(207));
+    EXPECT_EQ(seals[0].silenceMs, 1'165u);
+    EXPECT_EQ(seals[0].presents, 129u);
+}
+
+TEST(DisplayStallTracePolicyTest, ALongBlackScreenIsSealedWhileItLastsAndAgainWhenItEnds) {
+    // 20261110_222057: ~131 presents a second for 38 s, nothing on screen; composed frames ended it.
+    Policy policy;
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 10, 38'060, 8);
+    const auto running = Prune(policy, 0, 38'000);
+    ASSERT_EQ(running.size(), 1u);
+    EXPECT_EQ(running[0].reason, SealReason::kOngoing);
+    EXPECT_GE(running[0].silenceMs, 10'000u);
+    EXPECT_LT(running[0].silenceMs, 10'250u);
+    policy.OnScreenChange(kGame, Ms(38'060));
+    const auto ended = Prune(policy, 38'250, 38'250);
+    ASSERT_EQ(ended.size(), 1u);
+    EXPECT_EQ(ended[0].reason, SealReason::kEnded);
+    EXPECT_EQ(ended[0].episode, running[0].episode);
+    EXPECT_EQ(ended[0].silenceMs, 38'050u);
     EXPECT_EQ(policy.seals(), 2u);
 }
 
-TEST(DisplayStallTracePolicyTest, TheMonitorsLateStartDoesNotHideAShortStall) {
-    // 20261111_013758: last screen change, then 156 presents; the monitor started 1525 ms after the first unshown one,
-    // the compositor showed 3 frames at 1785 ms and the own flips resumed at 2049 ms.
+TEST(DisplayStallTracePolicyTest, AnOrdinarySwapchainHandoffIsNoStall) {
+    // Every other FG switch in those sessions: the new chain reached the screen within 0.66 s.
     Policy policy;
-    EXPECT_FALSE(policy.Observe(Start(1'525)));
-    EXPECT_FALSE(policy.Observe(Expiring(1'785, 3)));
-    const auto ended = policy.Observe(Stop(2'049, 3));
-    ASSERT_TRUE(ended);
-    EXPECT_EQ(ended.reason, SealReason::kEnded);
-    EXPECT_EQ(ended.silenceMs, 1'785u);
-    EXPECT_EQ(ended.shown, 3u);
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 300, 950, 7);
+    policy.OnScreenChange(kGame, Ms(960));
+    Present(policy, 960, 3'000, 7, true);
+    EXPECT_TRUE(Prune(policy, 0, 3'000).empty());
 }
 
-TEST(DisplayStallTracePolicyTest, AComposedEpisodeThatShowedTheGameIsNoStall) {
-    // Windowed with an overlay above: the compositor shows the game from the first prune of the episode on.
+TEST(DisplayStallTracePolicyTest, ABackgroundGameIsNoStall) {
+    // Alt-tabbed: the game presents, nothing it presents shows, and another process owns the foreground.
     Policy policy;
-    EXPECT_FALSE(policy.Observe(Start(1'024)));
-    EXPECT_FALSE(policy.Observe(Expiring(1'040, 2)));
-    EXPECT_FALSE(policy.Observe(Expiring(12'000, 1'500)));
-    EXPECT_FALSE(policy.Observe(Stop(15'000, 1'900)));
-    EXPECT_EQ(policy.seals(), 0u);
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 10, 3'000, 7);
+    EXPECT_TRUE(Prune(policy, 0, 2'000, kOther).empty());
+    EXPECT_TRUE(Prune(policy, 2'250, 2'750).empty());  // back in front: this silence stays disqualified
+    policy.OnScreenChange(kGame, Ms(3'000));
+    EXPECT_TRUE(Prune(policy, 3'000, 3'250).empty());
+    // The next silence in the foreground counts again.
+    Present(policy, 3'010, 4'500, 7);
+    policy.OnScreenChange(kGame, Ms(4'500));
+    EXPECT_EQ(Prune(policy, 4'750, 4'750).size(), 1u);
 }
 
-TEST(DisplayStallTracePolicyTest, AShortHandoffGapIsNotSealed) {
+TEST(DisplayStallTracePolicyTest, AGameThatStopsPresentingIsNoStall) {
+    // A loading hitch: presents pause for longer than the gap bound, so the silence starts over after it.
     Policy policy;
-    policy.Observe(Start(1'024));
-    EXPECT_FALSE(policy.Observe(Stop(1'499)));
-    policy.Observe(Start(1'024));
-    EXPECT_TRUE(policy.Observe(Stop(1'500)));
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 10, 700, 7);
+    Present(policy, 1'300, 2'000, 7);
+    policy.OnScreenChange(kGame, Ms(2'000));
+    EXPECT_TRUE(Prune(policy, 0, 2'250).empty());
 }
 
-TEST(DisplayStallTracePolicyTest, WithoutTheFirstUnshownPresentTheSilenceStartsAtTheEpisode) {
+TEST(DisplayStallTracePolicyTest, NothingIsMeasuredBeforeTheGameFirstReachesTheScreen) {
     Policy policy;
-    Prune start = Start(1'024);
-    start.firstUnshownUs = 0;
-    policy.Observe(start);
-    EXPECT_FALSE(policy.Observe(Stop(2'000)));  // 976 ms from the episode's start
-    start.firstUnshownUs = At(5'000);           // later than the prune itself: not believable
-    policy.Observe(start);
-    const auto ended = policy.Observe(Stop(2'600));
-    ASSERT_TRUE(ended);
-    EXPECT_EQ(ended.silenceStartUs, At(1'024));
+    Present(policy, 0, 5'000, 7);
+    policy.OnScreenChange(kGame, Ms(5'000));
+    EXPECT_TRUE(Prune(policy, 0, 15'000).empty());
+}
+
+TEST(DisplayStallTracePolicyTest, AFewSlowPresentsAreNoStall) {
+    Policy policy;
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 10, 1'500, 250);
+    policy.OnScreenChange(kGame, Ms(1'500));
+    EXPECT_TRUE(Prune(policy, 0, 1'750).empty());
+}
+
+TEST(DisplayStallTracePolicyTest, AChangePublishedLateStillEndsTheSilenceItShowed) {
+    // Changes are published after the reorder window: a present is counted first, then the change that showed it.
+    Policy policy;
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 10, 1'200, 7);
+    policy.OnScreenChange(kGame, Ms(15));
+    Present(policy, 1'200, 2'000, 7, true);
+    EXPECT_TRUE(Prune(policy, 0, 2'250).empty());
 }
 
 TEST(DisplayStallTracePolicyTest, EveryEpisodeGetsItsOwnNumberAndTheSessionIsCapped) {
     Policy policy;
+    Present(policy, -1'000, 0, 7, true);
     uint32_t lastEpisode = 0;
     for (uint32_t i = 0; i < display_stall_trace::kMaximumSealsPerSession + 3; ++i) {
-        policy.Observe(Start(1'024));
-        const auto ended = policy.Observe(Stop(2'000));
+        const int64_t base = 10 + static_cast<int64_t>(i) * 3'000;
+        Present(policy, base, base + 1'500, 7);
+        policy.OnScreenChange(kGame, Ms(base + 1'500));
+        const auto seals = Prune(policy, base + 1'750, base + 1'750);
         if (i < display_stall_trace::kMaximumSealsPerSession) {
-            ASSERT_TRUE(ended);
-            EXPECT_GT(ended.episode, lastEpisode);
-            lastEpisode = ended.episode;
+            ASSERT_EQ(seals.size(), 1u);
+            EXPECT_GT(seals[0].episode, lastEpisode);
+            lastEpisode = seals[0].episode;
         } else {
-            EXPECT_FALSE(ended);
+            EXPECT_TRUE(seals.empty());
         }
     }
     EXPECT_EQ(policy.seals(), display_stall_trace::kMaximumSealsPerSession);
     EXPECT_EQ(policy.refusedForLimit(), 3u);
 }
 
-TEST(DisplayStallTracePolicyTest, AStopOutsideAnEpisodeSealsNothing) {
+TEST(DisplayStallTracePolicyTest, ANewProcessTakesTheLeastRecentSlot) {
     Policy policy;
-    EXPECT_FALSE(policy.Observe(Stop(50'000)));
-    policy.Observe(Start(1'024));
-    EXPECT_TRUE(policy.Observe(Stop(3'000)));
-    EXPECT_FALSE(policy.Observe(Stop(9'000)));
-    EXPECT_EQ(policy.seals(), 1u);
+    for (uint32_t pid = 100; pid < 100 + display_stall_trace::kMaximumProcesses; ++pid)
+        Present(policy, -1'000 + pid, 0, 7, true, pid);
+    Present(policy, -1'000, 0, 7, true);
+    Present(policy, 10, 1'500, 7);
+    policy.OnScreenChange(kGame, Ms(1'500));
+    const auto seals = Prune(policy, 1'750, 1'750);
+    ASSERT_EQ(seals.size(), 1u);
+    EXPECT_EQ(seals[0].processId, kGame);
 }
 
 std::array<wchar_t, 260> ServicePath(const wchar_t* text) {
@@ -157,7 +187,7 @@ display_stall_trace::SealRequest Ended(uint32_t episode) {
     request.reason = SealReason::kEnded;
     request.episode = episode;
     request.processId = 6612;
-    request.silenceMs = 37'047;
+    request.silenceMs = 38'050;
     return request;
 }
 

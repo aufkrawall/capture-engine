@@ -48,6 +48,9 @@ void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
                                                     header.TimeStamp.QuadPart, presentSync, presentFlags)) {
                 return;
             }
+            if (stallTraceActive_)
+                stallTracePolicy_.OnPresent(header.ProcessId,
+                                            DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_));
             // The same frames the published series is built from, measured
             // one stage earlier. Several tracked processes would interleave
             // into one meaningless series, so the accumulator follows the
