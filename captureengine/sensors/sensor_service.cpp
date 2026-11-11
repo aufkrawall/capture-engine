@@ -419,7 +419,7 @@ int SensorProcessMain(const AppConfig& config) {
                 displayTimingService.reset();
             }
             if (!displayTimingService) {
-                displayTimingService = std::make_unique<DisplayTimingService>();
+                displayTimingService = std::make_unique<DisplayTimingService>(config.displayStallTrace);
                 displayTimingService->Start();
             }
             displayTimingService->UpdateTargets(displayTimingTargets);

@@ -33,7 +33,8 @@ tools.
   sealed files live in `<installation>\DisplayTraces`, created under the admin-only installation folder and refused if
   it is a reparse point; a sealed file gets read+delete for the installing user's SID. Limits: one seal per 2 s, 32 per
   recording; uncollected files older than 10 min are removed at the next start.
-- CE sensor (`display_timing_service.cpp::StartStallTrace`): only with `log_level=trace` and the service trace.
+- CE sensor (`display_timing_service.cpp::StartStallTrace`): only with `[Diagnostics] display_stall_trace=true` (default
+  false since 2026-11-11, read when the sensor starts; files are up to 256 MB), `log_level=trace` and the service trace.
   `display_stall_trace::Policy` (pure) makes the hook's `[SCANOUT STALL]` judgement from the sensor's own streams: the
   tracked process's DXGI PresentStart events (`OnPresent`, service_events.cpp) and every screen change published for it
   (`OnScreenChange` in `PublishPending`: own flips, and composed frames while the compositor is followed). A *silence*

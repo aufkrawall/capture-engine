@@ -1102,6 +1102,10 @@ crash_dump_dir=
 wgc_skip_split_device_flush=false
 ; off, mandatory, or full. Changes WGC video-memory reservation experiments.
 wgc_video_memory_reservation=off
+; With log_level=trace, record the display pipeline while a game runs and save it into
+; the session's log folder when the screen stops updating (up to 256 MB per file).
+; Read when Capture Engine starts.
+display_stall_trace=false
 
 ; =============================================================================
 ; APPLICATION PROFILES

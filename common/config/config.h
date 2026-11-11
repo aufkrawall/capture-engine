@@ -442,6 +442,9 @@ struct AppConfig {
     // false ("wgc_window"/"wgc") keeps window-scoped WGC capture.
     bool autoFullscreenPrefersDxgiDup = true;
     bool wgcSkipSplitDeviceFlush = false;
+    // [Diagnostics] display_stall_trace: with trace logging, record the display pipeline in the elevation service and
+    // save stall episodes into the log folder (up to 256 MB each). Read when the sensor process starts.
+    bool displayStallTrace = false;
     bool wgcSameDeviceCapture = false;
     // When an A/V content delay is active, prefer uniform CFR cadence (closest-to-target
     // selection with monotonic + hard-cap guards) over per-tick delay-reservoir defense.

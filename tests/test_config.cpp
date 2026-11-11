@@ -21,6 +21,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.captureMonitor, "auto");
     EXPECT_FALSE(config.blackWhenNoFullscreenFocus);
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
+    EXPECT_FALSE(config.displayStallTrace);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 300u);
@@ -80,6 +81,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(generatedText, sourceTemplate);
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("display_stall_trace=false"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
     EXPECT_NE(generatedText.find("monitor=auto"), std::string::npos);
@@ -603,6 +605,7 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
         "[Diagnostics]\n"
         "wgc_skip_split_device_flush=true\n"
         "wgc_video_memory_reservation=full\n"
+        "display_stall_trace=true\n"
         "overlay_observer_only=true\n"
         "overlay_observer_policy_only=true\n"
         "overlay_observer_startup_present_only=true\n"
@@ -648,6 +651,7 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
     EXPECT_FALSE(config.autoFullscreenPrefersDxgiDup);
     EXPECT_FALSE(config.wgcSameDeviceCapture);
     EXPECT_TRUE(config.wgcSkipSplitDeviceFlush);
+    EXPECT_TRUE(config.displayStallTrace);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 111u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 222u);
     EXPECT_FALSE(config.wgcRetainedYuv);

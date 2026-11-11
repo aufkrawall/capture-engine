@@ -272,12 +272,17 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
     }
 }
 
-// Only with trace logging: the recording enables DxgKrnl, DWM and DXGI events machine-wide while a game is tracked, a
-// diagnostic cost. The sealed files land beside sensors.log, so a stall in a trace run needs nothing else.
+// Only with [Diagnostics] display_stall_trace and trace logging: the recording enables DxgKrnl, DWM and DXGI events
+// machine-wide while a game is tracked, a diagnostic cost, and each sealed file takes up to 256 MB beside sensors.log.
 void DisplayTimingService::Impl::StartStallTrace() {
     const std::string folder = Log_GetDirectory();
     if (!Log_IsEnabled(LogLevel::Trace) || folder.empty())
         return;
+    if (!recordDisplayStalls_) {
+        LogInfo("[DisplayStallTrace] off: no raw display traces for stall episodes ([Diagnostics] display_stall_trace=true "
+                "records them, read when Capture Engine starts)");
+        return;
+    }
     DWORD status = ERROR_SUCCESS;
     {
         std::lock_guard<std::mutex> lock(brokerMutex_);
@@ -476,7 +481,8 @@ void DisplayTimingService::Impl::StopNoexcept() noexcept {
     submissions_.Clear();
 }
 
-DisplayTimingService::DisplayTimingService() : impl_(std::make_unique<Impl>()) {}
+DisplayTimingService::DisplayTimingService(bool recordDisplayStalls)
+    : impl_(std::make_unique<Impl>(recordDisplayStalls)) {}
 
 DisplayTimingService::~DisplayTimingService() = default;
 

@@ -47,6 +47,7 @@
 
 class DisplayTimingService::Impl {
 public:
+    explicit Impl(bool recordDisplayStalls) : recordDisplayStalls_(recordDisplayStalls) {}
     ~Impl() noexcept {
         StopNoexcept();
     }
@@ -149,6 +150,7 @@ private:
     mutable std::mutex brokerMutex_;
     display_stall_trace::Policy stallTracePolicy_;
     DisplayStallTraceSealer stallTraceSealer_;
+    const bool recordDisplayStalls_;
     bool stallTraceActive_ = false;
     bool brokerConfigured_ = false;
     bool brokerTrace_ = false;

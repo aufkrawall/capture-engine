@@ -14,7 +14,9 @@ struct DisplayTimingTarget {
 
 class DisplayTimingService {
 public:
-    DisplayTimingService();
+    // recordDisplayStalls: [Diagnostics] display_stall_trace - with trace logging, the elevation service records the
+    // display pipeline and the service seals stall episodes and swapchain switches into the log folder.
+    explicit DisplayTimingService(bool recordDisplayStalls);
     ~DisplayTimingService();
 
     DisplayTimingService(const DisplayTimingService&) = delete;

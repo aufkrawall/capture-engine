@@ -119,6 +119,7 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
     }
     config.wgcSkipSplitDeviceFlush =
         reader.GetBoolCompat("Diagnostics", "wgc_skip_split_device_flush", "General", "wgc_skip_split_device_flush", false);
+    config.displayStallTrace = reader.GetBool("Diagnostics", "display_stall_trace", false);
     config.wgcSameDeviceCapture =
         reader.GetBoolCompat("WGC", "wgc_same_device_capture", "General", "wgc_same_device_capture", true);
     config.wgcActiveDelayUniformCadence = reader.GetBoolCompat(
