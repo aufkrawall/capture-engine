@@ -624,6 +624,9 @@ inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
     {"discord_hook.dll", true, false, false},
     {"socialclub.dll", true, true, false},
     {"SocialClubD3D12Renderer.dll", false, false, true},
+    // Epic's launcher uses hyphens; retain the previously recognized underscore aliases.
+    {"EOSOVH-Win64-Shipping.dll", true, true, true},
+    {"EOSOVH-Win32-Shipping.dll", true, true, true},
     {"EOSOVH_Win64_Shipping.dll", true, true, true},
     {"EOSOVH_Win32_Shipping.dll", true, true, true},
     {"nvspcap64.dll", true, false, false},

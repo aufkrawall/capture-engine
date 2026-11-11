@@ -53,7 +53,10 @@ TEST_F(OverlayModuleDetectionTest, MatcherAcceptsKnownOverlayModulesCaseInsensit
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("socialclub.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("gameoverlayrenderer64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("RTSSHooks64.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("EOSOVH-Win64-Shipping.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("eosovh-win32-shipping.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("EOSOVH_Win64_Shipping.dll"), nullptr);
+    EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("eosovh_win32_shipping.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("ReShade64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("SpecialK64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("OptiScaler.dll"), nullptr);
@@ -66,6 +69,17 @@ TEST_F(OverlayModuleDetectionTest, MatcherAcceptsKnownOverlayModulesCaseInsensit
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("rtsshooks64.dll"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("OVERLAY64.DLL"), nullptr);
     EXPECT_NE(MatchKnownThirdPartyOverlayModuleBaseName("Overlay.Dll"), nullptr);
+}
+
+TEST_F(OverlayModuleDetectionTest, EpicLauncherNamesReachAllOverlayCaches) {
+    for (const char* name : {"EOSOVH-Win64-Shipping.dll", "eosovh-win32-shipping.dll",
+                             "EOSOVH_Win64_Shipping.dll", "eosovh_win32_shipping.dll"}) {
+        ResetThirdPartyOverlayModuleCacheForTesting();
+        ASSERT_NE(NoteModuleLoadedForOverlayCacheFromNotification(name), nullptr) << name;
+        EXPECT_NE(GetLoadedThirdPartyOverlayModuleName(), nullptr) << name;
+        EXPECT_NE(GetStartupBlockingOverlayModuleName(), nullptr) << name;
+        EXPECT_NE(GetStartupBlockingOverlayRenderModuleName(), nullptr) << name;
+    }
 }
 
 TEST_F(OverlayModuleDetectionTest, UbisoftOverlayPathsRequireCorroboratingEvidence) {
