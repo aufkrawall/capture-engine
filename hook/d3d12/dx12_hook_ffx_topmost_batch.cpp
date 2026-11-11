@@ -4,6 +4,7 @@
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/sharpen_dxgi_format.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 
@@ -17,6 +18,7 @@ struct ObservedECLBatch {
     ID3D12CommandQueue* queue = nullptr;
     uint64_t composingFrame = 0;
     bool relayed = false;
+    bool graphicsQueue = false;
 };
 
 struct PresenterFrameTrace {
@@ -25,7 +27,6 @@ struct PresenterFrameTrace {
     bool overflow = false;
     bool appendSucceeded = false;
     bool overlayDrawn = false;
-    bool directRuntimeBatchSeen = false;
     bool relayedBatchSeen = false;
     uintptr_t targetOrdinalCallSite = 0;
     uint32_t targetOrdinal = 0;
@@ -115,7 +116,6 @@ void ResetPresenterFrameTrace() {
     t_PresenterFrameTrace.overflow = false;
     t_PresenterFrameTrace.appendSucceeded = false;
     t_PresenterFrameTrace.overlayDrawn = false;
-    t_PresenterFrameTrace.directRuntimeBatchSeen = false;
     t_PresenterFrameTrace.relayedBatchSeen = false;
     t_PresenterFrameTrace.targetOrdinalCallSite = 0;
     t_PresenterFrameTrace.targetOrdinal = 0;
@@ -165,14 +165,13 @@ uintptr_t RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
     uintptr_t runtimeBase = 0, runtimeEnd = 0;
     uintptr_t submitSite = immediateSite;
     bool relayed = false;
-    if (DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd)) {
-        if (IsInRuntimeImage(immediateSite, runtimeBase, runtimeEnd)) {
-            t_PresenterFrameTrace.directRuntimeBatchSeen = true;
-        } else if (!t_PresenterFrameTrace.directRuntimeBatchSeen &&
-                   queue == g_FFXNativeOutputQueue.load(std::memory_order_acquire) &&
-                   t_FFXForwardFrame == 0) {
+    const bool graphicsQueue = queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (graphicsQueue && DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd)) {
+        if (!IsInRuntimeImage(immediateSite, runtimeBase, runtimeEnd) && t_FFXForwardFrame == 0) {
             // The queue proxy can be the immediate caller even for AMD's own submission.
-            // Only unwind on the verified output queue and only until a direct batch is seen.
+            // The create-time queue need not be the composition queue (a nested presenter can replace it).
+            // Recover the runtime call site on every candidate queue; the Present-site exclusion below, the
+            // stable queue/site/ordinal signature and inline completion still prove the route before it owns UI.
             if (const uintptr_t runtimeSite = FindRuntimeReturnAddress(runtimeBase, runtimeEnd)) {
                 submitSite = runtimeSite;
                 relayed = true;
@@ -181,7 +180,7 @@ uintptr_t RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
         }
     }
     t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count++] = {
-        submitSite, queue, g_FFXComposingFrame.Current(), relayed};
+        submitSite, queue, g_FFXComposingFrame.Current(), relayed, graphicsQueue};
     return submitSite;
 }
 
@@ -416,11 +415,10 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
             const ObservedECLBatch& batch = t_PresenterFrameTrace.batches[i];
             batches[i] = {batch.callSite, reinterpret_cast<uintptr_t>(batch.queue),
                           runtimeImageKnown && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd),
-                          batch.relayed};
+                          batch.relayed, batch.graphicsQueue};
             relayedBatches += batch.relayed ? 1 : 0;
         }
-        runtimePresentSite = t_PresenterFrameTrace.relayedBatchSeen && !t_PresenterFrameTrace.directRuntimeBatchSeen &&
-                                     runtimeImageKnown
+        runtimePresentSite = t_PresenterFrameTrace.relayedBatchSeen && runtimeImageKnown
                                  ? FindRuntimeReturnAddress(runtimeBase, runtimeEnd)
                                  : 0;
         observed = ce::dx12_overlay_policy::ChooseTopmostAnchorBatch(batches.data(), t_PresenterFrameTrace.count,
@@ -430,18 +428,41 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     const bool anchorFound = ce::dx12_overlay_policy::IsValidFinalECLBatchSignature(observed);
     if (!routeEligible || !swapChain || !traceUsable || !anchorFound) {
         if (routeEligible && swapChain) {
-            static std::atomic<int> s_unusableTraceLogCount{0};
-            const int logCount = s_unusableTraceLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 10 || (logCount % 300) == 0) {
+            static ce::log_meter::ChangeGate s_unusableTraceLog;
+            uint64_t key = ce::log_meter::FieldKey(
+                swapChain, t_PresenterFrameTrace.count, t_PresenterFrameTrace.overflow, runtimePresentSite, runtimeBase);
+            for (size_t i = 0; i < t_PresenterFrameTrace.count; ++i) {
+                const auto& batch = t_PresenterFrameTrace.batches[i];
+                ce::log_meter::MixFieldBytes(key, batch.callSite);
+                ce::log_meter::MixFieldBytes(key, batch.queue);
+                ce::log_meter::MixFieldBytes(key, batch.relayed);
+                ce::log_meter::MixFieldBytes(key, batch.graphicsQueue);
+            }
+            static std::atomic<uint32_t> s_unusableTraceChanges{0};
+            const auto verdict = s_unusableTraceLog.Observe(key);
+            if (verdict && ce::log_meter::ShouldLogCadence(
+                    s_unusableTraceChanges.fetch_add(1, std::memory_order_relaxed) + 1, 10, 300)) {
                 // presentSite=0 with relayed batches: the runtime's Present call was not found on this stack, so
                 // its relayed batches cannot be told apart from the Present chain's.
                 HookLogImportant(
                     "DX12: No-callback FSR final-batch trace unusable (sc=%p batches=%zu overflow=%d "
-                    "anchor=%d relayed=%zu presentSite=%p runtimeImage=%p log=%d); proxy overlay baseline remains "
-                    "active",
+                    "anchor=%d relayed=%zu presentSite=%p runtimeImage=%p createQueue=%p)%s; "
+                    "proxy overlay baseline remains active",
                     swapChain, t_PresenterFrameTrace.count, t_PresenterFrameTrace.overflow ? 1 : 0,
                     anchorFound ? 1 : 0, relayedBatches, reinterpret_cast<void*>(runtimePresentSite),
-                    reinterpret_cast<void*>(runtimeBase), logCount + 1);
+                    reinterpret_cast<void*>(runtimeBase), g_FFXNativeOutputQueue.load(std::memory_order_acquire),
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                // Keep the actual sites and queues: counts alone cannot distinguish a nested presenter from a
+                // missed queue-proxy return address. Never include the full per-output stack in the log.
+                const size_t reported = std::min(t_PresenterFrameTrace.count, size_t{8});
+                for (size_t i = 0; i < reported; ++i) {
+                    const auto& batch = t_PresenterFrameTrace.batches[i];
+                    HookLogImportant(
+                        "DX12: No-callback FSR batch %zu/%zu site=%p queue=%p graphics=%d relayed=%d runtime=%d",
+                        i + 1, t_PresenterFrameTrace.count, reinterpret_cast<void*>(batch.callSite), batch.queue,
+                        batch.graphicsQueue ? 1 : 0, batch.relayed ? 1 : 0,
+                        runtimeImageKnown && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd) ? 1 : 0);
+                }
             }
         }
         g_TopmostBatchRouteReady.store(false, std::memory_order_release);
@@ -462,6 +483,17 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     }
 
     auto* const anchorQueue = reinterpret_cast<ID3D12CommandQueue*>(observed.queueIdentity);
+    static ce::log_meter::ChangeGate s_anchorQueueLog;
+    auto* const createQueue = g_FFXNativeOutputQueue.load(std::memory_order_acquire);
+    static std::atomic<uint32_t> s_anchorQueueChanges{0};
+    const auto queueVerdict = s_anchorQueueLog.Observe(ce::log_meter::FieldKey(swapChain, anchorQueue, createQueue));
+    if (queueVerdict && ce::log_meter::ShouldLogCadence(
+            s_anchorQueueChanges.fetch_add(1, std::memory_order_relaxed) + 1, 10, 300)) {
+        HookLogImportant("DX12: No-callback FSR composition queue=%p createQueue=%p match=%d%s; "
+                         "learning the final-batch route on the observed queue",
+                         anchorQueue, createQueue, anchorQueue == createQueue ? 1 : 0,
+                         ce::log_meter::SuppressedNote(queueVerdict.suppressed).c_str());
+    }
     const size_t batchesAfterAnchor = t_PresenterFrameTrace.count - anchorIndex - 1;
     const bool presentationChanged = ce::dx12_overlay_policy::IsNewTopmostPresentation(
         swapChain != g_TopmostBatchSwapChain, anchorQueue != g_TopmostBatchQueue,

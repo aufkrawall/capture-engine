@@ -271,6 +271,8 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
         SetEnvironmentVariableA("CE_FLOW_FFX_PRESENT_CHAIN_OVERLAY_OUTPUTS",
                                 std::to_string(options.fsrPresentChainOverlayOutputs).c_str());
         SetEnvironmentVariableA("CE_FLOW_FFX_RELAY_OUTPUT_SUBMISSIONS", options.fsrRelayOutputSubmissions ? "1" : nullptr);
+        SetEnvironmentVariableA("CE_FLOW_FFX_SEPARATE_COMPOSITION_QUEUE",
+                                options.fsrSeparateCompositionQueue ? "1" : nullptr);
         g_presentChainDepth.store(options.fsrPresentChainDepth, std::memory_order_relaxed);
     }
     if (options.streamline && !BeginStreamline())

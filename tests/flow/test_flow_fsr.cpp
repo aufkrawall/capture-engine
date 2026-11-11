@@ -128,6 +128,18 @@ TEST(FlowFSR, RelayedCompositionUnderADeepPresentChainKeepsTheOverlayAtOutputRat
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 
+// A nested presenter or queue layer can use a different native queue from the factory's creation queue. The
+// relayed runtime composition must still establish the anchor; Present-chain submissions must never become it.
+TEST(FlowFSR, RelayedCompositionOnAnotherQueueKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kFullSize, FSRUiBuffering::kSwapchainCopy);
+    options.fsrRelayOutputSubmissions = true;
+    options.fsrSeparateCompositionQueue = true;
+    options.fsrPresentChainDepth = 40;
+    options.fsrPresentChainOverlayOutputs = 120;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
 // GTA V Enhanced with ReShade, as a stack of real-shaped overlays (fakes/overlay/present_chain_layer.cpp): Rockstar's
 // and Epic's overlays and ReShade draw at every Present of AMD's real swapchain, ReShade's queue objects relay AMD's
 // composition and the game's submissions, and the game composes a full-size HUD.

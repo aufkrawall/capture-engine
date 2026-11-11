@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA late overlay and remaining FSR graph cadence: source changes, no build/tests requested
+
+- `gtaoverlaylatefsrgraphstuttery` (0.1.7511) shows a 100 ms resource-prime pause before the first cold overlay.
+  Removed the separate prime/settle path; the selected renderer prepares resources with its draw.
+- The deeper FSR walk now finds AMD's Present site, but no final-batch anchor (4 batches, 3 relayed). Removed the
+  create-queue-only relay search and direct-before-relayed selection; added bounded site/queue diagnostics and
+  separate-composition-queue, mixed-batch and frozen-virtual-clock startup regressions. No builds/tests executed,
+  per the user; both changes still require validation. The logs do not establish the cause of visible ghosting.
+- Evidence, pending nested-Streamline question and retest criteria:
+  [FG guardrails](../frame-generation/guardrails.md#startup-resources-and-relayed-fsr-composition-2026-11-11).
+
 ### 2026-11-11 - Present-chain overlay/HDR flow coverage; ordinary queue replacement misread as FSR FG
 
 - Added native/FidelityFX Present-chain stand-ins for ReShade, Steam, Epic, Ubisoft and Social Club, plus

@@ -158,6 +158,37 @@ TEST(FFXTopmostBatchPolicyTest, RelayedCompositionOutranksSubmissionsInsidePrese
     EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(batches + 2, 1, true, presentSite)));
 }
 
+TEST(FFXTopmostBatchPolicyTest, LaterRelayedCompositionOutranksAnEarlierDirectBatchOnAnotherQueue) {
+    constexpr uintptr_t presentSite = 0x2000;
+    const PresenterBatch batches[] = {
+        {0x1000, 0xA0, true, false},
+        {0x1800, 0xB0, true, true},
+        {0x1800, 0xB0, true, true},
+        {presentSite, 0xA0, true, true},
+    };
+    size_t index = 0;
+    const auto anchor = ChooseTopmostAnchorBatch(batches, 4, true, presentSite, &index);
+    EXPECT_EQ(anchor.callSite, 0x1800u);
+    EXPECT_EQ(anchor.queueIdentity, 0xB0u);
+    EXPECT_EQ(anchor.ordinal, 2u);
+    EXPECT_EQ(index, 2u);
+    EXPECT_TRUE(SameFinalECLBatchSignature(anchor, ChooseTopmostAnchorBatch(batches, 3, true, presentSite)));
+    // Without a known Present site the relayed batches remain unproven; the direct runtime batch is still safe.
+    EXPECT_EQ(ChooseTopmostAnchorBatch(batches, 4, true).callSite, 0x1000u);
+}
+
+TEST(FFXTopmostBatchPolicyTest, LaterComputeOrCopyWorkCannotOwnAGraphicsOverlayBatch) {
+    const PresenterBatch batches[] = {
+        {0x1000, 0xA0, true, false, true},
+        {0x1800, 0xB0, true, false, false},
+        {0x2000, 0xC0, true, true, false},
+    };
+    const auto anchor = ChooseTopmostAnchorBatch(batches, 3, true, 0x3000);
+    EXPECT_EQ(anchor.callSite, 0x1000u);
+    EXPECT_EQ(anchor.queueIdentity, 0xA0u);
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(batches + 1, 2, true, 0x3000)));
+}
+
 TEST(FFXTopmostBatchPolicyTest, AppCallbackTopmostRouteStartsWithNonVisibleProbe) {
     EXPECT_FALSE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/false));
     EXPECT_TRUE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/true));

@@ -90,9 +90,10 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12
 class FrameGenerationProxySwapChain final : public ForwardingSwapChain {
 public:
     FrameGenerationProxySwapChain(IDXGISwapChain4* real, ID3D12CommandQueue* presentQueue,
-                                  ID3D12CommandQueue* gameQueue, UINT proxyBufferCount)
-        : ForwardingSwapChain(real), presentQueue_(presentQueue), gameQueue_(gameQueue),
-          proxyBufferCount_(proxyBufferCount) {
+                                  ID3D12CommandQueue* compositionQueue, ID3D12CommandQueue* gameQueue,
+                                  UINT proxyBufferCount)
+        : ForwardingSwapChain(real), presentQueue_(presentQueue), compositionQueue_(compositionQueue),
+          gameQueue_(gameQueue), proxyBufferCount_(proxyBufferCount) {
         presentQueue_->GetDevice(IID_PPV_ARGS(&device_));
         device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_));
         device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_));
@@ -114,8 +115,9 @@ public:
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
         presenter_ = std::thread([this] { PresenterLoop(); });
-        Log(kModule, "proxy swapchain %p over real %p (presentQueue=%p gameQueue=%p buffers=%u lifetime=%llu)", this,
-            real_, presentQueue_.Get(), gameQueue_.Get(), proxyBufferCount_,
+        Log(kModule, "proxy swapchain %p over real %p "
+                     "(presentQueue=%p compositionQueue=%p gameQueue=%p buffers=%u lifetime=%llu)",
+            this, real_, presentQueue_.Get(), compositionQueue_.Get(), gameQueue_.Get(), proxyBufferCount_,
             static_cast<unsigned long long>(presenterLifetime_));
     }
 
@@ -456,10 +458,11 @@ private:
         static const auto executeRelayed = reinterpret_cast<ExecuteRelayedBatch>(
             GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_ExecuteRelayedBatch"));
         if (relayOutputSubmissions_ && executeRelayed)
-            executeRelayed(presentQueue_.Get(), lists[0]);
+            executeRelayed(compositionQueue_.Get(), lists[0]);
         else
-            presentQueue_->ExecuteCommandLists(1, lists);
-        WaitForQueue(presentQueue_.Get());
+            compositionQueue_->ExecuteCommandLists(1, lists);
+        // Fence completion serializes the fake's composition with Present even when the queues differ.
+        WaitForQueue(compositionQueue_.Get());
     }
 
     void WaitForQueue(ID3D12CommandQueue* queue) {
@@ -472,6 +475,7 @@ private:
     }
 
     ComPtr<ID3D12CommandQueue> presentQueue_;
+    ComPtr<ID3D12CommandQueue> compositionQueue_;
     ComPtr<ID3D12CommandQueue> gameQueue_;
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12CommandAllocator> allocator_;
@@ -590,8 +594,17 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
         presentThrough = real4;
         submitThrough = swapchainContext->presentQueue;
     }
+    ComPtr<ID3D12CommandQueue> compositionQueue = submitThrough;
+    if (ScenarioCount("CE_FLOW_FFX_SEPARATE_COMPOSITION_QUEUE") != 0) {
+        if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(compositionQueue.ReleaseAndGetAddressOf())))) {
+            delete swapchainContext;
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
+        compositionQueue->SetName(L"FakeFFX_CompositionQueue");
+    }
     swapchainContext->proxy = new FrameGenerationProxySwapChain(presentThrough.Get(), submitThrough.Get(),
-                                                                desc.gameQueue, desc.desc->BufferCount);
+                                                                compositionQueue.Get(), desc.gameQueue,
+                                                                desc.desc->BufferCount);
     swapchainContext->proxy->AddRef();
     *desc.swapchain = swapchainContext->proxy;
     {

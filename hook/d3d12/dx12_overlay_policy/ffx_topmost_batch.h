@@ -52,6 +52,7 @@ struct PresenterBatch {
     uintptr_t queueIdentity = 0;
     bool fromPresentingRuntime = false;
     bool relayed = false;  // callSite is the return address in the runtime behind a queue proxy
+    bool graphicsQueue = true;  // CE's draw cannot join a compute/copy command queue
 };
 
 // The batch the route appends CE's overlay to on the next Presents: the last one the presenting runtime image itself
@@ -59,9 +60,10 @@ struct PresenterBatch {
 // Present-time effect) submit after it and only while they have something to draw: appending to the last batch of
 // all lost the overlay on the output where such a layer stopped (Talos, session 20261024_015207: Steam's and
 // OptiScaler's start-up messages, 7 outputs). Those layers now draw above CE while they draw. A Present without a
-// runtime batch has no anchor. When a queue proxy obscures the submitter, use the runtime's return
-// address on the exact Present queue. An overlay submitting inside the Present chain has the
-// runtime's Present return address on its stack, so it cannot establish an anchor.
+// runtime batch has no anchor. When a queue proxy obscures the submitter, use the runtime's return address on the
+// observed submission queue, which need not be the create-time queue. Direct and proven relayed submissions share
+// the same chronological order. An overlay submitting inside the Present chain has the runtime's Present return
+// address on its stack, so it cannot establish an anchor.
 inline FinalECLBatchSignature ChooseTopmostAnchorBatch(const PresenterBatch* batches, size_t count,
                                                        bool runtimeImageKnown, uintptr_t runtimePresentSite = 0,
                                                        size_t* anchorIndex = nullptr) {
@@ -70,18 +72,13 @@ inline FinalECLBatchSignature ChooseTopmostAnchorBatch(const PresenterBatch* bat
     }
     size_t anchor = count;
     for (size_t i = count; i-- > 0;) {
-        if (!runtimeImageKnown || (batches[i].fromPresentingRuntime && !batches[i].relayed)) {
+        if (!batches[i].graphicsQueue)
+            continue;
+        if (!runtimeImageKnown ||
+            (batches[i].fromPresentingRuntime &&
+             (!batches[i].relayed || (runtimePresentSite != 0 && batches[i].callSite != runtimePresentSite)))) {
             anchor = i;
             break;
-        }
-    }
-    if (anchor == count && runtimePresentSite != 0) {
-        for (size_t i = count; i-- > 0;) {
-            if (batches[i].fromPresentingRuntime && batches[i].relayed &&
-                batches[i].callSite != runtimePresentSite) {
-                anchor = i;
-                break;
-            }
         }
     }
     if (anchor == count) {

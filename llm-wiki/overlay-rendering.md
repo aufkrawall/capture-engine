@@ -235,19 +235,21 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 The Witcher 3 with Steam, ReShade and Streamline kept the no-UI-resource backbuffer route under FSR FG: the
 final-batch observer saw two or three submissions per output without an immediate return address in the runtime
 image (display ~83 FPS, graph rebuilt at ~41 FPS). `dx12_hook_ffx_topmost_batch.cpp` recovers the runtime return
-address on the native queue from the authoritative FFX swapchain takeover when a forwarding layer hides the
-submitter, and excludes submissions whose runtime return address is the one at the physical Present (made inside the
-Present chain). Direct runtime batches keep precedence; the learned signature reports `anchor=runtime-via-queue-proxy`.
+address on each observed queue when a forwarding layer hides the submitter; the composition queue need not equal the
+create-time queue. Submissions with the runtime's physical-Present return address are inside the Present chain and
+cannot anchor it. The last proven direct or relayed runtime batch wins; `anchor=runtime-via-queue-proxy` names a relay.
 
 GTA V Enhanced + ReShade after DLSS FG -> FSR FG (`gtafsroverlaystutteryghosty`, 0.1.7505): `final-batch trace
 unusable (... runtimeBatch=0 relayed=1)` for the whole FSR run, overlay in the game's UI texture at the rendered rate
 (644 overlay frames per 10 s at ~125 output FPS; user: stuttery). Social Club, Epic's overlay, Streamline and ReShade
 wrap AMD's real swapchain, so AMD's Present call lay beyond the 20 frames `FindRuntimeReturnAddress` searched, and
 without that site no relayed batch qualified. It walks 16 frames, then up to 112 more. The unusable line prints
-`anchor= relayed=<count> presentSite=` (0: the Present call was not found). Flow: `FlowFSR.RelayedComposition*`
-(`...UnderADeepPresentChainKeepsTheOverlayAtOutputRate`, 40 extra frames, failed before). Hardware retest pending.
-Under FSR FG the overlay joins AMD's batch, before Present-chain layers draw, so ReShade's Present-time effects process
-it; without FG CE draws at the physical Present after the chain, on top of ReShade's output.
+`anchor= relayed=<count> presentSite=` (0: the Present call was not found). The 0.1.7511 retest found that site but still
+had no anchor (4 batches, 3 relayed). Queue-restricted recovery and direct-before-relayed selection were removed;
+unusable traces now report up to 8 sites/queues on changes. `FlowFSR.RelayedCompositionOnAnotherQueueKeepsTheOverlayAtOutputRate`
+and the mixed-batch policy regression cover those blind spots; they were added without running builds/tests at the
+user's request. This session does not identify the unclassified batch's queue, or prove the cause of visible ghosting.
+See [guardrails](frame-generation/guardrails.md#startup-resources-and-relayed-fsr-composition-2026-11-11) for retest criteria.
 
 ## PC latency source hierarchy
 
