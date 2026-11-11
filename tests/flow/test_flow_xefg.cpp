@@ -45,6 +45,29 @@ TEST(FlowXeFG, TogglesKeepTheOverlayOnEveryOutput) {
     ExpectNoDebugLayerErrors();
 }
 
+// HDR10 output: XeFG's generated outputs and CE's draws on them in the swapchain's HDR format.
+TEST(FlowXeFG, HDR10TogglesKeepTheOverlayOnEveryOutput) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = XeFGGameOptions();
+    options.backBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+    options.colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ToggleXeFG(game, 1, FlowGame::PresentMethod::kPresent);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowXeFG, ScRGBTogglesKeepTheOverlayOnEveryOutput) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = XeFGGameOptions();
+    options.backBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    options.colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ToggleXeFG(game, 1, FlowGame::PresentMethod::kPresent1);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowXeFG, Present1TogglesKeepTheOverlayOnEveryOutput) {
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();

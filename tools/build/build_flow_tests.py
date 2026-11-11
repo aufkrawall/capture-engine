@@ -35,6 +35,13 @@ FLOW_FAKE_MODULES = (
     # A stand-in named like a third-party overlay hook (RivaTuner): the foreign-overlay report must name it.
     ("third_party/RTSSHooks64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
     ("third_party/capture_hook_x64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
+    # Overlays hooked into the Present chain, one copy under each module name CE identifies; ReShade's also wraps
+    # queues. Scenarios copy them into their own folder (Ubisoft's under its launcher's folder name) and load them there.
+    ("present_chain/ReShade64.dll", ("overlay/present_chain_layer.cpp", "overlay/reshade_identity.cpp")),
+    ("present_chain/GameOverlayRenderer64.dll", ("overlay/present_chain_layer.cpp",)),
+    ("present_chain/EOSOVH-Win64-Shipping.dll", ("overlay/present_chain_layer.cpp",)),
+    ("present_chain/ubisoft/overlay64.dll", ("overlay/present_chain_layer.cpp",)),
+    ("present_chain/socialclub.dll", ("overlay/present_chain_layer.cpp",)),
     # One d3d9.dll file name, two translators told apart by version resource (FlowDX11OverlayApiLabel).
     ("dxup/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/dxup_version.rc")),
     ("dxup/d3d11.dll", ("translators/frontend_stand_in.cpp", "translators/dxup_version.rc")),

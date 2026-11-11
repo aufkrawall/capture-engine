@@ -22,7 +22,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `repo-map.md` | 12 | where each subsystem lives, binaries to sources, build units, high-risk areas |
-| `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-05), library plan, log-volume evidence |
+| `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-05), library plan; Present-chain/HDR flow coverage and stand-in limits (2026-11-11) |
 | `refactor-contracts.md` | 45 | implemented core ownership, glossary, source/test anchors, locality comparison and pending validation (2026-10-05) |
 | `architecture-debt-plan.md` | 42 | parallel graphics/media/build debt and hardware validation; D8/D9/D13 superseded by library plan (2026-10-08) |
 | `library/README.md` | 4 | canonical library-first plan and M0-M11 milestone status (adopted 2026-10-08) |

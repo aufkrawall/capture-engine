@@ -97,9 +97,8 @@ TEST(FlowDLSS, ResizeAndRetirementReportTheDestroyDispatchBeforeNativeRelease) {
 }
 
 // A menu toggle seconds apart, as in the 0.1.6951 Talos/GTA runs.
-TEST(FlowDLSS, MenuTogglesKeepTheOverlayAndPublishTheRuntimeState) {
-    FlowGame game(CurrentTestName());
-    ASSERT_TRUE(game.CreateDeviceAndSwapchain(StreamlineGameOptions())) << game.Error();
+void ToggleDLSSFromTheMenu(FlowGame& game, const GameOptions& options) {
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     EXPECT_LT(game.PublishedFG().multiplier, 2);
 
@@ -117,6 +116,28 @@ TEST(FlowDLSS, MenuTogglesKeepTheOverlayAndPublishTheRuntimeState) {
     }
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowDLSS, MenuTogglesKeepTheOverlayAndPublishTheRuntimeState) {
+    FlowGame game(CurrentTestName());
+    ToggleDLSSFromTheMenu(game, StreamlineGameOptions());
+}
+
+// HDR output: Streamline's generated outputs and CE's draws on them in the swapchain's HDR format.
+TEST(FlowDLSS, HDR10MenuTogglesKeepTheOverlay) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = StreamlineGameOptions();
+    options.backBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+    options.colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    ToggleDLSSFromTheMenu(game, options);
+}
+
+TEST(FlowDLSS, ScRGBMenuTogglesKeepTheOverlay) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = StreamlineGameOptions();
+    options.backBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    options.colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    ToggleDLSSFromTheMenu(game, options);
 }
 
 // CE holds an OFF that arrives inside DLSS-G's startup window (GTA's startup churn) - but only until the

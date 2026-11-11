@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-11-11 - Present-chain overlay/HDR flow coverage; ordinary queue replacement misread as FSR FG
+
+- Added native/FidelityFX Present-chain stand-ins for ReShade, Steam, Epic, Ubisoft and Social Club, plus
+  HDR10/scRGB FG toggles and a stacked HDR10 FSR run. Stand-ins wrap queues/swapchains and draw at Present;
+  real effects, wrapped devices, hardware colors and temporal ghosting remain outside this coverage.
+- Native cold initialization is measured separately; all later presents and all FG transitions retain strict coverage.
+  A fresh ordinary game queue falsely became runtime-owned FSR FG and suppressed every later overlay draw.
+  Creation provenance now resets ownership/baselines immediately (`dx12_hook_postsl_route.cpp`).
+- Epic's hyphenated launcher names now enter every overlay cache; underscore aliases remain (`40263b53`).
+- The harness also retained old swapchains through same-pointer WRL `Attach`; empty returned-reference holders fix it.
+  Details and regression anchors: [refactor-roadmap.md](../refactor-roadmap.md), "FG flow harness".
+
 ### 2026-11-11 - GTA + ReShade FSR overlay at rendered rate; display trace opt-in; onset wording
 
 - `gtafsroverlaystutteryghosty` (0.1.7505, DLSS FG -> FSR FG with ReShade): the final-batch route never armed

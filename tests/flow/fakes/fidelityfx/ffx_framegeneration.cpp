@@ -569,7 +569,28 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
     }
     ComPtr<IDXGISwapChain4> real4;
     real.As(&real4);
-    swapchainContext->proxy = new FrameGenerationProxySwapChain(real4.Get(), swapchainContext->presentQueue.Get(),
+    // The scenario's Present-chain overlays wrap the swapchain the runtime presents to and, ReShade, the queue it
+    // submits to, as they wrap AMD's in GTA V Enhanced (flow_host_present_chain.cpp); without them both stay the runtime's.
+    ComPtr<IDXGISwapChain4> presentThrough;
+    ComPtr<ID3D12CommandQueue> submitThrough;
+    using WrapPresentation = void (*)(IDXGISwapChain4*, ID3D12CommandQueue*, IDXGISwapChain4**, ID3D12CommandQueue**);
+    if (const auto wrap = reinterpret_cast<WrapPresentation>(
+            GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_WrapRuntimePresentation"))) {
+        IDXGISwapChain4* wrappedSwapchain = nullptr;
+        ID3D12CommandQueue* wrappedQueue = nullptr;
+        wrap(real4.Get(), swapchainContext->presentQueue.Get(), &wrappedSwapchain, &wrappedQueue);
+        presentThrough.Attach(wrappedSwapchain);
+        submitThrough.Attach(wrappedQueue);
+        if (!presentThrough || !submitThrough) {
+            Log(kModule, "wrapping runtime presentation failed");
+            delete swapchainContext;
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
+    } else {
+        presentThrough = real4;
+        submitThrough = swapchainContext->presentQueue;
+    }
+    swapchainContext->proxy = new FrameGenerationProxySwapChain(presentThrough.Get(), submitThrough.Get(),
                                                                 desc.gameQueue, desc.desc->BufferCount);
     swapchainContext->proxy->AddRef();
     *desc.swapchain = swapchainContext->proxy;

@@ -51,6 +51,20 @@ enum class DLSSGApiTool {
     kForwards,  // a tool's module wraps them and forwards to Streamline's plugin (OptiScaler over a running DLSS-G)
 };
 
+// A third-party overlay hooked into the Present chain (fakes/overlay/present_chain_layer.cpp), under its module name.
+enum class OverlayStandIn {
+    kReShade,   // ReShade64.dll: also wraps the game's and the runtime's queues, exports its add-on API
+    kSteam,     // GameOverlayRenderer64.dll
+    kEpic,      // EOSOVH-Win64-Shipping.dll
+    kUbisoft,   // overlay64.dll in an "Ubisoft Game Launcher" folder
+    kRockstar,  // socialclub.dll
+};
+
+struct PresentChainOverlay {
+    OverlayStandIn overlay = OverlayStandIn::kReShade;
+    uint32_t drawPresents = 0;  // 0: draws at every Present (ReShade's effects); N: at the first N only (a toast)
+};
+
 struct GameOptions {
     // Initialize Streamline like a DLSS-G game: slInit before the device, the device from the interposer and
     // slSetD3DDevice; Streamline swapchains come from its DXGI factory proxy and get a frame token, the
@@ -79,6 +93,12 @@ struct GameOptions {
     DLSSGApiTool dlssgApiTool = DLSSGApiTool::kNone;
     // kXeFG: hand XeFG a swapchain the game created (xefgSwapChainD3D12InitFromSwapChain) instead of a description.
     bool xefgFromSwapchain = false;
+    // Overlays wrapped around the swapchain that reaches the screen, outermost first: the game's own (kNative) or the
+    // one the FidelityFX runtime presents to (kFidelityFX). GTA V Enhanced: Rockstar's, Epic's, then ReShade.
+    std::vector<PresentChainOverlay> presentChainOverlays;
+    // The game's back buffers: HDR10 is R10G10B10A2 with G2084/P2020, scRGB R16G16B16A16_FLOAT with G10/P709.
+    DXGI_FORMAT backBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     UINT width = 640;
     UINT height = 360;
 };
@@ -234,6 +254,10 @@ public:
     int FramesPresented() const {
         return frame_;
     }
+    // Whether a frame was presented in the SDR color space (G2.2/P709), as opposed to only HDR10 or scRGB.
+    bool PresentedSdr() const {
+        return presentedSdr_;
+    }
 
     // The game runs at 144 FPS on CE's virtual clock (hook/runtime/hook_clock.h): frame k starts at k * 6944 us
     // however fast WARP renders it. The production hook thread passes every 100 ms, so every 14th frame.
@@ -266,6 +290,12 @@ private:
     void DestroyXeFGContext();
     void EndXeFG();
     bool CreateBackBufferViews();
+
+    // flow_host_present_chain.cpp: loads the stand-ins from the scenario folder (after queue_ exists; ReShade's object
+    // for it becomes submitQueue_); WrapGameSwapchain puts them around the game's own swapchain.
+    bool LoadPresentChainOverlays(const std::vector<PresentChainOverlay>& overlays);
+    bool RefreshPresentChainQueue();
+    bool WrapGameSwapchain(ComPtr<IDXGISwapChain1>& swapchain);
 
     bool EnableD3D12DebugLayer();
     bool WatchD3D12DebugMessages();
@@ -319,6 +349,10 @@ private:
     ComPtr<ID3D12InfoQueue1> infoQueue_;
     DWORD debugMessageCookie_ = 0;
     ComPtr<ID3D12CommandQueue> queue_;
+    ComPtr<ID3D12CommandQueue> submitQueue_;  // ReShade's object for queue_; null without that stand-in
+    DXGI_FORMAT backBufferFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
+    DXGI_COLOR_SPACE_TYPE colorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    bool presentedSdr_ = false;
     ComPtr<IDXGISwapChain3> swapchain_;
     ComPtr<ID3D12DescriptorHeap> rtvHeap_;
     UINT rtvStride_ = 0;

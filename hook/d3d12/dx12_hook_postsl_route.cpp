@@ -178,6 +178,18 @@ if (dx12_hook_g_SwapchainQueue != pQueue) {
     // Track whether an FG runtime owns this swapchain/queue
     bool runtimeOwns = (dx12_hook_g_OriginalGameQueue && pQueue != dx12_hook_g_OriginalGameQueue);
 
+    // A plain game may replace its presentation queue without using frame generation. Creation provenance and
+    // the previous native topology prove that boundary; pointer inequality alone does not prove runtime ownership.
+    if (gameCreatedSwapchain && associatedSwapchain && runtimeOwns && !authoritativeStreamlineRuntimeQueue &&
+        !authoritativeFFXRuntimeQueue && !dx12_hook_g_FGRuntimeOwnsSwapchain && !IsActualFrameGenerationActive() &&
+        !HookHasRuntimeOwnedNativeFGPresentPath()) {
+        authoritativeNormalSwapchainReturn = true;
+        RequestFGDetectionHeuristicReset(pQueue);
+        HookLogImportant("DX12: Game-created native swapchain replaced its presentation queue "
+                         "(sc=%p queue=%p previous=%p); resetting the FG heuristic baseline",
+                         associatedSwapchain, pQueue, dx12_hook_g_OriginalGameQueue);
+    }
+
     if (authoritativeNormalSwapchainReturn) {
         runtimeOwns = false;
         if (dx12_hook_g_OriginalGameQueue != pQueue) {
@@ -187,7 +199,7 @@ if (dx12_hook_g_SwapchainQueue != pQueue) {
             pQueue->AddRef();
             HookLogImportant(
                 "DX12: Re-baselined original game queue to authoritative normal-return queue %p "
-                "(was %p; the game replaced the retired Streamline presentation topology)",
+                "(was %p; the game replaced its presentation topology)",
                 pQueue, oldOriginalGameQueue);
             if (oldOriginalGameQueue) {
                 oldOriginalGameQueue->Release();
@@ -200,7 +212,7 @@ if (dx12_hook_g_SwapchainQueue != pQueue) {
         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
         dx12_hook_s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
         HookLogImportant(
-            "DX12: Authoritative normal swapchain return ended retired Streamline queue ownership "
+            "DX12: Authoritative normal swapchain return ended previous queue ownership "
             "(queue=%p origGame=%p ownershipWasHeld=%d)",
             pQueue, dx12_hook_g_OriginalGameQueue, ownershipWasHeld ? 1 : 0);
     }

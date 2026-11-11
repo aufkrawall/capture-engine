@@ -1,6 +1,6 @@
 # Refactor roadmap
 
-Last cross-checked: 2026-10-05 (completed core ownership; remaining-debt plan; historical baseline remains 2026-10-02)
+Last cross-checked: 2026-11-11 (Present-chain/HDR flow coverage); 2026-10-05 (completed core ownership; remaining-debt plan; historical baseline remains 2026-10-02)
 
 Goal (user, 2026-10-02): an orderly, readable codebase that an LLM can investigate with few tokens, with
 nothing broken or regressed, fewer lines where that costs nothing, and boundaries that let CaptureEngine
@@ -98,6 +98,30 @@ out of `unit_tests.exe` (`tests/test_stubs.cpp`). Design (2026-10-03):
 - Scenarios: baseline; DLSS menu toggles, OFF inside the startup window; FSR toggles with callback,
   without (game UI texture, GTA 1x1 placeholder, no UI resource); post-FSR DLSS warm resume; Talos- and
   GTA-style runtime switches with FG on (FSR on -> DLSS on -> FSR on -> native off, each in one frame).
+- Present-chain stand-ins (`tests/flow/fakes/overlay/present_chain_layer.cpp`, `reshade_identity.cpp`,
+  `flow_host_present_chain.cpp`, 2026-11-11): scenario-local DLLs named for ReShade, Steam, Epic, Ubisoft
+  and Social Club wrap native/FidelityFX output swapchains and draw a corner at Present/Present1. ReShade's
+  queue wrappers relay game/runtime submissions and answer native-interface queries. Toast layers stop drawing
+  after a specified count. Creation/first-draw/stop/retirement logs identify each layer and its target format.
+  These model COM queue/swapchain forwarding and submission order; they do not reproduce wrapped devices,
+  real effect shaders, temporal ghosting or the vendors' actual hook implementations. Hardware retests remain necessary.
+- Native cold-start scenarios (`test_flow_present_chain_overlays.cpp`) render until the first accounted draw,
+  bounded to 300 virtual-clock frames, and report the measured pre-initialization presents. Only that prefix may
+  be excluded from the tally equality; every later physical present must be accounted and covered exactly once.
+  FG/switching scenarios retain the strict first-present check. Replacement native queues get fresh wrappers.
+- HDR10/scRGB flow scenarios cover DLSS and XeFG toggles plus FSR callback, full-size HUD, substitute HUD and
+  final-batch output routes (`test_flow_dlss.cpp`, `test_flow_xefg.cpp`, `test_flow_fsr.cpp`), including HDR10
+  under the launcher/ReShade stack. Display gamma must never run in an HDR-only scenario; SDR/mixed runs
+  still require a successful gamma route (`flow_test_support.h`, `FlowGame::PresentedSdr`).
+- Native queue replacement found a product defect: `DX12_SetSwapchainQueue` (`dx12_hook_postsl_route.cpp`)
+  treated any queue differing from the original as runtime-owned, and the queue-change heuristic published FSR FG,
+  suppressing every later draw. A game-created replacement of an inactive native topology now rebinds the original
+  queue and pins the heuristic baseline to it; authoritative runtime creation and active/owned FG paths stay separate.
+  `FlowPresentChainOverlays.ReShadeWrapsAReplacementNativeQueue` and its unwrapped counterpart check the first draw,
+  continued coverage and FG-off status. No wait or extra GPU work is added.
+- Harness lifetime trap: this toolchain's WRL `ComPtr::Attach` is a no-op for an already-held pointer. Returned
+  references from the runtime-presentation wrapper must attach to empty holders, or a no-overlay run leaks its old
+  swapchain and the next create fails `E_ACCESSDENIED`. The existing held-DLSS-OFF native-return flow exercises it.
 - Debugging a removed device: run `build/flow_tests/fg_flow_tests.exe --gtest_filter=<test>` under cdb;
   WARP faults are first-chance AVs with readable stacks (`d3d10warp!UMContext::Barrier` on freed memory).
 

@@ -65,6 +65,20 @@ void* ExportFromImage(HMODULE module, const char* name) {
     return nullptr;
 }
 
+// The game's back buffer format as the frame generation context declares it (HDR10 and scRGB included).
+uint32_t FFXSurfaceFormat(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            return FFX_API_SURFACE_FORMAT_R10G10B10A2_UNORM;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+            return FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM;
+        default:
+            return FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
 D3D12_RESOURCE_STATES ToD3D12State(uint32_t ffxState) {
     switch (ffxState) {
         case FFX_API_RESOURCE_STATE_UNORDERED_ACCESS:
@@ -237,7 +251,7 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
     frameGeneration.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
     frameGeneration.displaySize = {width_, height_};
     frameGeneration.maxRenderSize = {width_, height_};
-    frameGeneration.backBufferFormat = FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+    frameGeneration.backBufferFormat = FFXSurfaceFormat(backBufferFormat_);
     if (ffx.createContext(&ffx.frameGenerationContext, &frameGeneration.header, nullptr) != FFX_API_RETURN_OK)
         return Fail("ffxCreateContext(frame generation)", E_FAIL);
     ffx.enabled = false;
@@ -306,7 +320,7 @@ bool FlowGame::RecreateFSREffectContext() {
     frameGeneration.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
     frameGeneration.displaySize = {width_, height_};
     frameGeneration.maxRenderSize = {width_, height_};
-    frameGeneration.backBufferFormat = FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+    frameGeneration.backBufferFormat = FFXSurfaceFormat(backBufferFormat_);
     if (fidelityfx_->createContext(&fidelityfx_->frameGenerationContext, &frameGeneration.header, nullptr) != FFX_API_RETURN_OK)
         return false;
     return true;

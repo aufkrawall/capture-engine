@@ -128,6 +128,80 @@ TEST(FlowFSR, RelayedCompositionUnderADeepPresentChainKeepsTheOverlayAtOutputRat
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 
+// GTA V Enhanced with ReShade, as a stack of real-shaped overlays (fakes/overlay/present_chain_layer.cpp): Rockstar's
+// and Epic's overlays and ReShade draw at every Present of AMD's real swapchain, ReShade's queue objects relay AMD's
+// composition and the game's submissions, and the game composes a full-size HUD.
+TEST(FlowFSR, GTAsOverlayStackWithReShadeKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kFullSize, FSRUiBuffering::kSwapchainCopy);
+    options.presentChainOverlays = {{OverlayStandIn::kRockstar, 0}, {OverlayStandIn::kEpic, 0},
+                                    {OverlayStandIn::kReShade, 0}};
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// Ubisoft Connect's overlay draws at every Present, Steam's start-up toast at the first 120 only, over a game without a
+// UI resource: the final-batch route anchors on the runtime's batch beneath both and keeps it when the toast stops.
+TEST(FlowFSR, UbisoftAndSteamOverlaysOverTheRuntimesSwapchainLeaveNoOutputUncovered) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
+    options.presentChainOverlays = {{OverlayStandIn::kUbisoft, 0}, {OverlayStandIn::kSteam, 120}};
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// With the game's present callback CE draws inside it; ReShade's effects follow at Present.
+TEST(FlowFSR, PresentCallbackUnderReShadeKeepsTheOverlay) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
+    options.presentChainOverlays = {{OverlayStandIn::kReShade, 0}};
+    ToggleFSR(game, true, options, FinalBatchRoute::kAnyOwner);
+}
+
+GameOptions HDR10(GameOptions options) {
+    options.backBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+    options.colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    return options;
+}
+
+GameOptions ScRGB(GameOptions options) {
+    options.backBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    options.colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    return options;
+}
+
+// HDR output under FSR FG: every route draws into a target of another format than the SDR default - the game's
+// R8G8B8A8 HUD over an HDR swapchain, CE's substitute, AMD's HDR outputs - through pipelines of that target's format.
+TEST(FlowFSR, HDR10WithoutAPresentCallbackKeepsTheOverlayOnTheGamesUiResource) {
+    FlowGame game(CurrentTestName());
+    ToggleFSR(game, false, HDR10(FidelityFXGameOptions(FSRUiResource::kFullSize, FSRUiBuffering::kSwapchainCopy)),
+              FinalBatchRoute::kAnyOwner);
+}
+
+TEST(FlowFSR, HDR10WithoutAPresentCallbackOrUiResourceDrawsEveryOutputAfterComposition) {
+    FlowGame game(CurrentTestName());
+    ToggleFSR(game, false, HDR10(FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy)),
+              FinalBatchRoute::kOwnsTheOutputs);
+}
+
+TEST(FlowFSR, ScRGBWithThePresentCallbackKeepsTheOverlay) {
+    FlowGame game(CurrentTestName());
+    ToggleFSR(game, true, ScRGB(FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy)),
+              FinalBatchRoute::kAnyOwner);
+}
+
+TEST(FlowFSR, HDR10UnderReShadeAndLauncherOverlaysKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = HDR10(FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy));
+    options.presentChainOverlays = {{OverlayStandIn::kRockstar, 0}, {OverlayStandIn::kEpic, 0},
+                                    {OverlayStandIn::kReShade, 0}};
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+TEST(FlowFSR, ScRGBWithoutAPresentCallbackKeepsTheOverlayOnASubstituteUiResource) {
+    FlowGame game(CurrentTestName());
+    ToggleFSR(game, false, ScRGB(FidelityFXGameOptions(FSRUiResource::kPlaceholder, FSRUiBuffering::kSwapchainCopy)),
+              FinalBatchRoute::kAnyOwner);
+}
+
 // OptiScaler feeding DLSS-G inputs to FSR FG registers a UI resource without a resource every frame.
 TEST(FlowFSR, TogglesWithoutAPresentCallbackAndAnEmptyUiResourceDrawEveryOutputAfterComposition) {
     FlowGame game(CurrentTestName());

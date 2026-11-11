@@ -425,8 +425,10 @@ Default quality mode currently:
   passing vacuously (`reason=listing_failed|no_scenarios`). Cost evidence (2026-10-24): 4 processes already keep the 16-thread
   machine at 97% CPU (more parallelism does not help), the 182 scenarios total ~1,670 s of which 33 take >=20 s,
   and cdb samples of the slowest show all work in WARP's pixel-shader JIT: the overlay on every output plus the
-  display-gamma pass the harness forces for every scenario (`ExpectPostProcessAccounted`), which alone makes a
-  scenario ~2.7x slower (53.7 s -> 20.6 s without it) - deliberate coverage, kept. Each scenario's hook log is
+  display-gamma pass the harness enables (`ExpectPostProcessAccounted`), which alone makes an SDR
+  scenario ~2.7x slower (53.7 s -> 20.6 s without it) - deliberate coverage, kept. HDR-only scenarios instead
+  assert that no gamma correction ran (2026-11-11); mixed SDR/HDR scenarios still require the SDR pass.
+  Each scenario's hook log is
   `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log` and `d3d12_debug.log`: the game
   runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). A failed scenario's log
   folder is copied to `<run_dir>/flow_logs/<Suite.Test>/` (`preserve_failed_flow_logs`), because the next run of

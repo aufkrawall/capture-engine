@@ -23,11 +23,17 @@ inline std::string CurrentTestName() {
 // scenario's frames, never failed and never skipped a frame for a reason the routing cannot name. The frames it
 // leaves uncorrected (FG switches, DLSS-G start-up) are reported, not forbidden: the harness exercises exactly
 // the transitions where CE keeps its work off the game queue.
+// Display gamma is an SDR correction: a scenario that presented only HDR (HDR10, scRGB) must show no route applying it.
 inline void ExpectPostProcessAccounted(const FlowGame& game) {
     const CEFlowPostProcess postProcess = game.PostProcess();
-    EXPECT_GT(postProcess.corrected + postProcess.covered + postProcess.routeApplied, 0u)
-        << "the post-process pass never ran or was covered in " << postProcess.frames << " frames; logs: "
-        << game.LogDirectory();
+    if (game.PresentedSdr()) {
+        EXPECT_GT(postProcess.corrected + postProcess.covered + postProcess.routeApplied, 0u)
+            << "the post-process pass never ran or was covered in " << postProcess.frames << " frames; logs: "
+            << game.LogDirectory();
+    } else {
+        EXPECT_EQ(postProcess.corrected + postProcess.routeApplied, 0u)
+            << "display gamma ran on HDR output; logs: " << game.LogDirectory();
+    }
     EXPECT_EQ(postProcess.failed + postProcess.routeFailed, 0u) << "logs: " << game.LogDirectory();
     EXPECT_EQ(postProcess.unclassified, 0u) << "logs: " << game.LogDirectory();
     std::printf("[  FLOW  ] post-process frames=%llu corrected=%llu covered=%llu uncorrected=%llu runs=%llu "
@@ -41,9 +47,11 @@ inline void ExpectPostProcessAccounted(const FlowGame& game) {
                 static_cast<unsigned long long>(postProcess.routeApplied));
 }
 
-inline void ExpectEveryPresentCoveredOnce(const FlowGame& game) {
+// Only cold-start scenarios may supply the measured presents before CE's first visible draw. Later gaps must
+// always remain in the ledger; the default contract still requires coverage from the very first physical present.
+inline void ExpectEveryPresentCoveredOnce(const FlowGame& game, uint64_t coldStartupPresents = 0) {
     const CEFlowOverlayCoverage coverage = game.Coverage();
-    EXPECT_EQ(coverage.presents, game.PhysicalPresents()) << "logs: " << game.LogDirectory();
+    EXPECT_EQ(coverage.presents + coldStartupPresents, game.PhysicalPresents()) << "logs: " << game.LogDirectory();
     EXPECT_EQ(coverage.uncovered, 0u) << "of " << coverage.presents << " presents; longest uncovered streak "
                                       << coverage.longestUncoveredStreak << "; logs: " << game.LogDirectory();
     EXPECT_EQ(coverage.doubleDraws, 0u) << "logs: " << game.LogDirectory();

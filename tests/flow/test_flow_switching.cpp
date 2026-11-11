@@ -46,12 +46,15 @@ TEST(FlowSwitch, PostFSRDLSSWarmResumeKeepsTheOverlay) {
 // FSR FG through the present callback, GTA without one over a 1x1 UI placeholder.
 // unloadDlssgFirst: GTA unloads DLSS-G (slFreeResources, slSetFeatureLoaded(false)) while its swapchain proxy is still
 // alive, and the FidelityFX swapchain for the window is created after the proxy's release (session 20261110_182518).
+// overlays: Present-chain overlays around the FidelityFX runtime's and the game's own swapchains (not Streamline's).
 void SwitchRuntimesWithFrameGenerationOn(FlowGame& game, bool presentCallback, FSRUiResource ui,
-                                         bool unloadDlssgFirst = false) {
+                                         bool unloadDlssgFirst = false,
+                                         const std::vector<PresentChainOverlay>& overlays = {}) {
     GameOptions options;
     options.streamline = true;
     options.swapchain = SwapchainKind::kFidelityFX;
     options.fsrUi = ui;
+    options.presentChainOverlays = overlays;
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, presentCallback)) << game.Error();
@@ -94,6 +97,15 @@ TEST(FlowSwitch, GTAStyleRuntimeSwitchesKeepTheOverlay) {
 TEST(FlowSwitch, GTAStyleSwitchAfterTheDLSSUnloadKeepsTheOverlayAndCreatesTheFSRChain) {
     FlowGame game(CurrentTestName());
     SwitchRuntimesWithFrameGenerationOn(game, false, FSRUiResource::kPlaceholder, true);
+}
+
+// The same switches in GTA V Enhanced with ReShade (session gtafsroverlaystutteryghosty): Rockstar's and Epic's
+// overlays and ReShade around AMD's real swapchain and the game's own, GTA's full-size HUD as the UI resource.
+TEST(FlowSwitch, GTAStyleSwitchesUnderReShadeAndLauncherOverlaysKeepTheOverlay) {
+    FlowGame game(CurrentTestName());
+    SwitchRuntimesWithFrameGenerationOn(game, false, FSRUiResource::kFullSize, true,
+                                        {{OverlayStandIn::kRockstar, 0}, {OverlayStandIn::kEpic, 0},
+                                         {OverlayStandIn::kReShade, 0}});
 }
 
 TEST(FlowSwitch, FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches) {

@@ -10,6 +10,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject overlay after a DirectX 12 game replaces its presentation queue:** keep the overlay drawing from the replacement swapchain's first frame and keep frame generation reported as off. A new ordinary game queue was previously mistaken for FSR Frame Generation, suppressing the overlay.
+
 - **Epic overlay coexistence in DirectX 12:** recognize the launcher's hyphenated overlay DLL names so its rendering is classified as overlay work and follows the existing startup compatibility rules.
 
 - **Stuttering inject overlay with FSR Frame Generation in GTA V Enhanced with ReShade:** after switching from DLSS to FSR Frame Generation, the overlay changed only with every rendered frame instead of every displayed one, so the frame-time graph moved in steps. Social Club, Epic's overlay, Streamline and ReShade all wrap the swapchain FidelityFX presents to, and Capture Engine searched too few stack frames to find FidelityFX's Present call, so it could not tell FidelityFX's last submission from ReShade's and never moved the overlay onto the per-output route. It now searches the whole chain.
@@ -71,6 +73,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 - **Inject overlay visibility with Ubisoft Connect / Uplay overlay:** games running with the Ubisoft Connect / Uplay overlay active (such as *Avatar: Frontiers of Pandora*) no longer cause the inject overlay to disappear. Capture Engine now tracks verified Ubisoft `overlay64.dll` and `overlay.dll` modules requiring corroborating Ubisoft path/product evidence, traversing the Present call stack past verified overlay frames to reach the true Present originator (including Streamline and DLSS Frame Generation) and compositing below foreign Present entry chains. Ubisoft version metadata takes effect on the first scan, and a verified late load keeps its position relative to Steam.
 
 ### Improved
+
+- **Overlay compatibility regression checks:** exercise stacked launcher and effect overlays, overlays that stop drawing, frame-generation switches, and HDR10/scRGB output with FSR, DLSS and XeFG. The checks require one overlay draw per eligible output, correct frame-generation status and no DirectX 12 debug-layer errors.
 
 - **Screen-change timing log: why a process's frames do not reach the screen:** when presents expire without a flip and the desktop compositor takes over, the `[DisplayTiming]` lines now report how many presents and flips the compositor made during the episode and how it ended the process's presents (composition tokens confirmed, retired or discarded). The periodic health line carries the same counts. This tells "the compositor did not present" from "it discarded the frames" from "Capture Engine failed to attribute them". The shared tracing session subscribes to two more Windows composition events for it.
 

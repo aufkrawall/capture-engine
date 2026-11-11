@@ -236,6 +236,8 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     fsrWrappedGameQueue_ = options.fsrWrappedGameQueue;
     fsrToolRuntimeCopy_ = options.fsrToolRuntimeCopy;
     fsrToolFFXInputs_ = options.fsrToolFFXInputs;
+    backBufferFormat_ = options.backBufferFormat;
+    colorSpace_ = options.colorSpace;
     WNDCLASSA windowClass{};
     windowClass.lpfnWndProc = GameWindowProc;
     windowClass.hInstance = GetModuleHandleA(nullptr);
@@ -309,6 +311,8 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
         return Fail("CreateCommandQueue", hr);
     // Debug-layer messages name queues: a wrong-queue error then says whose queue it was.
     queue_->SetName(L"FlowGame_GameQueue");
+    if (!LoadPresentChainOverlays(options.presentChainOverlays))
+        return false;
     depth_ = CreateFlowTexture(device_.Get(), width_, height_, DXGI_FORMAT_R32_FLOAT);
     motionVectors_ = CreateFlowTexture(device_.Get(), width_, height_, DXGI_FORMAT_R16G16_FLOAT);
     if (streamline_ && !BindStreamlineDevice())
@@ -339,7 +343,7 @@ bool FlowGame::CreateSwapchain(SwapchainKind kind) {
     DXGI_SWAP_CHAIN_DESC1 desc{};
     desc.Width = width_;
     desc.Height = height_;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Format = backBufferFormat_;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = kBufferCount;
@@ -366,12 +370,19 @@ bool FlowGame::CreateSwapchain(SwapchainKind kind) {
         hr = streamlineFactory_->CreateSwapChainForHwnd(queue_.Get(), window_, &desc, nullptr, nullptr, &swapchain1);
     } else {
         hr = nativeFactory_->CreateSwapChainForHwnd(queue_.Get(), window_, &desc, nullptr, nullptr, &swapchain1);
+        if (SUCCEEDED(hr) && !WrapGameSwapchain(swapchain1))
+            return false;
     }
     if (FAILED(hr))
         return Fail("CreateSwapChainForHwnd", hr);
     hr = swapchain1.As(&swapchain_);
     if (FAILED(hr))
         return Fail("QueryInterface(IDXGISwapChain3)", hr);
+    if (colorSpace_ != DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) {
+        hr = swapchain_->SetColorSpace1(colorSpace_);
+        if (FAILED(hr))
+            return Fail("SetColorSpace1", hr);
+    }
     kind_ = kind;
     return CreateBackBufferViews();
 }
@@ -429,6 +440,8 @@ bool FlowGame::ReturnToNativeSwapchainOnNewQueue() {
     if (FAILED(hr))
         return Fail("CreateCommandQueue for native return", hr);
     queue_->SetName(L"FlowGame_NativeReturnQueue");
+    if (!RefreshPresentChainQueue())
+        return false;
     return CreateSwapchain(SwapchainKind::kNative);
 }
 
@@ -444,6 +457,8 @@ bool FlowGame::SetBackBufferFormat(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE col
     hr = swapchain_->SetColorSpace1(colorSpace);
     if (FAILED(hr))
         return Fail("SetColorSpace1", hr);
+    colorSpace_ = colorSpace;
+    backBufferFormat_ = format;
     for (UINT i = 0; i < kBufferCount; ++i) {
         hr = swapchain_->GetBuffer(i, IID_PPV_ARGS(&backBuffers_[i]));
         if (FAILED(hr))
@@ -490,13 +505,14 @@ bool FlowGame::RenderFrame(PresentMethod method) {
     if (FAILED(hr))
         return Fail("CommandList::Close", hr);
     ID3D12CommandList* lists[] = {list_.Get()};
-    queue_->ExecuteCommandLists(1, lists);
+    (submitQueue_ ? submitQueue_ : queue_)->ExecuteCommandLists(1, lists);
     if (kind_ == SwapchainKind::kStreamline)
         MarkStreamlinePresent(true);
     DXGI_PRESENT_PARAMETERS parameters{};
     hr = method == PresentMethod::kPresent1 ? swapchain_->Present1(0, 0, &parameters) : swapchain_->Present(0, 0);
     if (kind_ == SwapchainKind::kNative)
         CEFlowGame_CountPhysicalPresent();
+    presentedSdr_ = presentedSdr_ || colorSpace_ == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     if (kind_ == SwapchainKind::kStreamline)
         MarkStreamlinePresent(false);
     if (FAILED(hr))
