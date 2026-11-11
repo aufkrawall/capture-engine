@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-11-11 - First sealed display trace: GTA's cold DLSS-G black screen stops in DWM
+
+- `20261111_021555` (0.1.7503) sealed `display_stall_7008_ep1_ended.etl` (1.42 s silence, 157 presents, nothing lost).
+  The new DLSS-G chain presented 153 frames to DWM, which confirmed and discarded each without binding the chain's
+  composition surface; the window's old surface stayed in independent flip on MPO plane 1 (destroyed with
+  `KeepExistingContent=1`), no plane flipped at all. Another process's ~1 s screen capture forced the realization at
+  1388 ms; DWM then left the old surface's independent flip and composed the new frame. Evidence and method:
+  `display-stall-trace.md` ("First live seal"). CE's share is unproven until a passive or CE-off comparison.
+
 ### 2026-11-11 - GTA 0.1.7501: ownership gate held, cold DLSS-G start still black for 1.7 s
 
 - Session `20261111_013758` (DLSS FG on at load, then FSR <-> DLSS <-> off many times, 8 Streamline handoffs): no

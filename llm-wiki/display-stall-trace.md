@@ -1,9 +1,8 @@
 # Raw display trace for stall episodes
 
-Last verified: 2026-11-11 (unit tests and the ETL reader against a local Windows ETL; GTA runs 20261111_013758 and
-_015744 ran the recorder but sealed nothing - trigger replaced afterwards, no live seal yet)
-Stale-risk: high until a GTA run produces a sealed file - provider volume, the circular size and the seal timing are
-unmeasured on hardware.
+Last verified: 2026-11-11 (first live seal: GTA 0.1.7503 `20261111_021555`, 1.42 s silence, 256 MB file covering
+72 s, no events or buffers lost; findings below)
+Stale-risk: medium - one hardware seal so far; the 10 s ongoing seal and a CE-passive comparison are unrecorded.
 
 Why: GTA V Enhanced 0.1.7500 (`20261110_222057`) presented ~131/s for 37 s after a save load while nothing reached the
 screen (`[SCANOUT STALL] ep=1 ... durationUs=38066160 presents=4924`, sensors `composed ready=3563 published=0`). CE's
@@ -56,9 +55,45 @@ lost-event counts and, per event stream, count, first/last and the largest silen
 CE's `qpcUs=` fields. The stage whose silence starts first over the episode is where frames stopped; compare with the
 decision table in `log/recent.md` (2026-11-10 GTA entry).
 
+## First live seal: GTA cold DLSS-G load (2026-11-11)
+
+`20261111_021555`, 0.1.7503: `sealed ep=1 pid=7008 reason=ended silenceMs=1416 silenceStartQpcUs=6899741153
+presents=157`, hook `[SCANOUT STALL] ep=1 ... durationUs=1682680 presents=159 firstChange=composed`. Times below are
+relative to the new chain's first present (QPC 6899741153 us).
+
+- -245 ms: old 3-buffer chain destroyed (`DXGI UnBindBackBuffersFromDwm KeepExistingContent=1`); it was in independent
+  flip on MPO plane 1 (composition surface 169407265). -209 ms: the 6-buffer DLSS-G chain created and bound to DWM
+  (surface 170042330); -185 ms ResizeBuffers (unbind/bind again, `KeepExistingContent=1`).
+- 0..1388 ms: the game presented 153 times (DXGI Present, DxgKrnl PresentHistory, Win32k `TokenCompositionSurfaceObject`
+  for 170042330, ~110/s). DWM took every token through InFrame -> Confirmed -> Discarded (Win32k `TokenStateChanged`
+  NewState 3/4/6) and never Retired one; it scheduled no surface update for 170042330 (`SCHEDULE_SURFACEUPDATE` named
+  only other surfaces), rendered nothing (no `RENDEREVENT`, no dirty region) and issued no flip on any plane
+  (`MMIOFlip*` silent machine-wide from -250 ms to +1418 ms). The screen kept the old chain's last frame.
+- 112 ms: a DWM screen capture (`ETWGUID_RTCAPTURE`, `CompSurfInfo_ForceUpdateRealization`) still realized the *old*
+  surface 169407265.
+- 1388.5 ms: the next capture's forced realization bound the new surface (`CompSurfInfo_Binding surfaceLuid=170042330
+  BufferCount=6`); DWM then ended the old surface's independent flip (`IndependentFlipTransition Entering=0
+  surface=169407265 RequestedByDwm=1`), composed present 153 (`Windowed_Dx_Flip_Consumed`, DWM flip at 1391.8 ms),
+  and moved the new surface to independent flip at 1403.9 ms; the game's own flips follow from 1514 ms.
+- The captures come from another process every ~1.0-1.6 s for the whole 72 s file (51 of them, slower under load); CE
+  does no screen reads while not recording. So the black time ended at the first capture after DWM switched the
+  window to the new surface - which matches the 1.37-1.70 s episodes; without such a reader nothing visible forces the
+  realization (the 38 s episode of 0.1.7500 had no ETL).
+- Stage verdict: the frames stop in DWM, which does not bind a flip-model chain's new composition surface while the
+  window's previous surface sits in independent flip on an overlay plane with kept content. DXGI, DxgKrnl submission,
+  GPU completion and the token hand-off all ran. CE's share is unproven: no ETL with CE passive
+  (`[Diagnostics] overlay_observer_only=1`) or off exists.
+- Reading method: `etl_stall_digest.py` ranks the stall correctly (the flip streams' gaps) but the verdict needed
+  payloads - Win32k `TokenStateChanged`/`TokenCompositionSurfaceObject` (surface LUID, present count, NewState),
+  Dwm-Core `CompSurfInfo_*`, `SCHEDULE_SURFACEUPDATE` (first 8 bytes = surface LUID) and DxgKrnl
+  `IndependentFlipTransition`, decoded with TDH property info (scratch decoder, not in the tool yet).
+
 ## Open questions
 
 - Not recorded when CE owns its display trace (elevated CE without the service): a leaked file-mode session would keep
   DxgKrnl unfiltered machine-wide, so that path needs the reclaim logic first. Logged once.
 - Event volume per second under DLSS-G at 4K, and whether 256 MB keeps the run-up of a 37 s episode, are unmeasured.
-- The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease.
+- The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. A
+  CE-passive run (`overlay_observer_only=1`, recorder still on) is the nearest comparison.
+- Which process reads the screen every ~1 s on the user's PC (the trace does not name the requester of
+  `ETWGUID_RTCAPTURE`).
