@@ -141,6 +141,13 @@ public:
     bool LoadDLSSG();
     bool DLSSGReportedLoaded();
     bool DisableStreamlineReflex();
+    // GTA V Enhanced passes its DLSS-G options to every slDLSSGGetState poll, and they keep the last mode for a while
+    // after the title switched to FSR FG (20261110_222057). `mode`: -1 polls without options (the default), else the
+    // sl::DLSSGMode the options carry.
+    bool SetDLSSGGetStateOptions(int mode);
+    // The (fake) DLSS-G runtime's mode set where CE's slDLSSGSetOptions hook never sees it: what slDLSSGGetState
+    // reports is then the only evidence of it.
+    bool SetDLSSFrameGenerationUnobserved(bool enabled, uint32_t framesToGenerate = 1);
 
     // Whether the (fake) DLSS-G runtime itself is in eOn - what reached it, not what the game asked for.
     bool DLSSFrameGenerationRunning();

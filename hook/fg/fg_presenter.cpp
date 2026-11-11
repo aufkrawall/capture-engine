@@ -40,6 +40,13 @@ State& Registry() {
 
 std::atomic<size_t> g_runtimeOwnedCount{0};
 std::atomic<size_t> g_outputPresenterCount{0};
+// The newest competing registration (IsCompetingPresenter) while it holds presentation, else 0 / kApplication; read on
+// every DLSS-G signal and PostSL entry without the lock.
+std::atomic<uint64_t> g_holdingCompetingLifetime{0};
+std::atomic<uint8_t> g_holdingCompetingPresenter{static_cast<uint8_t>(Presenter::kApplication)};
+std::atomic<ID3D12CommandQueue*> g_holdingCompetingQueue{nullptr};
+std::atomic<uint64_t> g_registrationEpoch{0};
+std::atomic<bool> g_dlssgUnloaded{false};
 std::atomic<uint64_t> g_presents{0};
 std::atomic<uint64_t> g_lastStreamlinePresent{0};
 ce::present_interposer::CadenceTracker g_runtimeCadence;
@@ -52,16 +59,32 @@ std::atomic<uint8_t> g_dlssgApiProvider{static_cast<uint8_t>(DLSSGApiProvider::k
 void PublishCountLocked(State& state) {
     size_t count = 0;
     size_t outputPresenters = 0;
+    uint64_t newestDLSSG = 0;
+    const Record* newestCompeting = nullptr;
     for (const auto& entry : state.swapchains) {
-        if (entry.second.presenter != Presenter::kApplication) {
+        const Record& record = entry.second;
+        if (record.presenter != Presenter::kApplication) {
             ++count;
         }
-        if (IsRuntimeOwnedOutputPresenter(entry.second.presenter)) {
+        if (IsRuntimeOwnedOutputPresenter(record.presenter)) {
             ++outputPresenters;
         }
+        if (record.presenter == Presenter::kStreamlineDLSSG) {
+            newestDLSSG = record.lifetime > newestDLSSG ? record.lifetime : newestDLSSG;
+        } else if (IsCompetingPresenter(record.presenter) &&
+                   (!newestCompeting || record.lifetime > newestCompeting->lifetime)) {
+            newestCompeting = &record;
+        }
     }
+    const bool holds =
+        newestCompeting && DoesCompetingPresenterHoldPresentation(newestCompeting->lifetime, newestDLSSG);
+    g_holdingCompetingLifetime.store(holds ? newestCompeting->lifetime : 0, std::memory_order_release);
+    g_holdingCompetingPresenter.store(
+        static_cast<uint8_t>(holds ? newestCompeting->presenter : Presenter::kApplication), std::memory_order_release);
+    g_holdingCompetingQueue.store(holds ? newestCompeting->queue : nullptr, std::memory_order_release);
     g_runtimeOwnedCount.store(count, std::memory_order_release);
     g_outputPresenterCount.store(outputPresenters, std::memory_order_release);
+    g_registrationEpoch.fetch_add(1, std::memory_order_acq_rel);
 }
 
 const char* ProviderName(DLSSGApiProvider provider) {
@@ -131,7 +154,8 @@ Presenter OpenRuntimeCreateScopeFor(HWND window) {
 }
 
 Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12CommandQueue* queue,
-                               bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator) {
+                               bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator,
+                               bool dlssgPluginCreator) {
     if (!swapchain) {
         return Presenter::kApplication;
     }
@@ -146,7 +170,7 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
         scopeMatches = state.scope.presenter != Presenter::kApplication &&
                        (!state.scope.window || !window || state.scope.window == window);
         presenter = ResolveCreatedSwapchainPresenter(scopeMatches ? state.scope.presenter : Presenter::kApplication,
-                                                     xefgModuleOnCreateStack, ffxRuntimeCreator);
+                                                     xefgModuleOnCreateStack, ffxRuntimeCreator, dlssgPluginCreator);
         if (scopeMatches) {
             state.scope.created = swapchain;
             owner = state.scope.owner;
@@ -188,10 +212,51 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
             scopeMatches                ? "runtime-create-scope"
             : xefgModuleOnCreateStack ? "module-on-create-stack"
             : ffxRuntimeCreator       ? "ffx-runtime-creator"
+            : dlssgPluginCreator      ? "dlssg-plugin-creator"
                                       : "none",
             static_cast<unsigned long long>(lifetime), reinterpret_cast<void*>(owner), retired);
     }
     return presenter;
+}
+
+Binding BindingFor(IDXGISwapChain* swapchain) {
+    if (!swapchain || !HasRuntimeOwnedSwapchains()) {
+        return {};
+    }
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.swapchains.find(swapchain);
+    return it == state.swapchains.end() ? Binding{}
+                                        : Binding{it->second.presenter, it->second.lifetime, it->second.queue};
+}
+
+Binding CompetingPresenterHoldingPresentation() {
+    const uint64_t lifetime = g_holdingCompetingLifetime.load(std::memory_order_acquire);
+    if (lifetime == 0) {
+        return {};
+    }
+    return {static_cast<Presenter>(g_holdingCompetingPresenter.load(std::memory_order_acquire)), lifetime,
+            g_holdingCompetingQueue.load(std::memory_order_acquire)};
+}
+
+uint64_t RegistrationEpoch() {
+    return g_registrationEpoch.load(std::memory_order_acquire);
+}
+
+void NoteDLSSGFeatureLoaded(bool loaded, const char* context) {
+    const bool wasUnloaded = g_dlssgUnloaded.exchange(!loaded, std::memory_order_acq_rel);
+    if (wasUnloaded == !loaded) {
+        return;
+    }
+    g_registrationEpoch.fetch_add(1, std::memory_order_acq_rel);
+    HookLogImportant("[FG PRESENTER] DLSS-G %s (%s)",
+                     loaded ? "counts as loaded again" : "unloaded in Streamline - its FG signal is a front until it is "
+                                                         "loaded again",
+                     context ? context : "slSetFeatureLoaded");
+}
+
+bool IsDLSSGUnloaded() {
+    return g_dlssgUnloaded.load(std::memory_order_acquire);
 }
 
 void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, const char* context) {
@@ -210,6 +275,7 @@ void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* qu
         previous = it->second.queue;
         it->second.queue = queue;
         presenter = it->second.presenter;
+        PublishCountLocked(state);
     }
     HookLogImportant("[FG PRESENTER] %s: %s swapchain %p now presents on queue %p (was %p)",
                      context ? context : "resize", PresenterName(presenter), swapchain, queue, previous);
@@ -352,7 +418,9 @@ bool HasRuntimeOwnedOutputPresenter() {
 
 bool IsStreamlineFGSignalFrontNow() {
     return IsStreamlineFGSignalFront(IsDLSSGApiServedOutsideStreamline(), IsStreamlinePresentingNow(),
-                                     HasRuntimeOwnedOutputPresenter());
+                                     HasRuntimeOwnedOutputPresenter(),
+                                     g_holdingCompetingLifetime.load(std::memory_order_acquire) != 0,
+                                     IsDLSSGUnloaded());
 }
 
 void ResetForTesting() {
@@ -363,6 +431,11 @@ void ResetForTesting() {
     state.nextLifetime = 1;
     g_runtimeOwnedCount.store(0, std::memory_order_release);
     g_outputPresenterCount.store(0, std::memory_order_release);
+    g_holdingCompetingLifetime.store(0, std::memory_order_release);
+    g_holdingCompetingPresenter.store(static_cast<uint8_t>(Presenter::kApplication), std::memory_order_release);
+    g_holdingCompetingQueue.store(nullptr, std::memory_order_release);
+    g_registrationEpoch.store(0, std::memory_order_release);
+    g_dlssgUnloaded.store(false, std::memory_order_release);
     g_presents.store(0, std::memory_order_release);
     g_lastStreamlinePresent.store(0, std::memory_order_release);
     ResetRuntimeCadence();

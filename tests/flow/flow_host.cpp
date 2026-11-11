@@ -485,8 +485,7 @@ bool FlowGame::RenderFrame(PresentMethod method) {
     if (FAILED(hr))
         return Fail("Present", hr);
     WaitForGpu();
-    if (kind_ == SwapchainKind::kStreamline)
-        PollStreamlineState();
+    PollStreamlineState();
     ++frame_;
     if (frame_ % kFramesPerHookThreadPass == 0)
         pumpHookThread_();

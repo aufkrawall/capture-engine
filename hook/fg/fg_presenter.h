@@ -39,16 +39,45 @@ const char* PresenterName(Presenter presenter);
 // The presenter of a swapchain created now. A runtime's own create scope for the window (opened by CE's detour of
 // the runtime's swapchain-init export) is authoritative; the runtime's module on the create stack is the fallback
 // for a create CE saw without the scope (a late injection). An FFX frame-generation runtime creating the swapchain
-// makes it the FFX swapchain's: CE's FFX routes draw there, and nothing may treat it as the game's.
+// makes it the FFX swapchain's: CE's FFX routes draw there, and nothing may treat it as the game's. The DLSS-G plugin
+// itself on the create stack (ce::streamline_lifecycle::IsDlssgCreatingSwapchain, not Streamline's interposer frames)
+// makes it DLSS-G's.
 inline Presenter ResolveCreatedSwapchainPresenter(Presenter openRuntimeCreateScope, bool xefgModuleOnCreateStack,
-                                                  bool ffxRuntimeCreator = false) {
+                                                  bool ffxRuntimeCreator = false, bool dlssgPluginCreator = false) {
     if (openRuntimeCreateScope != Presenter::kApplication) {
         return openRuntimeCreateScope;
     }
     if (xefgModuleOnCreateStack) {
         return Presenter::kXeFGSwapchain;
     }
-    return ffxRuntimeCreator ? Presenter::kFFXSwapchain : Presenter::kApplication;
+    if (ffxRuntimeCreator) {
+        return Presenter::kFFXSwapchain;
+    }
+    return dlssgPluginCreator ? Presenter::kStreamlineDLSSG : Presenter::kApplication;
+}
+
+// A runtime other than DLSS-G that presents a swapchain of its own: while it holds the newest registered chain,
+// DLSS-G presents nothing CE could draw on, whatever the DLSS-G API reports.
+inline bool IsCompetingPresenter(Presenter presenter) {
+    return presenter != Presenter::kApplication && presenter != Presenter::kStreamlineDLSSG;
+}
+
+// The newest competing registration holds presentation unless DLSS-G created a chain after it (lifetimes count every
+// registration, so a DLSS-G chain at a reused address is still newer).
+inline bool DoesCompetingPresenterHoldPresentation(uint64_t newestCompetingLifetime, uint64_t newestDLSSGLifetime) {
+    return newestCompetingLifetime != 0 && newestCompetingLifetime > newestDLSSGLifetime;
+}
+
+// Streamline's overlay route (PostSL) draws on the chain Streamline hands its present callback; it never may on a chain
+// another runtime presents (GTA V Enhanced 20261110_222057: PostSL on FidelityFX's chain removed the device).
+inline bool MayStreamlineRouteDrawOn(Presenter presenter) {
+    return !IsCompetingPresenter(presenter);
+}
+
+// A DLSS-G state observation (slDLSSGGetState's result) belongs to the presenter registrations it started under: one
+// that returned after a swapchain registration changed straddled a handoff and proves nothing about the new chain.
+inline bool DidObservationStraddleHandoff(uint64_t registrationEpochAtEntry, uint64_t registrationEpochAtReturn) {
+    return registrationEpochAtEntry != registrationEpochAtReturn;
 }
 
 // A presenter whose swapchain CE composites on directly, on the presenter's own queue, after it generated the
@@ -64,9 +93,15 @@ inline bool IsRuntimeOwnedOutputPresenter(Presenter presenter) {
 // (20261023_221541, first run: DLSS-G 3x, every present from sl.dlss_g.dll, and CE kept DLSS FG off and drew no
 // overlay). With FGOutput=FSRFG or XeFG it answers the calls itself and FFX or XeFG presents instead (second run).
 // A front must never drive PostSL routing, DLSS-G status or a DLSS-G takeover of another runtime's startup.
+// A competing runtime holding presentation (DoesCompetingPresenterHoldPresentation) and a DLSS-G Streamline unloaded
+// (the forwarded slSetFeatureLoaded(DLSS-G, false), not the answer CE gave the title while it held the unload) are
+// fronts too: GTA V Enhanced kept passing its last DLSS-G options, mode on, to slDLSSGGetState after it unloaded DLSS-G
+// and FidelityFX had created the window's chain, and CE took that for DLSS-G (20261110_222057).
 inline bool IsStreamlineFGSignalFront(bool dlssgApiServedOutsideStreamline, bool streamlinePresents,
-                                      bool runtimeOwnedOutputPresenterActive) {
-    return runtimeOwnedOutputPresenterActive || (dlssgApiServedOutsideStreamline && !streamlinePresents);
+                                      bool runtimeOwnedOutputPresenterActive,
+                                      bool competingPresenterHoldsPresentation = false, bool dlssgUnloaded = false) {
+    return runtimeOwnedOutputPresenterActive || competingPresenterHoldsPresentation || dlssgUnloaded ||
+           (dlssgApiServedOutsideStreamline && !streamlinePresents);
 }
 
 // Streamline presents the frames while one of the last kStreamlinePresentWindow presents came from Streamline's
@@ -140,7 +175,8 @@ Presenter OpenRuntimeCreateScopeFor(HWND window);
 // (ResolveCreatedSwapchainPresenter) and registers a runtime-owned one; any other swapchain registered for the
 // same window is gone (DXGI allows one flip swapchain per window) and is retired. Returns the presenter.
 Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12CommandQueue* queue,
-                               bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator = false);
+                               bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator = false,
+                               bool dlssgPluginCreator = false);
 
 // The queues a ResizeBuffers1 bound the swapchain's buffers to: the presenter's output queue from now on.
 void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, const char* context);
@@ -158,6 +194,22 @@ ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain);  // raw identity; nu
 // swapchain). A new registration at a reused address gets a new number: a creation-time proof of a new swapchain
 // where pointer identity cannot tell.
 uint64_t OutputPresenterLifetime(IDXGISwapChain* swapchain);
+
+// The registration a swapchain is presented under: its presenter, lifetime number and create queue (identity only).
+struct Binding {
+    Presenter presenter = Presenter::kApplication;
+    uint64_t lifetime = 0;
+    ID3D12CommandQueue* queue = nullptr;
+};
+Binding BindingFor(IDXGISwapChain* swapchain);
+// The competing presenter that holds presentation (DoesCompetingPresenterHoldPresentation), or kApplication.
+Binding CompetingPresenterHoldingPresentation();
+// Counts every registration change (create, owner retirement, DLSS-G load state): DidObservationStraddleHandoff.
+uint64_t RegistrationEpoch();
+
+// Streamline's answer to a forwarded slSetFeatureLoaded(DLSS-G, loaded) the title or CE's unload order sent.
+void NoteDLSSGFeatureLoaded(bool loaded, const char* context);
+bool IsDLSSGUnloaded();
 
 // Every Present's originator (ce::present_origin): the evidence IsStreamlinePresenting counts. NoteSwapchainCreated
 // restarts it (DoesCreatedSwapchainRestartStreamlineEvidence).

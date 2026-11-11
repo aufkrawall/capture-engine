@@ -1,4 +1,5 @@
 #include <wrl/client.h>
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 
 #include "dx12_hook_internal.h"
@@ -101,7 +102,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         // edge without an explicit slDLSSGSetOptions enable and without a new authoritative swapchain, so
         // this is the last place that can retire a latch which would otherwise quiesce InitOverlaySync — and
         // therefore every PostSL draw — for the rest of the process.
-        DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership("Streamline FG ON");
+        DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(
+            "Streamline FG ON", !ce::fg_presenter::IsStreamlineFGSignalFrontNow());
         dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(nullptr, std::memory_order_release);
         const int previousHeuristicGrace = dx12_hook_g_SLOffHeuristicGrace.exchange(0, std::memory_order_acq_rel);
         const int previousSwapchainGrace = dx12_hook_g_SLOffSwapchainReinitGrace.exchange(0, std::memory_order_acq_rel);

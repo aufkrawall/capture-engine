@@ -2,6 +2,7 @@
 
 #include <sl.h>
 
+#include "hook/fg/fg_presenter.h"
 #include "hook/fg/fg_transition_trace.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/present/backbuffer_reference_trace.h"
@@ -87,16 +88,29 @@ sl::Result Observe(LifecycleExport<Function>& api, sl::Feature feature, const Ar
     return result;
 }
 
+// slSetFeatureLoaded(DLSS-G) as it reaches Streamline. What Streamline accepted is DLSS-G's load state for the presenter
+// registry: an unloaded DLSS-G presents nothing, so its FG signal is a front (ce::fg_presenter). The answer CE gives the
+// title while it holds an unload is not that state.
+sl::Result ForwardDlssgSetFeatureLoaded(bool loaded) {
+    const sl::Result result = Observe(g_SetFeatureLoaded, sl::kFeatureDLSS_G, loaded, loaded ? 1u : 0u);
+    if (result == sl::Result::eOk && !HookIsShuttingDown()) {
+        fg_presenter::NoteDLSSGFeatureLoaded(loaded, "slSetFeatureLoaded reached Streamline");
+    }
+    return result;
+}
+
 sl::Result SetFeatureLoaded(sl::Feature feature, bool loaded) {
-    if (feature == sl::kFeatureDLSS_G &&
-        ce::streamline_unload_order::OnSetFeatureLoaded(loaded) ==
-            ce::streamline_unload_order::SetLoadedAction::kAnswerOk) {
+    if (feature != sl::kFeatureDLSS_G) {
+        return Observe(g_SetFeatureLoaded, feature, loaded, loaded ? 1u : 0u);
+    }
+    if (ce::streamline_unload_order::OnSetFeatureLoaded(loaded) ==
+        ce::streamline_unload_order::SetLoadedAction::kAnswerOk) {
         // Held (or a held unload withdrawn): the title asked for it and is told so; Streamline is not called, so its
         // own destroy dispatch for the DLSS-G chain still finds the plugin loaded. The lines of the title's call and
         // the forwarded one are the [SL UNLOAD ORDER] transitions.
         return sl::Result::eOk;
     }
-    return Observe(g_SetFeatureLoaded, feature, loaded, loaded ? 1u : 0u);
+    return ForwardDlssgSetFeatureLoaded(loaded);
 }
 
 sl::Result IsFeatureLoaded(sl::Feature feature, bool& loaded) {
@@ -113,7 +127,7 @@ sl::Result IsFeatureLoaded(sl::Feature feature, bool& loaded) {
 
 // The held unload, forwarded after the DLSS-G chain's proxy released the native chain.
 void ForwardHeldUnload() {
-    Observe(g_SetFeatureLoaded, sl::kFeatureDLSS_G, false, 0u);
+    ForwardDlssgSetFeatureLoaded(false);
 }
 
 bool DestroyHookInstalled() {
@@ -202,6 +216,8 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSize) {
         // The interposer is gone: a held unload has nothing to go to. Runs under the loader lock: the call takes a
         // short mutex and logs, like the rest of this function's callers.
         ce::streamline_unload_order::OnInterposerUnloaded();
+        // A Streamline loaded again starts with the features its slInit names.
+        fg_presenter::NoteDLSSGFeatureLoaded(true, "Streamline interposer unloaded");
     }
     g_IsFeatureLoaded.OnUnload(moduleBase, moduleSize);
     g_FreeResources.OnUnload(moduleBase, moduleSize);

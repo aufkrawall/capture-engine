@@ -334,13 +334,13 @@ TEST(StreamlineRuntimePolicyTest, AbandonedFFXStartupIsRetiredAtEveryAuthoritati
     EXPECT_LT(handoffRetire, prewarm);
 
     // DLSS-G can be raised through GetState alone, without an explicit enable and without a new
-    // authoritative swapchain; the Streamline-FG-ON edge is the last retirement opportunity.
+    // authoritative swapchain; the Streamline-FG-ON edge is the last retirement opportunity. It retires only when the
+    // signal is no front: another runtime holding the window's chain keeps its startup (GTA 20261110_222057).
     const std::string transition = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "d3d12" / "dx12_hook_streamline_fg_transition.cpp");
     ASSERT_FALSE(transition.empty());
-    EXPECT_NE(
-        transition.find("DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(\"Streamline FG ON\")"),
-        std::string::npos);
+    EXPECT_NE(transition.find("\"Streamline FG ON\", !ce::fg_presenter::IsStreamlineFGSignalFrontNow())"),
+              std::string::npos);
 
     // The context-destroy retirement is keyed on the frame-generation SWAPCHAIN context, never on the
     // process-wide FG context count reaching zero.

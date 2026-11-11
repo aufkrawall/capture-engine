@@ -30,6 +30,7 @@ struct StreamlineGame {
     PFun_slPCLSetMarker* pclSetMarker = nullptr;
     sl::FrameToken* frameToken = nullptr;
     bool reflexLowLatency = false;
+    int getStateOptionsMode = -1;  // FlowGame::SetDLSSGGetStateOptions
     HRESULT(WINAPI* createFactory1)(REFIID, void**) = nullptr;
     HRESULT(WINAPI* createDevice)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**) = nullptr;
     sl::ViewportHandle viewport{0u};
@@ -132,6 +133,24 @@ bool FlowGame::DLSSGReportedLoaded() {
     return loaded;
 }
 
+bool FlowGame::SetDLSSGGetStateOptions(int mode) {
+    if (!streamline_)
+        return Fail("SetDLSSGGetStateOptions without Streamline", E_NOINTERFACE);
+    streamline_->getStateOptionsMode = mode;
+    return true;
+}
+
+bool FlowGame::SetDLSSFrameGenerationUnobserved(bool enabled, uint32_t framesToGenerate) {
+    void* function = nullptr;
+    if (!streamline_ ||
+        streamline_->getFeatureFunction(sl::kFeatureDLSS_G, "flowSetModeUnobserved", function) != sl::Result::eOk ||
+        !function)
+        return Fail("resolving flowSetModeUnobserved", E_NOINTERFACE);
+    reinterpret_cast<void (*)(uint32_t, uint32_t)>(function)(
+        static_cast<uint32_t>(enabled ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff), framesToGenerate);
+    return true;
+}
+
 bool FlowGame::DisableStreamlineReflex() {
     if (!streamline_ || !streamline_->reflexSetOptions)
         return Fail("disabling Reflex without Streamline", E_NOINTERFACE);
@@ -203,11 +222,22 @@ void FlowGame::MarkStreamlinePresent(bool start) {
                                   *streamline_->frameToken);
 }
 
+// Once per frame on the Streamline swapchain; a title that passes its options to GetState (GTA) keeps polling on
+// any swapchain.
 void FlowGame::PollStreamlineState() {
-    if (!streamline_ || !streamline_->dlssgGetState)
+    if (!streamline_ || !streamline_->dlssgGetState ||
+        (kind_ != SwapchainKind::kStreamline && streamline_->getStateOptionsMode < 0))
         return;
     sl::DLSSGState state{};
-    streamline_->dlssgGetState(streamline_->viewport, state, nullptr);
+    if (streamline_->getStateOptionsMode < 0) {
+        streamline_->dlssgGetState(streamline_->viewport, state, nullptr);
+        return;
+    }
+    sl::DLSSGOptions options{};
+    options.mode = static_cast<sl::DLSSGMode>(streamline_->getStateOptionsMode);
+    options.numFramesToGenerate = 1;
+    options.numBackBuffers = 3;
+    streamline_->dlssgGetState(streamline_->viewport, state, &options);
 }
 
 bool FlowGame::DLSSFrameGenerationRunning() {

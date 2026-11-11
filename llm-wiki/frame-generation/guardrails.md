@@ -567,6 +567,40 @@ This page records current guardrails and tested transition families for no-FG, D
 - Build `0.1.3314` narrows the GTA V Enhanced pure-DLSS startup transport rule: an authoritative runtime-owned Streamline handoff is not by itself unsafe transport. The `all FG off -> DLSS FG` Apply path behind EOS needs real normal Streamline Present traffic, otherwise CE can keep the logical normal route but transport every startup Present through the bypass trampoline until Streamline/DLSSG activation is starved and startup OFF churn wins. `DetourPresent` / `DetourPresent1` now use bypass transport for this startup family only when a real Steam/third-party stale Present-hook risk is present, while post-FSR and Steam stale-hook families remain protected. Logs should distinguish `Streamline startup normal-route transport allowed` from `Streamline startup normal-route bypass` and include `transportRisk` plus `steamRisk`.
 - Build `0.1.3314` also hardens bypass/deep-hook trampolines against externally patched DXGI Present prologues. Resume offsets are accepted only at instruction boundaries whose live bytes match the clean on-disk image; CE extends past patched `E9 ... CC ...` filler bytes instead of jumping into the middle of a third-party patch. The expected diagnostic is `Extended resume offset past patched fill bytes`.
 
+### Presenter ownership gates every DLSS-G signal (2026-11-11)
+
+GTA V Enhanced 0.1.7500 (`20261110_222057`): after the held DLSS-G unload was forwarded and FidelityFX created the
+window's chain (same COM address, CE overlay lifetime 8), the title kept passing its last DLSS-G options (mode on) to
+`slDLSSGGetState`. 1.1 s later, once the 250 ms post-takeover suppression had lapsed and `safeBootstrap` read a stale
+queue topology, one poll published DLSS FG, retired the protected FFX startup, armed PostSL and submitted on FFX's
+chain through the old Streamline queue (`0x887A002B`); `PostSL CONFIRMED` was logged for that same submit. The
+Present origin (`sl.interposer.dll` below-chain walk) cannot tell: the game presents through Streamline's proxy on
+either runtime's chain.
+
+- `ce::fg_presenter` is the one owner. Every create registers a lifetime; DLSS-G chains (the plugin on the create
+  stack, `dlssgPluginCreatedChain`) register as `kStreamlineDLSSG`. A competing runtime (FFX, XeFG, interposer,
+  unknown) whose newest registration is newer than every live DLSS-G one holds presentation
+  (`DoesCompetingPresenterHoldPresentation`); any later chain for the window ends it.
+- The forwarded `slSetFeatureLoaded(DLSS-G, x)` result (not the answer given while CE holds an unload, not DLL
+  residency) is DLSS-G's load state (`NoteDLSSGFeatureLoaded`); interposer unload resets it to loaded.
+- `IsStreamlineFGSignalFront` = served outside Streamline without Streamline presents | XeFG output presenter |
+  competing holder | DLSS-G unloaded. Consumers: `ApplyStreamlineFrontSignal` (CE's DLSS-G state stays off), the
+  GetState hook (`RefuseGetStateActivationForPresenter`: no fresh activation under a front, nor from a call that
+  returned after a registration change - `DidObservationStraddleHandoff`), both protected-FFX-startup retirements on a
+  Streamline signal, and PostSL admission (`AdmitPostSLForPresenter`, `MayStreamlineRouteDrawOn`).
+- A PostSL submit that leaves the device removed returns before `ConfirmRender`.
+- Logs: `[FG OWNERSHIP] slDLSSGGetState(ON) starts no DLSS FG: ...`, the front line now names `presentation held
+  by=<presenter> lifetime= queue=` and `DLSS-G unloaded=`, `[FG PRESENTER] DLSS-G unloaded in Streamline ...`,
+  `[PostSL OWNERSHIP] refused|confirmation=refused reason=device-removed ...`.
+- WARP: `FlowFGPresenterOwnership.StaleDLSSGGetStateDuringFidelityFXStartupLeavesTheFidelityFXChainAlone` (two
+  DLSS -> FFX disabled startup -> FSR on -> DLSS cycles with a stale GetState(ON) and address reuse) failed before:
+  PostSL callbacks enabled on the FFX chain, FSR FG never published afterwards, 1334 of 2820 presents accounted.
+  `GetStateOnlyDLSSGOnItsOwnChainIsStillAccepted` keeps a GetState-only DLSS-G (mode set where SetOptions is not
+  seen) after an FSR phase. Changed rule: a Streamline-originated Present no longer ends an FFX holder's front.
+- Not covered: the straddle path in a flow (unit-tested only); PostSL queue equality with the registered binding is
+  logged, not enforced (no healthy-hardware evidence yet of which queue PostSL legitimately uses on DLSS-G chains);
+  `slShutdown`+`slInit` without an interposer unload keeps an "unloaded" state. Hardware retest pending.
+
 ### Explicit DLSS-G activation on a live native queue (2026-11-09)
 
 The Witcher 3 resumed from a minimized load with Steam and ReShade active. The game drew normally after

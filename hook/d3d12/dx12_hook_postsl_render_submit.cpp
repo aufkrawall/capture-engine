@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_postsl_session.h"
 #include "common/logging/log_meter.h"
+#include "hook/fg/fg_presenter.h"
 
 PostSLFlow PostSLRenderSession::SubmitAndConfirmOutput() {
 if (scQueue && scQueue != queue && dx12_hook_g_State.crossQueueFence && !cachedSLFGActive) {
@@ -503,6 +504,26 @@ if (healthyOutput && previousSuccessfulPostSLSwapchain != pSwapChain) {
         outputWindow = outputDesc.OutputWindow;
     }
 }
+// A submit that left the device removed proves no route: GTA V Enhanced 0.1.7500 logged "PostSL CONFIRMED" for the
+// submit that removed the device (20261110_222057). The line names the binding that submit used.
+if (FAILED(postDevReason)) {
+    const auto binding = ce::fg_presenter::BindingFor(pSwapChain);
+    static ce::log_meter::ChangeGate s_unhealthySubmitGate;
+    if (const auto verdict = s_unhealthySubmitGate.Observe(
+            ce::log_meter::FieldKey(pSwapChain, submittedQueue, static_cast<uint32_t>(postDevReason)))) {
+        HookLogImportant(
+            "[PostSL OWNERSHIP] confirmation=refused reason=device-removed hr=0x%08X sc=%p presenter=%s lifetime=%llu "
+            "submitQueue=%p scQueue=%p bindingQueue=%p activation=%s epoch=%u submit=#%d%s",
+            static_cast<unsigned>(postDevReason), pSwapChain, ce::fg_presenter::PresenterName(binding.presenter),
+            static_cast<unsigned long long>(binding.lifetime), submittedQueue, scQueue, binding.queue,
+            HookHasExplicitStreamlineSetOptionsActivation() ? "explicit-setoptions" : "getstate-or-reconcile",
+            entryLifecycleEpoch, renderNum, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    HookLogImportant("DX12: DEVICE_REMOVED detected after PostSL ECL submit #%d (queue=%p scQueue=%p hr=0x%08X)",
+                     renderNum, submittedQueue, scQueue, (unsigned)postDevReason);
+    bb->Release();
+    return PostSLFlow::kReturn;
+}
 const auto confirmedCurrentEpoch = g_PostSLLifecycle.ConfirmRender(entryLifecycleEpoch, [&] {
     if (healthyOutput) {
         if (finalOutputCapture.basePresentedOutput) {
@@ -628,12 +649,6 @@ if (ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(renderNum), 20, 600) |
         usedRealECL ? 1 : 0, usedOrigECL ? 1 : 0, crossQueueSynced ? 1 : 0, GetCurrentThreadId(),
         (unsigned)postDevReason, s_reactivationEpoch,
         ce::log_meter::SuppressedNote(submitRouteChange.suppressed).c_str());
-}
-if (FAILED(postDevReason)) {
-    HookLogImportant(
-        "DX12: DEVICE_REMOVED detected after PostSL ECL submit #%d "
-        "(queue=%p scQueue=%p hr=0x%08X)",
-        renderNum, submittedQueue, scQueue, (unsigned)postDevReason);
 }
 bb->Release();
     return PostSLFlow::kContinue;

@@ -163,7 +163,9 @@ bool DX12_IsNativeFSRStartupConfigureArmingPending();
 
 void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable();
-void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source);
+// `streamlinePresents`: Streamline created the window's new chain, or its FG signal is no front (ce::fg_presenter).
+void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source,
+                                                                              bool streamlinePresents);
 void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(const char* source);
 void DX12_RetireProtectedOfficialFFXStartupForGameSwapchainReturn(const char* source, IDXGISwapChain* swapchain,
                                                                   ID3D12CommandQueue* queue, bool gameCreatedSwapchain,

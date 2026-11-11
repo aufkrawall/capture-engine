@@ -176,12 +176,22 @@ void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable() {
         authoritativeFSRActive ? 1 : 0);
     DX12_ClearNativeFSRStartupConfigureArming("successful explicit Streamline enable superseded FFX startup");
 }
-void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source) {
+void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source,
+                                                                              bool streamlinePresents) {
     const bool protectedFFXStartupPending =
         dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire);
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
     if (!ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(
-            protectedFFXStartupPending, true, authoritativeFSRActive)) {
+            protectedFFXStartupPending, streamlinePresents, authoritativeFSRActive)) {
+        if (protectedFFXStartupPending && !streamlinePresents) {
+            static ce::log_meter::ChangeGate s_frontGate;
+            if (const auto verdict = s_frontGate.Observe(ce::log_meter::FieldKey(1))) {
+                HookLogImportant(
+                    "DX12: Streamline ownership claim from %s is a front - the provisional official FFX startup stays "
+                    "(another runtime holds the window's chain or DLSS-G is unloaded)%s",
+                    source && source[0] ? source : "unknown", ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
+        }
         return;
     }
 

@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA late DLSS -> FSR device removal: stale GetState took FidelityFX's chain
+
+- Session `20261110_222057` (0.1.7500): the unload-order fix worked (forwarded at proxy release, FFX create ok,
+  same COM address). At 22:24:34.526 a `slDLSSGGetState(mode=on)` on the title's thread (its stale options) passed the
+  lapsed 250 ms suppression and `safeBootstrap`, published DLSS FG, retired the protected FFX startup and armed PostSL;
+  the first PostSL submit (`falling back to scQueue` = the DLSS-G-era queue) on FFX's chain removed the device
+  (`0x887A002B`) right after logging `PostSL CONFIRMED`. Dumps: `ERR_GFX_STATE` dialog, then GTA's `int 3`.
+- Fix: presenter ownership in `ce::fg_presenter` gates every DLSS-G signal, the protected-FFX retirement and PostSL
+  admission; device-removed submits never confirm (see `frame-generation/guardrails.md`, "Presenter ownership").
+  WARP repro failed before and passes after; all 236 flow scenarios and the unit suite pass. Hardware retest pending.
+
 ### 2026-11-10 - GTA startup crash: ordinary Streamline chains incorrectly kept DLSS-G enabled
 
 - Session `20261110_205652`, build 0.1.7499. The loading chain was created with DLSS-G unloaded (three buffers, 0x802). A capability load/GetState(OFF)/unload at 20:57:40 was incorrectly deferred for that chain because `authoritativeStreamlineRuntimeCreator` includes ordinary interposer/common/SR traffic. A later auxiliary create was intercepted by the still-enabled DLSS-G plugin.

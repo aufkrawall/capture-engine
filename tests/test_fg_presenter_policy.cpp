@@ -242,7 +242,8 @@ TEST_F(FGPresenterRegistryTest, AForeignDLSSGApiMakesTheSignalAFrontWithoutAPres
     EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
 }
 
-// An FFX runtime's swapchain is registered as such: never the game's, but no runtime-owned output chain either.
+// An FFX runtime's swapchain is registered as such: never the game's, but no runtime-owned output chain either. It
+// holds presentation, so a DLSS-G signal meanwhile is a front.
 TEST_F(FGPresenterRegistryTest, AnFFXRuntimeCreateRegistersTheFFXSwapchainWithItsQueue) {
     EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(7), FakeWindow(3), FakeQueue(7), false, "test", true),
               Presenter::kFFXSwapchain);
@@ -251,7 +252,9 @@ TEST_F(FGPresenterRegistryTest, AnFFXRuntimeCreateRegistersTheFFXSwapchainWithIt
     EXPECT_TRUE(HasRuntimeOwnedSwapchains());
     EXPECT_FALSE(HasRuntimeOwnedOutputPresenter());
     EXPECT_EQ(OutputPresenterLifetime(FakeSwapchain(7)), 0u);
-    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    EXPECT_EQ(CompetingPresenterHoldingPresentation().presenter, Presenter::kFFXSwapchain);
+    EXPECT_EQ(CompetingPresenterHoldingPresentation().queue, FakeQueue(7));
 }
 
 TEST(FGPresenterPolicyTest, OnlyAnotherRuntimesSwapchainRestartsStreamlinesEvidence) {
@@ -279,8 +282,12 @@ TEST_F(FGPresenterRegistryTest, AnFFXHandoffMakesAToolsDLSSGInputsAFrontRightAwa
     EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
     NotePresentOriginator(false);
     EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
-    // Streamline presenting again ends the front at once.
+    // Streamline's interposer forwarding the game's Presents to the FFX chain proves no DLSS-G (GTA V Enhanced
+    // 20261110_222057): the FFX chain holds presentation until the window gets another chain.
     NotePresentOriginator(true);
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(3), false, "test", false, true),
+              Presenter::kStreamlineDLSSG);
     EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
 }
 
@@ -292,6 +299,84 @@ TEST_F(FGPresenterRegistryTest, AnApplicationSwapchainCreateKeepsStreamlinesEvid
               Presenter::kApplication);
     EXPECT_TRUE(IsStreamlinePresentingNow());
     EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+}
+
+// GTA V Enhanced 0.1.7500 (20261110_222057): DLSS-G's chain, then FidelityFX's at the same address, then DLSS-G's
+// again. Every registration is a new lifetime: whose chain is newest decides, never the address.
+TEST_F(FGPresenterRegistryTest, TheNewestRegistrationHoldsPresentationAcrossAddressReuse) {
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(5), FakeWindow(1), FakeQueue(1), false, "test", false, true),
+              Presenter::kStreamlineDLSSG);
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+    EXPECT_EQ(CompetingPresenterHoldingPresentation().presenter, Presenter::kApplication);
+    const uint64_t dlssgLifetime = BindingFor(FakeSwapchain(5)).lifetime;
+
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(5), FakeWindow(1), FakeQueue(2), false, "test", true),
+              Presenter::kFFXSwapchain);
+    const auto holder = CompetingPresenterHoldingPresentation();
+    EXPECT_EQ(holder.presenter, Presenter::kFFXSwapchain);
+    EXPECT_GT(holder.lifetime, dlssgLifetime);
+    EXPECT_EQ(BindingFor(FakeSwapchain(5)).presenter, Presenter::kFFXSwapchain);
+    EXPECT_FALSE(MayStreamlineRouteDrawOn(BindingFor(FakeSwapchain(5)).presenter));
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(5), FakeWindow(1), FakeQueue(3), false, "test", false, true),
+              Presenter::kStreamlineDLSSG);
+    EXPECT_EQ(CompetingPresenterHoldingPresentation().presenter, Presenter::kApplication);
+    EXPECT_TRUE(MayStreamlineRouteDrawOn(BindingFor(FakeSwapchain(5)).presenter));
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+}
+
+// The game's own chain replacing FidelityFX's (FSR FG -> off) ends FidelityFX's hold just as well.
+TEST_F(FGPresenterRegistryTest, AnApplicationChainEndsAnFFXHold) {
+    NoteSwapchainCreated(FakeSwapchain(1), FakeWindow(1), FakeQueue(1), false, "test", true);
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(1), FakeWindow(1), FakeQueue(2), false, "test"),
+              Presenter::kApplication);
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+    EXPECT_TRUE(MayStreamlineRouteDrawOn(BindingFor(FakeSwapchain(1)).presenter));
+}
+
+// What reached Streamline decides: an unloaded DLSS-G presents nothing until it is loaded again.
+TEST_F(FGPresenterRegistryTest, AnUnloadedDLSSGIsAFrontUntilItIsLoadedAgain) {
+    NoteSwapchainCreated(FakeSwapchain(1), FakeWindow(1), FakeQueue(1), false, "test", false, true);
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+    const uint64_t epoch = RegistrationEpoch();
+    NoteDLSSGFeatureLoaded(false, "test");
+    EXPECT_TRUE(IsDLSSGUnloaded());
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    EXPECT_TRUE(DidObservationStraddleHandoff(epoch, RegistrationEpoch()));
+    NoteDLSSGFeatureLoaded(true, "test");
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+}
+
+// A DLSS-G state observation that returned after any registration changed straddled a handoff; one that did not, did
+// not.
+TEST_F(FGPresenterRegistryTest, AnObservationStraddlesEveryRegistrationChange) {
+    const uint64_t entry = RegistrationEpoch();
+    EXPECT_FALSE(DidObservationStraddleHandoff(entry, RegistrationEpoch()));
+    NoteSwapchainCreated(FakeSwapchain(1), FakeWindow(1), FakeQueue(1), false, "test", true);
+    EXPECT_TRUE(DidObservationStraddleHandoff(entry, RegistrationEpoch()));
+    const uint64_t later = RegistrationEpoch();
+    NoteDLSSGFeatureLoaded(true, "test");  // already loaded: no change
+    EXPECT_FALSE(DidObservationStraddleHandoff(later, RegistrationEpoch()));
+}
+
+TEST(FGPresenterPolicyTest, CompetingPresentersAreEveryRuntimeButDLSSG) {
+    EXPECT_FALSE(IsCompetingPresenter(Presenter::kApplication));
+    EXPECT_FALSE(IsCompetingPresenter(Presenter::kStreamlineDLSSG));
+    EXPECT_TRUE(IsCompetingPresenter(Presenter::kFFXSwapchain));
+    EXPECT_TRUE(IsCompetingPresenter(Presenter::kXeFGSwapchain));
+    EXPECT_TRUE(IsCompetingPresenter(Presenter::kPresentInterposer));
+    EXPECT_TRUE(IsCompetingPresenter(Presenter::kUnknownExternal));
+    EXPECT_FALSE(DoesCompetingPresenterHoldPresentation(0, 0));
+    EXPECT_TRUE(DoesCompetingPresenterHoldPresentation(3, 2));
+    EXPECT_FALSE(DoesCompetingPresenterHoldPresentation(3, 4));
+    EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kApplication, false, true, true), Presenter::kFFXSwapchain);
+    EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kApplication, false, false, true),
+              Presenter::kStreamlineDLSSG);
+    EXPECT_TRUE(IsStreamlineFGSignalFront(false, true, false, true, false));
+    EXPECT_TRUE(IsStreamlineFGSignalFront(false, true, false, false, true));
+    EXPECT_FALSE(IsStreamlineFGSignalFront(false, true, false, false, false));
 }
 
 }  // namespace

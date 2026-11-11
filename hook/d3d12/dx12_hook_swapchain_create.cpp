@@ -315,7 +315,8 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
                                                    captureEvidence.xefgModuleOnCreateStack,
                                                    captureEvidence.authoritativeFFXRuntimeCreator
                                                        ? captureEvidence.ffxModulePath
-                                                       : nullptr);
+                                                       : nullptr,
+                                                   captureEvidence.dlssgPluginCreatedChain);
     if (callerFromThirdPartyOverlay) {
         MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
         HookLogImportant(
@@ -485,7 +486,8 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
                                                        captureEvidence.xefgModuleOnCreateStack,
                                                        captureEvidence.authoritativeFFXRuntimeCreator
                                                            ? captureEvidence.ffxModulePath
-                                                           : nullptr)) {
+                                                           : nullptr,
+                                                       captureEvidence.dlssgPluginCreatedChain)) {
         RefreshPresentHooksForRealSwapchain(*ppSwapChain, "CreateSwapChain XeFG runtime swapchain");
         CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain, "CreateSwapChain XeFG runtime swapchain",
                                               captureEvidence);
@@ -671,7 +673,8 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
                                                        captureEvidence.xefgModuleOnCreateStack,
                                                        captureEvidence.authoritativeFFXRuntimeCreator
                                                            ? captureEvidence.ffxModulePath
-                                                           : nullptr)) {
+                                                           : nullptr,
+                                                       captureEvidence.dlssgPluginCreatedChain)) {
         RefreshPresentHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd XeFG runtime swapchain");
         CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd XeFG runtime swapchain",
                                               captureEvidence);

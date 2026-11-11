@@ -9,7 +9,7 @@
 
 bool DX12_NoteFrameGenerationRuntimeSwapchainCreate(const char* context, IDXGISwapChain* swapchain, IUnknown* device,
                                                     HWND window, bool xefgModuleOnCreateStack,
-                                                    const char* ffxModulePath) {
+                                                    const char* ffxModulePath, bool dlssgPluginCreator) {
     if (!swapchain) {
         return false;
     }
@@ -23,7 +23,7 @@ bool DX12_NoteFrameGenerationRuntimeSwapchainCreate(const char* context, IDXGISw
     }
     const bool ffxRuntimeCreator = ffxModulePath && ffxModulePath[0];
     const auto presenter = ce::fg_presenter::NoteSwapchainCreated(swapchain, window, queue, xefgModuleOnCreateStack,
-                                                                  context, ffxRuntimeCreator);
+                                                                  context, ffxRuntimeCreator, dlssgPluginCreator);
     if (presenter == ce::fg_presenter::Presenter::kFFXSwapchain) {
         FFXHook::NoteFrameGenerationSwapchainCreator(ffxModulePath);
     }

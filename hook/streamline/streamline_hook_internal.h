@@ -739,6 +739,10 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
 // streamline_front_signal.cpp: who serves the DLSS-G API, and the front gate in front of the state above.
 void NoteDLSSGApiProviderForTarget(const void* target);
 bool ApplyStreamlineFrontSignal(bool active, int multiplier, bool explicitSetOptionsEnableSignal, const char* source);
+// The presenter registrations' epoch at a slDLSSGGetState entry, and whether that call's result may start DLSS FG: never
+// under a front, never when a swapchain registration changed while the call ran (ce::fg_presenter).
+uint64_t PresenterRegistrationEpoch();
+bool RefuseGetStateActivationForPresenter(uint64_t registrationEpochAtEntry, bool freshActivationRequested);
 bool WasViewportRuntimeStateActive(uint32_t viewportKey);
 // The game's latest DLSS-G request over all viewports (the input ApplyCombinedStreamlineRuntimeState last received).
 bool GetCombinedViewportRuntimeState(int* multiplier);

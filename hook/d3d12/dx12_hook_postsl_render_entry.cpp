@@ -1,7 +1,33 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_postsl_session.h"
 
+namespace {
+
+// Streamline's route draws only on a chain no other runtime presents (ce::fg_presenter). GTA V Enhanced 0.1.7500
+// (20261110_222057): a stale DLSS-G GetState armed PostSL after FidelityFX had created the window's chain at the same
+// address, and PostSL drew on it through the previous Streamline queue; the device was removed.
+bool AdmitPostSLForPresenter(IDXGISwapChain* swapchain) {
+    const auto binding = ce::fg_presenter::BindingFor(swapchain);
+    if (ce::fg_presenter::MayStreamlineRouteDrawOn(binding.presenter)) {
+        return true;
+    }
+    NoteDX12OverlayCoverageGate("postsl-foreign-presenter");
+    static ce::log_meter::ChangeGate s_gate;
+    if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(swapchain, binding.lifetime))) {
+        HookLogImportant(
+            "[PostSL OWNERSHIP] refused sc=%p presenter=%s lifetime=%llu bindingQueue=%p activation=%s - another "
+            "runtime presents this chain, so Streamline's overlay route never draws on it%s",
+            swapchain, ce::fg_presenter::PresenterName(binding.presenter),
+            static_cast<unsigned long long>(binding.lifetime), binding.queue,
+            HookHasExplicitStreamlineSetOptionsActivation() ? "explicit-setoptions" : "getstate-or-reconcile",
+            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    return false;
+}
+
+}  // namespace
 
 PostSLFlow PostSLRenderSession::PrepareRouteActivation() {
 static std::atomic<int> s_postSLCalls{0};
@@ -10,6 +36,9 @@ const bool normalRouteDrawPendingAtEntry = dx12_hook_g_OverlayCoverageDrawCount.
                                            dx12_hook_g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
 SharedMemoryLayout* finalOutputShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
 cachedSLFGActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+if (!AdmitPostSLForPresenter(pSwapChain)) {
+    return PostSLFlow::kReturn;
+}
 finalOutputCapture =
     DX12_PlanStreamlineFinalOutputCapture(finalOutputShm, GetActiveDX12OverlayConfig(finalOutputShm),
                                           cachedSLFGActive);

@@ -80,18 +80,55 @@ bool ApplyStreamlineFrontSignal(bool active, int multiplier, bool explicitSetOpt
         g_frontHeldExplicitEnable.store(explicitSetOptionsEnableSignal, std::memory_order_release);
     }
     static ce::log_meter::ChangeGate s_gate;
-    const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(active, active ? multiplier : 0));
+    const auto holder = ce::fg_presenter::CompetingPresenterHoldingPresentation();
+    const bool unloaded = ce::fg_presenter::IsDLSSGUnloaded();
+    const auto verdict =
+        s_gate.Observe(ce::log_meter::FieldKey(active, active ? multiplier : 0, holder.lifetime, unloaded));
     if (verdict) {
         HookLogImportant(
             "Streamline Hook: FG signal %s (%dx) via %s is a front - DLSS-G API served outside Streamline=%d, "
-            "Streamline presents=%d, runtime-owned presenter=%d; CE's DLSS-G state stays off%s",
+            "Streamline presents=%d, runtime-owned presenter=%d, presentation held by=%s lifetime=%llu queue=%p, "
+            "DLSS-G unloaded=%d; CE's DLSS-G state stays off%s",
             active ? "ON" : "OFF", active ? multiplier : 0, source ? source : "runtime-state",
             ce::fg_presenter::IsDLSSGApiServedOutsideStreamline() ? 1 : 0,
             ce::fg_presenter::IsStreamlinePresentingNow() ? 1 : 0,
             ce::fg_presenter::HasRuntimeOwnedOutputPresenter() ? 1 : 0,
-            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            ce::fg_presenter::PresenterName(holder.presenter), static_cast<unsigned long long>(holder.lifetime),
+            holder.queue, unloaded ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     RetireStreamlineFGStateForFront(source);
+    return true;
+}
+
+uint64_t PresenterRegistrationEpoch() {
+    return ce::fg_presenter::RegistrationEpoch();
+}
+
+// GTA V Enhanced 0.1.7500 (20261110_222057): a GetState(ON) carrying the title's stale DLSS-G options, 1.1 s after the
+// DLSS-G unload, started DLSS FG on the FidelityFX chain that had replaced DLSS-G's; PostSL then drew on that chain
+// through the previous Streamline queue and removed the device. A GetState result is an observation of the runtime the
+// call reached: under a front it says nothing about the chain being presented, and a call that returned after a
+// swapchain registration changed observed the presenter before it.
+bool RefuseGetStateActivationForPresenter(uint64_t registrationEpochAtEntry, bool freshActivationRequested) {
+    const bool straddled = ce::fg_presenter::DidObservationStraddleHandoff(registrationEpochAtEntry,
+                                                                           ce::fg_presenter::RegistrationEpoch());
+    const bool front = ce::fg_presenter::IsStreamlineFGSignalFrontNow();
+    if (!straddled && !front) {
+        return false;
+    }
+    if (freshActivationRequested) {
+        static ce::log_meter::ChangeGate s_gate;
+        const auto holder = ce::fg_presenter::CompetingPresenterHoldingPresentation();
+        const bool unloaded = ce::fg_presenter::IsDLSSGUnloaded();
+        if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(straddled, front, holder.lifetime, unloaded))) {
+            HookLogImportant(
+                "[FG OWNERSHIP] slDLSSGGetState(ON) starts no DLSS FG: %s (presentation held by=%s lifetime=%llu "
+                "queue=%p DLSS-G unloaded=%d)%s",
+                straddled ? "a swapchain registration changed during the call" : "the DLSS-G signal is a front",
+                ce::fg_presenter::PresenterName(holder.presenter), static_cast<unsigned long long>(holder.lifetime),
+                holder.queue, unloaded ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
     return true;
 }
 

@@ -176,7 +176,7 @@ if (SUCCEEDED(qiHr) && pQueue) {
         // latch is armed every CE GPU side effect stays quiesced, so InitOverlaySync keeps the sync
         // resources idle and the prewarm plus every later PostSL draw would be skipped for good.
         DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(
-            context ? context : "fresh authoritative Streamline handoff");
+            context ? context : "fresh authoritative Streamline handoff", true);
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked(

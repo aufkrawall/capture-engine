@@ -44,6 +44,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(requestedOutputs);
     }
 
+    const uint64_t presenterEpochAtEntry = PresenterRegistrationEpoch();
     const slResult result = originalGetState(viewport, state, streamline_hook_options);
     RetryResolveReflexFeatureHooksForRuntimeActivity("slDLSSGGetState");
     const uint32_t viewportKey = GetViewportKey(viewport);
@@ -53,7 +54,12 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
     // sustained-generation retire takes effect on this same poll.
     MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(result == streamline_hook_kSlResultOk, state,
                                                                   streamline_hook_options, viewportWasActive, viewportKey);
-    const bool suppressNewActivation = ShouldSuppressNewGetStateActivation();
+    const bool freshActivationRequested = result == streamline_hook_kSlResultOk && streamline_hook_options &&
+                                          ce::streamline_runtime_policy::IsDLSSGModeEnabled(streamline_hook_options->mode) &&
+                                          !viewportWasActive;
+    const bool suppressNewActivation =
+        RefuseGetStateActivationForPresenter(presenterEpochAtEntry, freshActivationRequested) ||
+        ShouldSuppressNewGetStateActivation();
     if (result == streamline_hook_kSlResultOk && state.numFramesToGenerateMax > 0) {
         CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
     }

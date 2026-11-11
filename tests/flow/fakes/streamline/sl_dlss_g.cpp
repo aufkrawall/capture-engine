@@ -39,6 +39,10 @@ std::mutex g_optionsMutex;
 sl::DLSSGMode g_mode = sl::DLSSGMode::eOff;
 uint32_t g_framesToGenerate = 1;
 std::atomic<uint32_t> g_presentedSinceGetState{0};
+// DLSSGState::lastPresentInputsProcessingCompletionFenceValue: one step per game frame the plugin processed. It stays
+// where it was once the plugin stops (GTA V Enhanced's GetState kept answering 4545 after the DLSS-G unload,
+// 20261110_222057), which is what CE's GetState-only activation reads as runtime evidence.
+std::atomic<uint64_t> g_inputsFenceValue{0};
 // Dynamic MFG: the output rate holds and the game frame rate gives way, so every output takes this long whatever the
 // factor (0: outputs share the game's frame interval, as with a fixed factor).
 std::atomic<int64_t> g_constantOutputIntervalUs{0};
@@ -257,6 +261,7 @@ private:
             g_presentedSinceGetState.fetch_add(1, std::memory_order_relaxed);
         }
         proxyIndex_ = (proxyIndex_ + 1) % proxyBufferCount_;
+        g_inputsFenceValue.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
 
@@ -338,7 +343,7 @@ sl::Result DLSSGGetState(const sl::ViewportHandle&, sl::DLSSGState& state, const
     state.bIsVsyncSupportAvailable = sl::eTrue;
     state.estimatedVRAMUsageInBytes = 0;
     state.inputsProcessingCompletionFence = nullptr;
-    state.lastPresentInputsProcessingCompletionFenceValue = 0;
+    state.lastPresentInputsProcessingCompletionFenceValue = g_inputsFenceValue.load(std::memory_order_relaxed);
     return sl::Result::eOk;
 }
 
@@ -385,6 +390,15 @@ bool FlowCreateNativeBelowRuntime(bool (*createNative)(void*), void* context) {
     return created;
 }
 
+// Test-host control (not a Streamline function): the mode changes where CE's slDLSSGSetOptions hook never sees it.
+void FlowSetModeUnobserved(uint32_t mode, uint32_t framesToGenerate) {
+    std::lock_guard<std::mutex> lock(g_optionsMutex);
+    Log(kModule, "mode set outside slDLSSGSetOptions mode=%u frames=%u (was %u)", mode, framesToGenerate,
+        static_cast<uint32_t>(g_mode));
+    g_mode = static_cast<sl::DLSSGMode>(mode);
+    g_framesToGenerate = framesToGenerate;
+}
+
 // Test-host control (not a Streamline function): see g_constantOutputIntervalUs.
 void FlowSetConstantOutputInterval(int64_t microseconds) {
     g_constantOutputIntervalUs.store(microseconds, std::memory_order_relaxed);
@@ -413,6 +427,8 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&FlowCurrentMode);
     if (std::strcmp(name, "flowCreateNativeBelowRuntime") == 0)
         return reinterpret_cast<void*>(&FlowCreateNativeBelowRuntime);
+    if (std::strcmp(name, "flowSetModeUnobserved") == 0)
+        return reinterpret_cast<void*>(&FlowSetModeUnobserved);
     if (std::strcmp(name, "flowSetConstantOutputInterval") == 0)
         return reinterpret_cast<void*>(&FlowSetConstantOutputInterval);
     if (std::strcmp(name, "flowPresentNextBatchOnTitleThread") == 0)

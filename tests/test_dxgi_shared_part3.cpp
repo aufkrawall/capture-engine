@@ -304,7 +304,13 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     const size_t healthySuccessfulSubmit =
         text.find("const bool healthyOutput = SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue;",
                   postSubmitHealth);
+    // A submit that removed the device returns before any confirmation (GTA V Enhanced 20261110_222057 confirmed the
+    // route on the submit that removed the device).
+    const size_t unhealthySubmitRefused =
+        text.find("[PostSL OWNERSHIP] confirmation=refused reason=device-removed", healthySuccessfulSubmit);
     const size_t confirmedRenderTransaction = text.find("g_PostSLLifecycle.ConfirmRender(", healthySuccessfulSubmit);
+    ASSERT_NE(unhealthySubmitRefused, std::string::npos);
+    EXPECT_LT(unhealthySubmitRefused, confirmedRenderTransaction);
     const size_t healthyOutputGuard = text.find("if (healthyOutput)", confirmedRenderTransaction);
     const size_t successfulSubmitSequence =
         text.find("++dx12_hook_s_PostSLSuccessfulSubmitSequence;", healthyOutputGuard);
