@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-11-11 - GTA cold DLSS-G black screen: the PostSL back-buffer draw is the trigger
+
+- Staged observer runs `20261111_144926` (policy-only) and `20261111_145243` (startup-present-only): clean, first frame
+  after 142/130 ms, while the startup policy ran and the overlay was drawn into DLSS-G's UIColorAndAlpha. What remains
+  is CE's PostSL draw onto the new chain's output buffers from its first present (4/4 black with it, 3/3 clean
+  without). Why DWM then does not bind the surface is not in the traces (`display-stall-trace.md`).
+- The 1388 ms screen capture of the first seal began after DWM's realization; captures never ended the black time.
+- The session manifest keeps the startup observer flags after a config reload; the hook's lines show the real mode.
+
 ### 2026-11-11 - GTA cold DLSS-G black screen: clean with CE passive, screen captures ruled out
 
 - Second seal `20261111_024650` (TrafficMonitor closed, 1.38 s): no screen capture in the whole file, yet DWM forced

@@ -77,8 +77,8 @@ relative to the new chain's first present (QPC 6899741153 us).
   and moved the new surface to independent flip at 1403.9 ms; the game's own flips follow from 1514 ms.
 - The captures recur every ~1.0-1.6 s for the whole 72 s file (51; each followed by a csrss model-5 present,
   `D3DKMT_PM_SCREENCAPTUREFENCE`, and explorer's `Taskbar` thread): GDI screen reads, most likely TrafficMonitor 1.8.6's
-  per-second taskbar color probe. Refuted (second seal): that a capture ended the black time - the 1388 ms one only
-  coincided.
+  per-second taskbar color probe. Refuted: that a capture ended the black time - the 1388 ms one began 0.46 ms after
+  the realization (second section).
 - Stage verdict: the frames stop in DWM, which does not bind a flip-model chain's new composition surface while the
   window's previous surface sits in independent flip on an overlay plane with kept content. DXGI, DxgKrnl submission,
   GPU completion and the token hand-off all ran.
@@ -105,10 +105,22 @@ relative to the new chain's first present (QPC 6899741153 us).
   recorded into UIColorAndAlpha, the Streamline startup policy (GetState reactivation suppression, held SetOptions)
   and startup-Present routing. Handoffs 2-8 of `20261111_013758` (overlay drawn on the first present of a no-FG chain,
   DLSS-G on ~2 s later) did not black out, so they cannot separate drawing from DLSS-G on from frame one.
-- Bisection with the staged observer modes (`common/config/config.h::IsOverlayObserverPolicyOnly`): `overlay_observer_only=1`
-  plus `overlay_observer_policy_only=1` restores only the Streamline startup policy; adding
-  `overlay_observer_startup_present_only=1` restores startup-Present routing too. Drawing stays off in both, so two
-  clean runs implicate the first-frame draw.
+- Bisection with the staged observer modes (`common/config/config.h::IsOverlayObserverPolicyOnly`):
+  `20261111_144926` (policy-only) and `20261111_145243` (startup-present-only; both modes per the hook's own lines -
+  the manifest still showed the pre-reload flags) were clean: first frame 142/130 ms after the first native present,
+  6 presents, DLSS-G base rate 66 fps as in the black runs. Both ran the startup policy (OFF churn suppressed) and drew
+  the overlay into DLSS-G's UIColorAndAlpha ~500 times. Left as the trigger: the PostSL callback - CE's draw straight
+  onto the new DLSS-G chain's output back buffers from its first native present (RTVs on all 6 buffers, submit on the
+  DLSS-G present queue); the Present transport is `normalChain` in every mode. Cold DLSS-G starts with it: 4/4 black;
+  without it: 3/3 clean.
+- Not explained yet: why DWM reacts. DWM normally binds a re-bound surface 2-7 ms after DXGI's
+  `BindBackBuffersToDwm` (another process did so five times in `024650`); the game's DLSS-G surface, bound at -240 and
+  -211 ms while the old surface sat in independent flip, was realized only at 1355 ms. In both seals that realization
+  happened inside DWM's channel-batch processing (between `CurrentFrameId` and `CHANNELBATCHES_PROCESSED`), and in
+  `021555` 0.46 ms *before* the screen capture began - no capture ever ended the black time. The recorder filters
+  Win32k to composition tokens, so the window-manager update that forced it is not in the file.
+- Duration: 38.05 and 38.12 s in 0.1.7500 (`20261110_221616`, `20261110_222057`), 1.16-1.46 s from 0.1.7501 on. Between
+  them: `ca274de0` (presenter ownership) and `4f16603b` (this recorder). Whether either shortened it is unproven.
 - Reading method: `etl_stall_digest.py` ranks the stall correctly (the flip streams' gaps) but the verdict needed
   payloads - Win32k `TokenStateChanged`/`TokenCompositionSurfaceObject` (surface LUID, present count, NewState),
   Dwm-Core `CompSurfInfo_*`, `SCHEDULE_SURFACEUPDATE` (first 8 bytes = surface LUID) and DxgKrnl
@@ -121,4 +133,6 @@ relative to the new chain's first present (QPC 6899741153 us).
 - Event volume per second under DLSS-G at 4K, and whether 256 MB keeps the run-up of a 37 s episode, are unmeasured.
 - The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The
   CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
-- Which active CE path delays the binding (see bisection above), and what makes DWM realize the surface at ~1.2-1.5 s.
+- Why CE's PostSL draw on the new chain's buffers keeps DWM from binding it, and which window-manager update makes
+  DWM realize it at ~1.2-1.5 s (38 s in 0.1.7500). Needs a clean-run trace to compare (a fast handoff seals nothing)
+  and window events the recorder does not take.
