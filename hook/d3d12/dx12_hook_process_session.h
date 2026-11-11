@@ -104,7 +104,6 @@ private:
     bool captureBeforeOverlayPublished = false;
     bool delayOverlayRenderAfterSyncInit;
     bool suppressOverlayRenderForLoadedStartupOverlay;
-    bool delayOverlayRenderAfterResourcePrime;
     bool delayOverlayRenderAfterFirstDrawProbe;
     bool delayOverlayRenderAfterResume;
     bool shouldRunStartupOverlayDrawProbe;
@@ -138,9 +137,6 @@ private:
     ID3D12CommandAllocator* alloc;
     HRESULT allocResetHr = E_FAIL;
     HRESULT listResetHr = E_FAIL;
-    bool preserveLiveStartupOverlayDuringInactiveSL;
-    bool hasPendingStartupOverlayResources;
-    bool shouldPrimeStartupOverlayResources;
     IDXGISwapChain3* sc3;
     LARGE_INTEGER perfQI, perfGetBuf, perfRecord, perfSubmit, perfEnd, perfFreq{};
     UINT swapchainBufferIdx;

@@ -70,86 +70,9 @@ ProcessFrameFlow FrameProcessSession::ResetCommandListForDraw() {
 ProcessFrameFlow FrameProcessSession::PrepareDrawResources() {
     BeginOverlayGpuBreadcrumbFrame(g_Device.load(std::memory_order_acquire));
     WriteOverlayGpuBreadcrumb(list, kOverlayBcStart);
-    preserveLiveStartupOverlayDuringInactiveSL =
-        ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
-    hasPendingStartupOverlayResources = g_OverlayAdapter.HasPendingDX12Resources();
-    shouldPrimeStartupOverlayResources =
-        dx12_hook_s_startupOverlayResourcePrimeMs == 0 &&
-        ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(
-            startupOverlayCompatibilityActive, hasPendingStartupOverlayResources,
-            preserveLiveStartupOverlayDuringInactiveSL);
-    if (startupOverlayCompatibilityActive && hasPendingStartupOverlayResources &&
-        preserveLiveStartupOverlayDuringInactiveSL) {
-        static std::atomic<int> s_skipStartupPrimeForLiveOverlayLogCount{0};
-        const int skipPrimeLog =
-            s_skipStartupPrimeForLiveOverlayLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (skipPrimeLog < 5 || (skipPrimeLog % 300) == 0) {
-            HookLogImportant(
-                "DX12: Skipping startup resource priming delay because live overlay is "
-                "preserved through runtime-inactive Streamline handoff (log=%d)",
-                skipPrimeLog + 1);
-        }
-    }
-    if (shouldPrimeStartupOverlayResources) {
-        // Check device before priming — after FG teardown the
-        // device may already be removed (async GPU fault).
-        {
-            auto* primeDev = g_Device.load(std::memory_order_acquire);
-            HRESULT primeDevHr = primeDev ? primeDev->GetDeviceRemovedReason() : E_FAIL;
-            if (FAILED(primeDevHr)) {
-                HookLogImportant("DX12: SKIPPING resource priming — device removed 0x%08X",
-                                 (unsigned)primeDevHr);
-                dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
-                return ProcessFrameFlow::kOverlayDone;
-            }
-        }
-        HookLogImportant("DX12: Priming DX12 overlay resources before first GTA overlay draw");
-        if (!g_OverlayAdapter.PrimeDX12Resources(list)) {
-            HookLogImportant(
-                "DX12: DX12 overlay resource priming failed; deferring first overlay draw");
-            return ProcessFrameFlow::kOverlayDone;
-        }
-
-        HRESULT primeCloseResult = list->Close();
-        listRecording = false;
-        if (FAILED(primeCloseResult)) {
-            HookLog("DX12: Priming command list close failed hr=0x%08X, forcing reinit",
-                    primeCloseResult);
-            dx12_hook_g_State.syncInit = false;
-            return ProcessFrameFlow::kOverlayDone;
-        }
-
-        // The priming list only uploads device-scoped resources
-        // (font texture); it never touches the swapchain backbuffer,
-        // so it is eligible for the dedicated overlay queue.
-        if (!SubmitOverlayCommandList(gameQueue, list, idx, "startup resource priming",
-                                      false, /*listTouchesBackbuffer=*/false)) {
-            HookLogImportant(
-                "DX12: Startup resource priming submission failed; deferring first overlay "
-                "draw");
-            return ProcessFrameFlow::kOverlayDone;
-        }
-
-        // Check device after priming submit — catch async GPU fault immediately
-        {
-            auto* postPrimeDev = g_Device.load(std::memory_order_acquire);
-            HRESULT postPrimeDevHr =
-                postPrimeDev ? postPrimeDev->GetDeviceRemovedReason() : E_FAIL;
-            if (FAILED(postPrimeDevHr)) {
-                HookLogImportant("DX12: Resource priming CAUSED device removal 0x%08X!",
-                                 (unsigned)postPrimeDevHr);
-                dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
-                return ProcessFrameFlow::kOverlayDone;
-            }
-        }
-
-        dx12_hook_s_startupOverlayResourcePrimeMs = ce::hook_clock::TickCount64();
-        HookLogImportant(
-            "DX12: DX12 overlay resource priming submitted, delaying first overlay draw for "
-            "%llums",
-            dx12_hook_kStartupOverlayPostResourcePrimeSettleMs);
-        return ProcessFrameFlow::kOverlayDone;
-    }
+    // The selected renderer prepares its resources while recording the draw (DX12Backend::Render uploads its
+    // font before sampling it; the descriptor-free backend needs no texture upload). Preparing the other adapter
+    // in a separate submission and waiting 100 ms added a blank startup window without proving GPU completion.
 
     if (shouldRunStartupOverlayDrawProbe &&
         dx12_hook_s_startupOverlayFirstDrawProbeStage == StartupOverlayFirstDrawProbeStage::kNone) {

@@ -243,19 +243,6 @@ inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatib
     return runtimeOwnedSwapchainActiveMs < settleDelayMs;
 }
 
-inline bool ShouldPrimeStartupOverlayResources(bool startupOverlayCompatibilityActive, bool hasPendingDX12Resources,
-                                               bool preserveLiveOverlayDuringHandoff) {
-    return startupOverlayCompatibilityActive && hasPendingDX12Resources && !preserveLiveOverlayDuringHandoff;
-}
-
-inline bool ShouldDelayAfterStartupOverlayResourcePrime(bool startupOverlayCompatibilityActive,
-                                                        bool actualFrameGenerationActive,
-                                                        ULONGLONG msSinceResourcePrime, ULONGLONG settleDelayMs,
-                                                        bool preserveLiveOverlayDuringHandoff) {
-    return startupOverlayCompatibilityActive && !actualFrameGenerationActive && msSinceResourcePrime < settleDelayMs &&
-           !preserveLiveOverlayDuringHandoff;
-}
-
 inline bool ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
     bool startupCompatAlreadySettled, bool overlayBackendReady, bool runtimeOwnsSwapchain, bool streamlineFGRunning,
     fg_runtime::RuntimeMode runtimeMode, bool explicitSetOptionsActivation, bool observedAnyFrameGenerationActivity,

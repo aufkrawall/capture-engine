@@ -130,7 +130,6 @@ dx12_hook_s_startupOverlayActivationStage = StartupOverlayActivationStage::kNone
 dx12_hook_s_startupOverlayFirstDrawProbeStage = StartupOverlayFirstDrawProbeStage::kNone;
 dx12_hook_s_startupOverlayActivationStageMs = 0;
 dx12_hook_s_startupOverlaySyncInitMs = 0;
-dx12_hook_s_startupOverlayResourcePrimeMs = 0;
 dx12_hook_s_startupOverlayFirstDrawProbeMs = 0;
 dx12_hook_s_lastStartupBlockingRenderModuleActivityMs.store(0, std::memory_order_release);
 }

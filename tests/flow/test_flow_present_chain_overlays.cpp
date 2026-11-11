@@ -48,6 +48,28 @@ TEST(FlowPresentChainOverlays, FiveLauncherAndEffectOverlaysPassPresent1Through)
     RenderUnderOverlays(game, options, FlowGame::PresentMethod::kPresent1);
 }
 
+TEST(FlowPresentChainOverlays, ColdStartupResourcesNeedNoExtraWallClockSettle) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.presentChainOverlays = {{OverlayStandIn::kEpic, 0}, {OverlayStandIn::kReShade, 0}};
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    // Advance the existing window/resume admission gates, then let backend/RTV/sync initialization finish
+    // without advancing time again. The virtual clock is ahead of the host's frame schedule, so the next few
+    // frames cannot satisfy a newly armed 100 ms resource-prime pause. GPU fences still complete normally.
+    for (int step = 0; step < 3; ++step) {
+        ASSERT_TRUE(game.RenderFrame()) << game.Error();
+        game.AdvanceVirtualClock(1000000);
+    }
+    for (int step = 0; step < 4 && game.Coverage().presents == 0; ++step)
+        ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ASSERT_GT(game.Coverage().presents, 0u)
+        << "startup waited for time after resource readiness: " << game.LogDirectory();
+    const uint64_t coldStartupPresents = game.PhysicalPresents() - game.Coverage().presents;
+    ASSERT_TRUE(game.RenderFrames(12)) << game.Error();
+    ExpectEveryPresentCoveredOnce(game, coldStartupPresents);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowPresentChainOverlays, HDR10GameUnderReShadeAndEpicLeavesEveryPresentCoveredOnce) {
     FlowGame game(CurrentTestName());
     GameOptions options;

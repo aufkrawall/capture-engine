@@ -349,7 +349,6 @@ ULONGLONG dx12_hook_s_startupOverlayActivationStageMs = 0;
 
 ULONGLONG dx12_hook_s_startupOverlaySyncInitMs = 0;
 
-ULONGLONG dx12_hook_s_startupOverlayResourcePrimeMs = 0;
 
 ULONGLONG dx12_hook_s_startupOverlayFirstDrawProbeMs = 0;
 

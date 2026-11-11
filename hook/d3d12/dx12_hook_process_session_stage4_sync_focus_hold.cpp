@@ -327,7 +327,6 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
         !holdFocusLossBackbufferWork;
     delayOverlayRenderAfterSyncInit = false;
     suppressOverlayRenderForLoadedStartupOverlay = false;
-    delayOverlayRenderAfterResourcePrime = false;
     delayOverlayRenderAfterFirstDrawProbe = false;
     delayOverlayRenderAfterResume = false;
     shouldRunStartupOverlayDrawProbe = startupOverlayCompatibilityActive;
@@ -396,37 +395,6 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
                                  g_ProcessName);
             }
             dx12_hook_s_startupOverlaySyncInitMs = 0;
-        }
-    }
-
-    if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && !deferOverlayWorkAfterResume &&
-        dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit && dx12_hook_s_startupOverlayResourcePrimeMs != 0) {
-        const ULONGLONG now = ce::hook_clock::TickCount64();
-        const ULONGLONG msSinceResourcePrime = now - dx12_hook_s_startupOverlayResourcePrimeMs;
-        const bool preserveLivePrimeOverlay =
-            ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
-        const bool shouldDelayAfterResourcePrime = ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(
-            startupOverlayCompatibilityActive, IsActualFrameGenerationActive(), msSinceResourcePrime,
-            dx12_hook_kStartupOverlayPostResourcePrimeSettleMs, preserveLivePrimeOverlay);
-        if (shouldDelayAfterResourcePrime) {
-            static std::atomic<int> s_postResourcePrimeLogCount{0};
-            if (s_postResourcePrimeLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
-                HookLogImportant(
-                    "DX12: Waiting to draw staged overlay after resource priming for %s (remaining=%llums)",
-                    g_ProcessName, dx12_hook_kStartupOverlayPostResourcePrimeSettleMs - msSinceResourcePrime);
-            }
-            delayOverlayRenderAfterResourcePrime = true;
-        } else {
-            if (preserveLivePrimeOverlay) {
-                HookLogImportant(
-                    "DX12: Skipping startup resource-prime settle delay to keep live overlay visible for %s",
-                    g_ProcessName);
-            } else {
-                HookLogImportant(
-                    "DX12: Startup compat resource-prime settle complete - allowing first overlay draw for %s",
-                    g_ProcessName);
-            }
-            dx12_hook_s_startupOverlayResourcePrimeMs = 0;
         }
     }
 

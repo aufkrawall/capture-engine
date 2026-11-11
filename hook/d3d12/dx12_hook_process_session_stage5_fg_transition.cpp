@@ -434,7 +434,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
 // reach the overlay draw section below (condition mirrors the if that follows).
 if (!(allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit &&
       !delayOverlayRenderAfterResume && !delayOverlayRenderAfterSyncInit &&
-      !suppressOverlayRenderForLoadedStartupOverlay && !delayOverlayRenderAfterResourcePrime &&
+      !suppressOverlayRenderForLoadedStartupOverlay &&
       !delayOverlayRenderAfterFirstDrawProbe)) {
     NoteDX12OverlayCoverageGate(!allowOverlayRender    ? "overlay-render-suppressed"
                                 : suspendOverlayRender ? "swapchain-not-drawable"
@@ -453,7 +453,7 @@ ProcessFrameFlow FrameProcessSession::DrawOverlayFrame() {
     }
     if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit &&
         !delayOverlayRenderAfterResume && !delayOverlayRenderAfterSyncInit &&
-        !suppressOverlayRenderForLoadedStartupOverlay && !delayOverlayRenderAfterResourcePrime &&
+        !suppressOverlayRenderForLoadedStartupOverlay &&
         !delayOverlayRenderAfterFirstDrawProbe) {
     flow = DrawFrameTransition();
     if (flow == ProcessFrameFlow::kReturn) {

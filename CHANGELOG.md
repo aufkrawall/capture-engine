@@ -10,6 +10,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Late DirectX 12 inject overlay at startup:** removed an unnecessary resource-upload submission and a fixed 100 ms pause before the first draw. The selected renderer prepares its resources together with the draw, so GPU command ordering establishes readiness without leaving extra frames blank.
+
 - **Inject overlay after a DirectX 12 game replaces its presentation queue:** keep the overlay drawing from the replacement swapchain's first frame and keep frame generation reported as off. A new ordinary game queue was previously mistaken for FSR Frame Generation, suppressing the overlay.
 
 - **Epic overlay coexistence in DirectX 12:** recognize the launcher's hyphenated overlay DLL names so its rendering is classified as overlay work and follows the existing startup compatibility rules.
