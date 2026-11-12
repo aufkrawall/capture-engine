@@ -242,9 +242,9 @@ TEST(GraphScrollCursorTest, CursorNeverRewindsAcrossMixedArrivalPatterns) {
 }
 
 // Display and draw clocks are independent. The compositor chooses the latest submitted frame at each 144 Hz
-// scanout while the application submits at 160 Hz. A display step must move the visible graph one slot, even when
-// two application frames were submitted since the preceding scanout. Measured bounds: 0.75-1.25 slots per displayed
-// step after warmup; aggregate drift must remain below two slots over the measured window.
+// scanout while the application submits at 160 Hz. The graph must not accelerate past the sample stream, and a
+// displayed step moves the graph exactly as far as the game's own content moved: by the draw time between the two
+// displayed frames. Measured bound: 0.05 slots per displayed step after warmup; drift below two slots.
 TEST(GraphScrollCursorTest, DisplayedSequenceDoesNotAccelerateOnDiscardedApplicationPresents) {
     GraphScrollCursor cursor;
     uint64_t sampleCount = 100;
@@ -252,6 +252,8 @@ TEST(GraphScrollCursorTest, DisplayedSequenceDoesNotAccelerateOnDiscardedApplica
     constexpr int64_t kOriginUs = 1'000'000;
     constexpr double kDisplayPeriodUs = 1'000'000.0 / 144.0;
     int64_t lastPublishedUs = kOriginUs;
+    int64_t latestDrawUs = 0;
+    int64_t previousDrawUs = 0;
     double latest = 0.0;
     double previous = 0.0;
     double firstMeasured = 0.0;
@@ -260,24 +262,94 @@ TEST(GraphScrollCursorTest, DisplayedSequenceDoesNotAccelerateOnDiscardedApplica
     for (int display = 1; display <= kDisplays; ++display) {
         const int64_t displayUs = kOriginUs + static_cast<int64_t>(display) * 1'000'000 / 144;
         while (kOriginUs + static_cast<int64_t>(draw) * 1'000'000 / 160 < displayUs) {
-            const int64_t drawUs = kOriginUs + static_cast<int64_t>(draw) * 1'000'000 / 160;
+            latestDrawUs = kOriginUs + static_cast<int64_t>(draw) * 1'000'000 / 160;
             latest = cursor.Advance({1, sampleCount, lastPublishedUs, kDisplayPeriodUs, lastPublishedUs,
-                                     kDisplayPeriodUs, drawUs});
+                                     kDisplayPeriodUs, latestDrawUs});
             ++draw;
         }
         if (display == kWarmupDisplays) {
             firstMeasured = latest;
         } else if (display > kWarmupDisplays) {
-            EXPECT_GE(latest - previous, 0.75) << "display " << display;
-            EXPECT_LE(latest - previous, 1.25) << "display " << display;
+            const double contentStep = static_cast<double>(latestDrawUs - previousDrawUs) / kDisplayPeriodUs;
+            EXPECT_NEAR(latest - previous, contentStep, 0.05) << "display " << display;
         }
         previous = latest;
+        previousDrawUs = latestDrawUs;
         if (display % 4 == 0) {
             sampleCount += 4;  // delayed, batched publication after the selected frame reaches the display
             lastPublishedUs = displayUs;
         }
     }
     EXPECT_NEAR(latest - firstMeasured, kDisplays - kWarmupDisplays, 2.0);
+}
+
+// Regression (GTA V Enhanced menu, FSR FG suspended, 0.1.7518): the game presented ~156 Hz into AMD's proxy, the
+// real swapchain flipped at 144 Hz under FIFO and about one scanout in fourteen was never published. Mapping each
+// draw onto a predicted scanout slot held the graph on ~10% of draws and jumped it two slots on as many, while the
+// game scrolled smoothly. Every draw must advance by its own draw interval, never hold, and the displayed frames
+// must step exactly as far as the game content they carry.
+TEST(GraphScrollCursorTest, ApplicationDrawsAboveTheRefreshRateScrollOnTheirOwnClock) {
+    GraphScrollCursor cursor;
+    constexpr int64_t kOriginUs = 1'000'000;
+    constexpr int64_t kRefreshUs = 6946;
+    constexpr int kUnpublishedEvery = 14;
+    constexpr double kSamplePeriodUs = kRefreshUs * kUnpublishedEvery / (kUnpublishedEvery - 1.0);
+    constexpr int64_t kPublishLatencyUs = 24'000;
+    uint32_t noise = 12345;
+    std::vector<int64_t> draws{kOriginUs};
+    for (int draw = 1; draw <= 3001; ++draw) {
+        noise = noise * 1664525u + 1013904223u;
+        draws.push_back(draws.back() + 6410 + static_cast<int64_t>(noise >> 22) - 512);  // +-0.5 ms jitter
+    }
+    auto firstScanoutAfter = [&](int64_t timeUs) {
+        return kOriginUs + ((timeUs - kOriginUs) / kRefreshUs + 1) * kRefreshUs;
+    };
+    std::vector<int64_t> pendingScanouts;
+    uint64_t samples = 100;
+    int64_t lastPublishedUs = kOriginUs;
+    int64_t nextScanoutUs = kOriginUs + kRefreshUs;
+    int scanoutIndex = 0;
+    double previous = 0.0;
+    double shownPosition = -1.0;
+    int64_t shownDrawUs = 0;
+    int holds = 0;
+    int measuredDisplays = 0;
+    for (size_t draw = 1; draw + 1 < draws.size(); ++draw) {
+        const int64_t drawUs = draws[draw];
+        while (nextScanoutUs <= drawUs) {
+            if (++scanoutIndex % kUnpublishedEvery != 0)
+                pendingScanouts.push_back(nextScanoutUs);
+            nextScanoutUs += kRefreshUs;
+        }
+        // Publication trails the scanout.
+        while (!pendingScanouts.empty() && pendingScanouts.front() + kPublishLatencyUs <= drawUs) {
+            lastPublishedUs = pendingScanouts.front();
+            pendingScanouts.erase(pendingScanouts.begin());
+            ++samples;
+        }
+        const double position = cursor.Advance(
+            {7, samples, lastPublishedUs, kSamplePeriodUs, lastPublishedUs, kSamplePeriodUs, drawUs});
+        const bool measured = draw > 300;
+        if (measured) {
+            if (position <= previous)
+                ++holds;
+            EXPECT_NEAR(position - previous, (drawUs - draws[draw - 1]) / kSamplePeriodUs, 0.05) << "draw " << draw;
+        }
+        // A scanout shows the newest draw submitted before it; the next draw replaces this one if it is earlier.
+        if (draws[draw + 1] >= firstScanoutAfter(drawUs)) {
+            if (measured && shownPosition >= 0.0) {
+                EXPECT_NEAR(position - shownPosition, (drawUs - shownDrawUs) / kSamplePeriodUs, 0.05)
+                    << "draw " << draw;
+                ++measuredDisplays;
+            }
+            shownPosition = position;
+            shownDrawUs = drawUs;
+        }
+        previous = position;
+        EXPECT_LE(position, static_cast<double>(samples) - 2.0);
+    }
+    EXPECT_EQ(holds, 0);
+    EXPECT_GT(measuredDisplays, 2000);
 }
 
 TEST(GraphScrollCursorTest, DistinctGeneratedOutputsAdvanceInBurstsAndDuplicatesDoNot) {
@@ -299,19 +371,22 @@ TEST(GraphScrollCursorTest, DistinctGeneratedOutputsAdvanceInBurstsAndDuplicates
                 const double position = cursor.Advance(snapshot);
                 EXPECT_DOUBLE_EQ(cursor.Advance(snapshot), position) << "duplicate output must not scroll twice";
                 EXPECT_LE(position, static_cast<double>(samples) - 2.0);
+                // The trail settles during the first group; the capped correction absorbs it without a visible
+                // speed change.
                 if (group == 20 && output == 0)
                     first = position;
                 else if (group > 20 || (group == 20 && output > 0)) {
-                    EXPECT_NEAR(position - previous, 1.0, 0.001);
+                    EXPECT_NEAR(position - previous, 1.0, 0.02);
                 }
                 previous = position;
             }
         }
-        EXPECT_NEAR(previous - first, static_cast<double>((200 - 20) * multiplier - 1), 0.01);
+        EXPECT_NEAR(previous - first, static_cast<double>((200 - 20) * multiplier - 1), 1.0);
     }
 }
 
-TEST(GraphScrollCursorTest, UnevenDrawIntervalsStillTrackRegularDisplayedFrames) {
+// A draw interval is the game's own animation step: the graph follows it rather than snapping to a guessed scanout.
+TEST(GraphScrollCursorTest, UnevenDrawIntervalsMoveTheGraphLikeTheGameContent) {
     GraphScrollCursor cursor;
     constexpr int64_t kPeriodUs = 10'000;
     constexpr int64_t kOriginUs = 1'000'000;
@@ -319,19 +394,26 @@ TEST(GraphScrollCursorTest, UnevenDrawIntervalsStillTrackRegularDisplayedFrames)
     uint64_t samples = 100;
     int64_t lastPublished = kOriginUs;
     double previous = 0.0;
+    int64_t previousDrawUs = 0;
+    double firstMeasured = 0.0;
     for (int display = 1; display <= 400; ++display) {
         const int64_t displayUs = kOriginUs + display * kPeriodUs;
         const int64_t drawUs = displayUs - kLeadUs[static_cast<size_t>(display) % kLeadUs.size()];
         const double position = cursor.Advance({2, samples, lastPublished, static_cast<double>(kPeriodUs),
                                                 lastPublished, static_cast<double>(kPeriodUs), drawUs});
-        if (display > 50)
-            EXPECT_NEAR(position - previous, 1.0, 0.001) << "display " << display;
+        if (display == 100)
+            firstMeasured = position;
+        if (display > 100)
+            EXPECT_NEAR(position - previous, static_cast<double>(drawUs - previousDrawUs) / kPeriodUs, 0.05)
+                << "display " << display;
         previous = position;
+        previousDrawUs = drawUs;
         if (display % 4 == 0) {
             samples += 4;
             lastPublished = displayUs;
         }
     }
+    EXPECT_NEAR(previous - firstMeasured, 300.0, 1.0);
 }
 
 TEST(GraphScrollCursorTest, CadenceHoldsWithinHistoryOnStallAndRearmsOnNewHistory) {
@@ -362,11 +444,15 @@ TEST(GraphScrollCursorTest, GeneratedAndSuspendedRoutesShareOneHistoryThroughRep
     uint64_t outputId = 1;
     double previous = -1.0;
     int shown = 0;
+    bool handoff = false;
+    // The suspended route draws 0.6 of a refresh later in its frame than the generated route: the first displayed
+    // frame after that handoff carries that much more content time, every later one exactly one refresh.
     auto check = [&](double position) {
         if (shown > 80) {
             EXPECT_GE(position - previous, 0.75) << "display " << shown;
-            EXPECT_LE(position - previous, 1.25) << "display " << shown;
+            EXPECT_LE(position - previous, handoff ? 1.65 : 1.25) << "display " << shown;
         }
+        handoff = false;
         previous = position;
         ++shown;
     };
@@ -383,6 +469,7 @@ TEST(GraphScrollCursorTest, GeneratedAndSuspendedRoutesShareOneHistoryThroughRep
         }
         // Two app/proxy draws reach each output; only the latter frame is displayed. Route changes do not
         // change the stream identity and therefore may not reset the graph history.
+        handoff = true;
         for (int frame = 0; frame < 200; ++frame) {
             GraphCadenceSnapshot snapshot{5, samples, publishedTime, kPeriod, publishedTime, kPeriod,
                                           displayTime + 1000};
@@ -407,15 +494,18 @@ TEST(GraphScrollCursorTest, DistinctOutputsAfterAStallRecoverWithoutUnboundedPre
         ++sample.outputId;
         EXPECT_LE(cursor.Advance(sample), 98.0);
     }
+    // The stall grew the trail to its cap. Recovery neither holds nor jumps: the excess is absorbed within the
+    // capped correction, and the cursor settles at one slot per output again.
     double previous = cursor.Advance(sample);
-    for (int i = 0; i < 40; ++i) {
+    for (int i = 0; i < 400; ++i) {
         sample.drawUs += 10'000;
         sample.lastSampleUs = sample.lastDisplayUs = sample.drawUs - 1;
         ++sample.sampleCount;
         ++sample.outputId;
         const double position = cursor.Advance(sample);
-        if (i > 10)
-            EXPECT_NEAR(position - previous, 1.0, 0.01);
+        EXPECT_NEAR(position - previous, 1.0, GraphScrollCursor::kMaxCorrection + 1e-9) << "output " << i;
+        if (i >= 350)
+            EXPECT_NEAR(position - previous, 1.0, 0.01) << "output " << i;
         previous = position;
     }
 }

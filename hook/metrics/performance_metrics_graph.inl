@@ -57,6 +57,8 @@ PerformanceMetrics::GraphHistoryFrame PerformanceMetrics::PrepareGraphHistory(in
         ++m_graphOutputs;
     if (result.cursor == m_graphLastPosition)
         ++m_graphDuplicatePositions;
+    else if (m_graphLastPosition >= 0.0 && result.cursor - m_graphLastPosition >= 1.5)
+        ++m_graphJumps;
     m_graphLastPosition = result.cursor;
     if (result.identity != m_graphLastIdentity) {
         ++m_graphHistoryResets;
@@ -67,13 +69,14 @@ PerformanceMetrics::GraphHistoryFrame PerformanceMetrics::PrepareGraphHistory(in
         m_graphLogStartUs = drawUs;
     if (drawUs > m_graphLogStartUs && drawUs - m_graphLogStartUs >= 10'000'000) {
         const uint64_t published = samples >= m_graphLastSampleCount ? samples - m_graphLastSampleCount : 0;
-        HookLogImportant("[OverlayGraph] draws=%llu outputs=%llu samples=%llu samePosition=%llu resets=%llu "
-                         "samplePeriodUs=%.1f displayPeriodUs=%.1f",
+        HookLogImportant("[OverlayGraph] draws=%llu outputs=%llu samples=%llu samePosition=%llu jumps=%llu "
+                         "resets=%llu samplePeriodUs=%.1f displayPeriodUs=%.1f",
                          static_cast<unsigned long long>(m_graphDraws), static_cast<unsigned long long>(m_graphOutputs),
                          static_cast<unsigned long long>(published),
                          static_cast<unsigned long long>(m_graphDuplicatePositions),
+                         static_cast<unsigned long long>(m_graphJumps),
                          static_cast<unsigned long long>(m_graphHistoryResets), samplePeriodUs, displayPeriodUs);
-        m_graphDraws = m_graphOutputs = m_graphDuplicatePositions = m_graphHistoryResets = 0;
+        m_graphDraws = m_graphOutputs = m_graphDuplicatePositions = m_graphJumps = m_graphHistoryResets = 0;
         m_graphLastSampleCount = samples;
         m_graphLogStartUs = drawUs;
     }

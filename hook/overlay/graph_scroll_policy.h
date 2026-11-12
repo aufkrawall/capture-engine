@@ -62,6 +62,8 @@ public:
     // a steady trail instead of sawing between two values.
     static constexpr double kTrailRelaxRate = 0.0005;
     static constexpr double kResyncSlots = 8.0;
+    // Largest share of a slot the cadence cursor adds or removes per draw to pull toward the stream.
+    static constexpr double kMaxCorrection = 0.05;
     // Bounds how much of a dry streak counts as a group. Frame generation
     // groups are small; anything longer is a stall, which must hold the cursor
     // rather than park the plot far back in history.
@@ -132,8 +134,15 @@ public:
         return position_;
     }
 
-    // Predict the display slot the image can reach. Multiple application draws for that slot get the same
-    // position; distinct runtime outputs reserve successive slots even if submitted in one CPU burst.
+    // Display-change samples are scanouts, which application draws do not map onto one to one: a game above the
+    // refresh rate has presents the display never shows, a frame generator submits a whole group of outputs in
+    // one CPU burst. The cursor therefore runs on the clock the game animates its own content with - the draw
+    // time - converted to slots by the measured sample period, and is pulled gently toward the sample stream.
+    // Quantizing a draw to a predicted scanout slot looked exact but was not: GTA's menu presented at ~149 Hz on a
+    // 144 Hz panel while every tenth scanout went unpublished, the predicted grid drifted against the real one and
+    // the graph held one draw and jumped two on ~10% of draws while the game itself scrolled smoothly.
+    // Distinct runtime outputs drawn in one burst are displayed one refresh apart, so each reserves one display
+    // interval of that clock; a repeated output id does not advance.
     double Advance(const GraphCadenceSnapshot& sample) {
         const bool restarted = !cadencePrimed_ || sample.historyIdentity != cadenceHistoryIdentity_ ||
                                sample.sampleCount < lastSampleCount_;
@@ -152,43 +161,51 @@ public:
             lastSampleCount_ = sample.sampleCount;
             return position_;
         }
-        if (sample.outputKind == GraphOutputKind::kDistinctOutput && sample.outputId != 0 &&
-            lastOutputKind_ == GraphOutputKind::kDistinctOutput && sample.outputId == lastOutputId_) {
+        const bool distinct = sample.outputKind == GraphOutputKind::kDistinctOutput && sample.outputId != 0;
+        if (distinct && lastOutputKind_ == GraphOutputKind::kDistinctOutput && sample.outputId == lastOutputId_)
             return position_;
+        const double drawUs = static_cast<double>(sample.drawUs);
+        double outputUs = drawUs;
+        if (distinct && primed_ && lastOutputKind_ == GraphOutputKind::kDistinctOutput) {
+            outputUs = (std::max)(outputUs, lastOutputUs_ + sample.displayIntervalUs);
+            // A missing display stream must not build an unbounded queue of invented output times.
+            const double latest = (std::max)(drawUs, static_cast<double>(sample.lastDisplayUs)) +
+                                  kMaxDryStreak * sample.displayIntervalUs;
+            outputUs = (std::min)(outputUs, latest);
         }
-        // QPC times are published in integral microseconds. Select the first slot strictly after the draw,
-        // comparing in that same domain so rounding a fractional refresh period cannot repeat a slot.
-        double displaySteps = (std::max)(1.0, std::floor((static_cast<double>(sample.drawUs) - sample.lastDisplayUs) /
-                                                        sample.displayIntervalUs));
-        double displayTime = static_cast<double>(sample.lastDisplayUs) + displaySteps * sample.displayIntervalUs;
-        if (std::llround(displayTime) <= sample.drawUs)
-            displayTime += sample.displayIntervalUs;
-        if (sample.outputKind == GraphOutputKind::kDistinctOutput &&
-            lastOutputKind_ == GraphOutputKind::kDistinctOutput && lastOutputId_ != 0) {
-            displayTime = (std::max)(displayTime, lastScheduledDisplayUs_ + sample.displayIntervalUs);
-        }
-        // A missing display stream must not build an unbounded queue of invented output times.
-        const double latestPrediction = (std::max)(static_cast<double>(sample.drawUs),
-                                                    static_cast<double>(sample.lastDisplayUs)) +
-                                        kMaxDryStreak * sample.displayIntervalUs;
-        displayTime = (std::min)(displayTime, latestPrediction);
-        const double ahead = (std::max)(0.0, (displayTime - sample.lastSampleUs) / sample.sampleIntervalUs);
-        const double boundedLead = (std::min)(ahead, static_cast<double>(kMaxDryStreak));
-        trail_ = (std::max)(trail_, kMinTrailSlots + std::ceil(boundedLead));
+        const double lead = (std::max)(0.0, (outputUs - sample.lastSampleUs) / sample.sampleIntervalUs);
+        // The trail covers the largest lead seen, then relaxes: a display stall grows it to the cap, and keeping
+        // that would leave the graph needlessly far behind the stream once scanouts are published again.
+        const double boundedLead = (std::min)(lead, static_cast<double>(kMaxDryStreak));
+        const double requiredTrail = kMinTrailSlots + std::ceil(boundedLead);
+        trail_ = (std::max)(requiredTrail, trail_ + (requiredTrail - trail_) * kTrailRelaxRate);
         const double newest = static_cast<double>(sample.sampleCount) - 2.0;
-        double target = static_cast<double>(sample.sampleCount) - 1.0 + ahead - trail_;
-        target = (std::max)(0.0, (std::min)(target, newest));
+        const double target = (std::max)(0.0, static_cast<double>(sample.sampleCount) - 1.0 + lead - trail_);
         if (!primed_) {
-            position_ = target;
+            position_ = (std::min)(target, newest);
             primed_ = true;
         } else {
-            position_ = (std::max)(position_, target);
-            position_ = (std::min)(position_, newest);
+            // A route handoff changes the draw's phase against the scanout; the first draw of the new kind steps
+            // one displayed frame and the correction absorbs the phase difference without a visible jump.
+            const bool kindChanged = sample.outputKind != lastOutputKind_;
+            const double elapsedUs =
+                kindChanged ? sample.displayIntervalUs : (std::max)(0.0, outputUs - lastOutputUs_);
+            const double error = target - position_;
+            if (error > kResyncSlots) {
+                position_ = target;
+            } else {
+                // Speed only, never direction: a graph that steps backwards reads as a glitch. The correction is
+                // capped so that absorbing a large offset never visibly changes the scroll speed.
+                const double correction =
+                    (std::max)(-kMaxCorrection, (std::min)(kMaxCorrection, kCorrectionRate * error));
+                position_ += (std::max)(0.0, elapsedUs / sample.sampleIntervalUs + correction);
+            }
+            position_ = (std::max)(0.0, (std::min)(position_, newest));
         }
         lastSampleCount_ = sample.sampleCount;
         lastOutputKind_ = sample.outputKind;
         lastOutputId_ = sample.outputId;
-        lastScheduledDisplayUs_ = displayTime;
+        lastOutputUs_ = outputUs;
         return position_;
     }
 
@@ -197,7 +214,7 @@ public:
         cadenceHistoryIdentity_ = 0;
         lastOutputKind_ = GraphOutputKind::kApplicationDraw;
         lastOutputId_ = 0;
-        lastScheduledDisplayUs_ = 0.0;
+        lastOutputUs_ = 0.0;
         primed_ = false;
         position_ = 0.0;
         trail_ = kMinTrailSlots;
@@ -213,7 +230,7 @@ private:
     uint64_t cadenceHistoryIdentity_ = 0;
     GraphOutputKind lastOutputKind_ = GraphOutputKind::kApplicationDraw;
     uint64_t lastOutputId_ = 0;
-    double lastScheduledDisplayUs_ = 0.0;
+    double lastOutputUs_ = 0.0;
     double position_ = 0.0;
     double trail_ = kMinTrailSlots;
     uint64_t lastSampleCount_ = 0;

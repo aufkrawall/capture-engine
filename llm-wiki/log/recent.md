@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-11-12 - Overlay graph judder in GTA's FSR-suspended menu, second cause
+
+- Session 20261112_154352 (0.1.7518, DLSS FG -> FSR FG, menu open): `[OverlayGraph]` samePosition 128-177 per
+  ~1400 draws during the suspend route; source was display-change throughout (presentation only for the first
+  ~10 s before scanouts existed). The game called AMD's proxy Present ~156/s (prework counter 600 in 3.84 s) while
+  the real chain flipped at 144 Hz with FIFO forwarded (sync=1); ~10/s submissions expired unpublished.
+- Cause: the cadence cursor floored each draw onto a predicted scanout grid whose period was the published sample
+  period, not the refresh; draws above the refresh rate mapped two to one slot (hold) and then skipped one (jump).
+- Fix: cadence cursor runs on draw time / sample period (what the game's content uses), correction capped at 5%
+  speed, trail relaxes after a stall. Regression `ApplicationDrawsAboveTheRefreshRateScrollOnTheirOwnClock`
+  (old cursor: 236 holds). `[OverlayGraph]` gained `jumps=` (steps >= 1.5 slots). Pending GTA rerun.
+
 ### 2026-11-12 - Unit-test temp directories: never recreate a deleted name
 
 - Gate 0.1.7517: `CrashSymbolStoreTest` x2 failed with ACCESS_DENIED in `create_directories(<pid dir>/installed)`.

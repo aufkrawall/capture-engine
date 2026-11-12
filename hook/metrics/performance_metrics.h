@@ -319,6 +319,7 @@ private:
     uint64_t m_graphDraws = 0;
     uint64_t m_graphOutputs = 0;
     uint64_t m_graphDuplicatePositions = 0;
+    uint64_t m_graphJumps = 0;  // steps of 1.5 slots or more: the visible counterpart of a hold
     uint64_t m_graphLastIdentity = UINT64_MAX;
     uint64_t m_graphCursorIdentity = UINT64_MAX;
     uint64_t m_graphHistoryResets = 0;

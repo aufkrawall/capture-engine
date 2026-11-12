@@ -778,9 +778,9 @@ millisecond CPU handoff stall in that trace, not CE GPU interference or an FSR/g
   while the screen updated at the display rate. The sawtooth in the line had been masking it; once the line went
   flat, the stepping was the only motion left.
 - `hook/overlay/graph_scroll_policy.h`, owned once per stream by `PerformanceMetrics::PrepareGraphHistory`: presentation
-  timing steps one slot per draw; display timing maps each draw to the display slot it can reach (draws sharing a
-  slot share a position, distinct FG outputs reserve successive slots; 2026-11-12, menu judder). It **never rewinds**
-  and re-arms on a stream restart (source switch, history reset), never on a renderer handoff.
+  steps one slot per draw; display timing runs on the game's own draw-time clock (interval / sample period, pull to
+  the stream capped at 5% speed), distinct FG outputs reserve one display interval each. Never rewinds; re-arms only on
+  a stream restart. Rejected: snapping draws to predicted scanout slots (GTA menu judder, log/recent.md 2026-11-12).
 - To scroll across a burst the cursor must stay far enough behind the newest sample to have somewhere to scroll
   into: a group of N presents drawn back to back needs N-1 slots of already-received samples, plus one for the guard
   sample. That distance is one base-frame interval by construction and **cannot be avoided** - the samples for those
