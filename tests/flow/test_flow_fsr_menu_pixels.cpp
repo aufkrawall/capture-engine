@@ -16,6 +16,23 @@ using ce::flow::fake::OutputPanelObservation;
 namespace fake = ce::flow::fake;
 namespace graph_motion = ce::flow::graph_motion;
 
+// The panel's pixels are judged here: it is drawn at 150% with CE's default font in a 640x360 frame, where the graph
+// moves ~2.7 px per output and clears the Present-chain stand-in's 16 px corner. The history point lies inside the
+// game's HUD element in the frame's bottom-right corner (fsrTestHudWindow, flow_host_fidelityfx.cpp), the region over
+// the panel's side of the frame.
+constexpr UINT kPixelFrameWidth = 640;
+constexpr UINT kPixelFrameHeight = 360;
+constexpr UINT kHudPointX = kPixelFrameWidth - 10;
+constexpr UINT kHudPointY = kPixelFrameHeight - 10;
+constexpr UINT kPanelRegion[4] = {15, 15, 450, 340};
+
+void UsePixelOracleGeometry(GameOptions& options) {
+    options.width = kPixelFrameWidth;
+    options.height = kPixelFrameHeight;
+    options.overlayDpiScale = 1.5f;
+    options.overlayFontSize = 0.0f;
+}
+
 struct PixelOracleReader {
     std::function<uint64_t(uint64_t, OutputPanelObservation*)> readObs;
 
@@ -104,6 +121,7 @@ TEST(FlowFSRMenuPixels, NestedPresenterKeepsOverlayAndHudAcrossSuspension) {
     SetEnvironmentVariableA("CE_FLOW_MAGENTA_GRAPH", "1");
     FlowGame game(CurrentTestName());
     GameOptions options;
+    UsePixelOracleGeometry(options);
     options.streamline = true;
     options.swapchain = SwapchainKind::kNative;
     options.fsrNestedPresenter = true;
@@ -138,8 +156,8 @@ TEST(FlowFSRMenuPixels, NestedPresenterKeepsOverlayAndHudAcrossSuspension) {
     ASSERT_NE(setPoint, nullptr);
     ASSERT_NE(setRegion, nullptr);
     ASSERT_NE(readObs, nullptr);
-    setPoint(630, 350);
-    setRegion(15, 15, 450, 340);
+    setPoint(kHudPointX, kHudPointY);
+    setRegion(kPanelRegion[0], kPanelRegion[1], kPanelRegion[2], kPanelRegion[3]);
     enable(true);
 
     PixelOracleReader oracle{readObs};
@@ -218,6 +236,7 @@ TEST(FlowFSRMenuPixels, DirectAndCallbackFSRKeepFreshOverlayAcrossSuspension) {
     SetEnvironmentVariableA("CE_FLOW_MAGENTA_GRAPH", "1");
     FlowGame game(CurrentTestName());
     GameOptions options;
+    UsePixelOracleGeometry(options);
     options.swapchain = SwapchainKind::kFidelityFX;
     options.fsrNestedPresenter = false;
     options.probeRuntimeOutput = true;
@@ -234,8 +253,8 @@ TEST(FlowFSRMenuPixels, DirectAndCallbackFSRKeepFreshOverlayAcrossSuspension) {
     const auto readObs = [&probe](uint64_t ordinal, OutputPanelObservation* out) {
         return probe.ReadObservation(ordinal, out);
     };
-    probe.SetHistoryPoint(630, 350);
-    probe.SetHistoryRegion(15, 15, 450, 340);
+    probe.SetHistoryPoint(kHudPointX, kHudPointY);
+    probe.SetHistoryRegion(kPanelRegion[0], kPanelRegion[1], kPanelRegion[2], kPanelRegion[3]);
     probe.Enable(true);
 
     PixelOracleReader oracle{readObs};

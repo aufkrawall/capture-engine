@@ -87,8 +87,8 @@ void ExpectACapturedFrame(const ScreenshotResult& result, uint64_t requestId, Fl
         << "error " << result.error << "; logs: " << game.LogDirectory();
     EXPECT_EQ(static_cast<uint32_t>(result.payload), static_cast<uint32_t>(ScreenshotPayloadKind::RawV2));
     EXPECT_EQ(result.header.requestId, requestId);
-    EXPECT_EQ(result.header.width, 640u);
-    EXPECT_EQ(result.header.height, 360u);
+    EXPECT_EQ(result.header.width, kFrameWidth);
+    EXPECT_EQ(result.header.height, kFrameHeight);
     ASSERT_EQ(result.pixels.size(), result.header.payloadSize);
     ASSERT_FALSE(result.pixels.empty());
     bool anyPixel = false;

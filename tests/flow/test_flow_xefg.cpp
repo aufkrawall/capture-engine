@@ -247,10 +247,10 @@ TEST(FlowXeFG, ResizeKeepsTheOverlayOnTheRuntimesQueue) {
     ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
     ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
-    ASSERT_TRUE(game.ResizeSwapchain(800, 450)) << game.Error();
+    ASSERT_TRUE(game.ResizeSwapchain(kFrameWidth + 64, kFrameHeight + 40)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ExpectPublished(game, kXeFGStatusType, 2, "XeFG on after resize");
-    ASSERT_TRUE(game.ResizeSwapchain(640, 360)) << game.Error();
+    ASSERT_TRUE(game.ResizeSwapchain(kFrameWidth, kFrameHeight)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();

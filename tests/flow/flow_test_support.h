@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <string>
 
 #include "tests/flow/flow_host.h"
@@ -47,6 +48,33 @@ inline void ExpectPostProcessAccounted(const FlowGame& game) {
                 static_cast<unsigned long long>(postProcess.routeApplied));
 }
 
+// Every panel CE laid out in the default frame (its "[Overlay] Panel:" line) fits it, neither reflowed nor clipped:
+// the frame and the pinned panel scale (kFrameWidth, flow_host.h) keep CE's default layout. Returns how many panel
+// layouts in the default frame the hook log names (a dropped log line can only make it see fewer).
+inline int ExpectPanelsFitTheDefaultFrame(const FlowGame& game) {
+    std::ifstream log(game.LogDirectory() + "/hook_debug.log");
+    int checked = 0;
+    for (std::string line; std::getline(log, line);) {
+        const size_t at = line.find("[Overlay] Panel: ");
+        if (at == std::string::npos)
+            continue;
+        int layout = 0, viewportWidth = 0, viewportHeight = 0;
+        float width = 0, height = 0, x = 0, y = 0, available = 0;
+        if (std::sscanf(line.c_str() + at, "[Overlay] Panel: layout=%d size=%fx%f at=%f,%f viewport=%dx%d available=%f",
+                        &layout, &width, &height, &x, &y, &viewportWidth, &viewportHeight, &available) != 8) {
+            ADD_FAILURE() << "unreadable panel line: " << line;
+            continue;
+        }
+        if (viewportWidth != static_cast<int>(kFrameWidth) || viewportHeight != static_cast<int>(kFrameHeight))
+            continue;
+        ++checked;
+        EXPECT_LE(width, available) << "the panel reflowed in the default frame: " << line;
+        EXPECT_LE(x + width, static_cast<float>(viewportWidth)) << "the panel left the default frame: " << line;
+        EXPECT_LE(y + height, static_cast<float>(viewportHeight)) << "the panel left the default frame: " << line;
+    }
+    return checked;
+}
+
 // Only cold-start scenarios may supply the measured presents before CE's first visible draw. Later gaps must
 // always remain in the ledger; the default contract still requires coverage from the very first physical present.
 inline void ExpectEveryPresentCoveredOnce(const FlowGame& game, uint64_t coldStartupPresents = 0) {
@@ -60,6 +88,7 @@ inline void ExpectEveryPresentCoveredOnce(const FlowGame& game, uint64_t coldSta
     EXPECT_EQ(coverage.outputOwnerViolations, 0u)
         << "of " << coverage.outputFrameChecks << " runtime outputs; logs: " << game.LogDirectory();
     ExpectPostProcessAccounted(game);
+    ExpectPanelsFitTheDefaultFrame(game);
 }
 
 // Debug-layer failures ExpectNoDebugLayerErrors already reported: the teardown check (flow_test_environment.cpp)

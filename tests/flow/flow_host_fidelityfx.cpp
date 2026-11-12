@@ -424,7 +424,9 @@ void FlowGame::SubmitFidelityFXFrame() {
             const float transparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
             list_->ClearRenderTargetView(rtv, transparent, 0, nullptr);
             const float hudColor[4] = {ffx.premultipliedUi ? 0.5f : 1.0f, 0.0f, 0.0f, 0.5f};
-            const D3D12_RECT hudRect{600, 320, 680, 400};
+            // A HUD element in the frame's bottom-right corner, half of it past the edge, far from the panel.
+            const auto w = static_cast<LONG>(width_), h = static_cast<LONG>(height_);
+            const D3D12_RECT hudRect{w - 40, h - 40, w + 40, h + 40};
             list_->ClearRenderTargetView(rtv, hudColor, 1, &hudRect);
         } else {
             const float red = frame_ % 2 == 0 ? 1.0f : 0.0f;

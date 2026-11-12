@@ -14,6 +14,9 @@ TEST(FlowBaseline, OverlayCoversEveryPresentWithoutFrameGeneration) {
 
     EXPECT_EQ(game.PhysicalPresents(), 120u);
     ce::flow::ExpectEveryPresentCoveredOnce(game);
+    // The suite's frame holds the panel (ExpectPanelsFitTheDefaultFrame): the check must have seen it here.
+    EXPECT_GE(ce::flow::ExpectPanelsFitTheDefaultFrame(game), 1)
+        << "no panel layout logged; logs: " << game.LogDirectory();
     ce::flow::ExpectNoDebugLayerErrors();
 
     const CEFlowPublishedFG published = game.PublishedFG();

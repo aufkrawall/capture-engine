@@ -105,6 +105,14 @@ out of `unit_tests.exe` (`tests/test_stubs.cpp`). Design (2026-10-03):
   after a specified count. Creation/first-draw/stop/retirement logs identify each layer and its target format.
   These model COM queue/swapchain forwarding and submission order; they do not reproduce wrapped devices,
   real effect shaders, temporal ghosting or the vendors' actual hook implementations. Hardware retests remain necessary.
+- Scenario geometry (2026-11-12, `flow_host.h`): default frame `kFrameWidth` x `kFrameHeight` = 256x160; the overlay
+  at 100% scale (`CEFlow_SetOverlayDpiScale`, a flow-build-only seam in `overlay_adapter.cpp`; before, the panel
+  followed the monitor of the PC running the tests) and CE's minimum 8 px font (`GameOptions::overlayDpiScale`,
+  `overlayFontSize`, applied before the device). The hero panel (~203x143 at 10,10) fits unreflowed;
+  `ExpectPanelsFitTheDefaultFrame` (in `ExpectEveryPresentCoveredOnce`) fails on any `[Overlay] Panel:` line in the
+  default frame wider than `available` or outside it. `FlowFSRMenuPixels` keeps 640x360 at 150% with the default
+  font: its graph oracle needs ~2.7 px per output, and its panel must clear the ReShade stand-in's 16x16 magenta
+  corner, which the probe would count as graph. Pixel coordinates in scenarios follow the frame size.
 - Native cold-start scenarios (`test_flow_present_chain_overlays.cpp`) render until the first accounted draw,
   bounded to 300 virtual-clock frames, and report the measured pre-initialization presents. Only that prefix may
   be excluded from the tally equality; every later physical present must be accounted and covered exactly once.

@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "hook/overlay/overlay_font_policy.h"
 #include "tests/flow/flow_api.h"
 
 namespace ce::flow {
@@ -76,6 +77,16 @@ struct PresentChainOverlay {
     uint32_t drawPresents = 0;  // 0: draws at every Present (ReShade's effects); N: at the first N only (a toast)
 };
 
+// The default back buffer. WARP runs every pass of every output on the CPU, and CE's display-gamma pass, the overlay
+// and the runtimes' copies cost per pixel: at 640x360 they took ~4x the CPU (2026-11-12). This is the smallest frame
+// that holds CE's default panel (hero layout, GameOptions::overlayDpiScale and overlayFontSize) with room to spare, so
+// the layout never reflows (ExpectPanelsFitTheDefaultFrame).
+inline constexpr UINT kFrameWidth = 256;
+inline constexpr UINT kFrameHeight = 160;
+// The overlay's default display scale and font: CE's smallest panel, the same on every PC whatever its monitor's scale.
+inline constexpr float kOverlayDpiScale = 1.0f;
+inline constexpr float kOverlayFontSize = static_cast<float>(ce::overlay_font::kMinBasePixelSize);
+
 struct GameOptions {
     // Initialize Streamline like a DLSS-G game: slInit before the device, the device from the interposer and
     // slSetD3DDevice; Streamline swapchains come from its DXGI factory proxy and get a frame token, the
@@ -126,8 +137,13 @@ struct GameOptions {
     // The game's back buffers: HDR10 is R10G10B10A2 with G2084/P2020, scRGB R16G16B16A16_FLOAT with G10/P709.
     DXGI_FORMAT backBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-    UINT width = 640;
-    UINT height = 360;
+    UINT width = kFrameWidth;
+    UINT height = kFrameHeight;
+    // The overlay's display scale and font size at 100% (the overlay's font_size; 0 = CE's default), applied before the
+    // device exists: CE reads both when its overlay renderer starts. Scenarios that judge the panel's pixels draw it
+    // larger in a larger frame (FlowFSRMenuPixels: the graph then moves ~2.7 px per output, not ~1).
+    float overlayDpiScale = kOverlayDpiScale;
+    float overlayFontSize = kOverlayFontSize;
 };
 
 struct StreamlineGame;  // flow_host_streamline.cpp
@@ -356,6 +372,7 @@ private:
     CEFlow_GetPostSLLifecycle_t getPostSLLifecycle_ = nullptr;
     CEFlow_ProbeDescFreeTargetFormats_t probeDescFreeTargetFormats_ = nullptr;
     CEFlow_TryConfirmPostSLEpoch_t tryConfirmPostSLEpoch_ = nullptr;
+    CEFlow_SetOverlayDpiScale_t setOverlayDpiScale_ = nullptr;
     CEFlow_AdvanceClock_t advanceClock_ = nullptr;
     CEFlow_ClockMicroseconds_t clockMicroseconds_ = nullptr;
     int64_t clockOrigin_ = 0;

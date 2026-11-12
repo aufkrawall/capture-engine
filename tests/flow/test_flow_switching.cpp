@@ -9,6 +9,10 @@ namespace {
 
 using namespace ce::flow;
 
+// A point of the game's own image, clear of the overlay panel and of the Present-chain stand-ins' corner.
+constexpr UINT kSceneX = kFrameWidth - 16;
+constexpr UINT kSceneY = kFrameHeight - 16;
+
 void CheckFFXUiComposition(bool premultiplied) {
     SetEnvironmentVariableA("CE_FLOW_FFX_COMPOSE_UI", "1");
     FlowGame game(CurrentTestName());
@@ -37,12 +41,12 @@ void CheckFFXUiComposition(bool premultiplied) {
     }
     uint32_t pixel = 0;
     UINT index = 0;
-    ASSERT_GT(read(500, 300, &pixel, &index), 0u);
+    ASSERT_GT(read(kSceneX, kSceneY, &pixel, &index), 0u);
     EXPECT_GE(pixel & 255u, 125u);
     EXPECT_LE(pixel & 255u, 155u);
     ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(4)) << game.Error();
-    ASSERT_GT(read(500, 300, &pixel, &index), 0u);
+    ASSERT_GT(read(kSceneX, kSceneY, &pixel, &index), 0u);
     EXPECT_GE(pixel & 255u, 125u);
     EXPECT_LE(pixel & 255u, 155u);
     enable(false);
@@ -80,7 +84,7 @@ void CheckFFXBufferedUiKeepsTheScheduledFramePixels(bool reshade) {
     ASSERT_NE(enable, nullptr);
     ASSERT_NE(setPoint, nullptr);
     ASSERT_NE(read, nullptr);
-    setPoint(500, 300);
+    setPoint(kSceneX, kSceneY);
     enable(true);
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(16)) << game.Error();
@@ -136,10 +140,10 @@ TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferItPresented) {
     ASSERT_TRUE(game.RenderFrames(1)) << game.Error();
     uint32_t first = 0, second = 0;
     UINT firstIndex = 0, secondIndex = 0;
-    const uint64_t firstSerial = read(500, 300, &first, &firstIndex);
+    const uint64_t firstSerial = read(kSceneX, kSceneY, &first, &firstIndex);
     ASSERT_GT(firstSerial, 0u);
     ASSERT_TRUE(game.RenderFrames(8, FlowGame::PresentMethod::kPresent1)) << game.Error();
-    const uint64_t secondSerial = read(500, 300, &second, &secondIndex);
+    const uint64_t secondSerial = read(kSceneX, kSceneY, &second, &secondIndex);
     EXPECT_GT(secondSerial, firstSerial);
     EXPECT_NE(second, first);  // The game's green scene component changes every frame.
     EXPECT_LT(firstIndex, 7u);
@@ -149,13 +153,13 @@ TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferItPresented) {
     ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
     uint32_t activePixel = 0;
     UINT activeIndex = 0;
-    const uint64_t activeSerial = read(500, 300, &activePixel, &activeIndex);
+    const uint64_t activeSerial = read(kSceneX, kSceneY, &activePixel, &activeIndex);
     EXPECT_GT(activeSerial, secondSerial);
     ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(4)) << game.Error();
     uint32_t suspendedPixel = 0;
     UINT suspendedIndex = 0;
-    EXPECT_GT(read(500, 300, &suspendedPixel, &suspendedIndex), activeSerial);
+    EXPECT_GT(read(kSceneX, kSceneY, &suspendedPixel, &suspendedIndex), activeSerial);
     enable(false);
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
@@ -434,7 +438,7 @@ TEST(FlowSwitch, DisabledStreamlineReplacementOnNewQueueKeepsEveryOutput) {
             ExpectPublished(game, 0, 1, "disabled replacement");
         }
         previousToken = token;
-        ASSERT_TRUE(game.ResizeSwapchain(640, 360)) << game.Error();
+        ASSERT_TRUE(game.ResizeSwapchain(kFrameWidth, kFrameHeight)) << game.Error();
         EXPECT_EQ(inspectBinding(native, &registeredQueue, true), 0u);
         EXPECT_EQ(candidateToken(native), 0u);
         EXPECT_FALSE(tryPromote(native, presentQueue, token));

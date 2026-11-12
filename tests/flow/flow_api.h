@@ -172,6 +172,7 @@ using CEFlow_Init_t = bool (*)(const char* configPath, SharedMemoryLayout* hostM
                               CEFlowEarlyLoaderProbe* earlyLoaderProbe);
 using CEFlow_PumpHookThread_t = void (*)();
 using CEFlow_SetForegroundWindow_t = void (*)(HWND window);
+using CEFlow_SetOverlayDpiScale_t = void (*)(float scale);
 using CEFlow_GetOverlayCoverage_t = void (*)(CEFlowOverlayCoverage* out);
 using CEFlow_GetPublishedFG_t = void (*)(CEFlowPublishedFG* out);
 using CEFlow_GetPostProcess_t = void (*)(CEFlowPostProcess* out);

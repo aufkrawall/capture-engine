@@ -154,11 +154,14 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
+    setOverlayDpiScale_ =
+        reinterpret_cast<CEFlow_SetOverlayDpiScale_t>(GetProcAddress(hook_, "CEFlow_SetOverlayDpiScale"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !getPostProcess_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
         !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_ ||
-        !releasePresentVTableHooks_ || !installPresentVTableHooks_ || !probeDescFreeTargetFormats_) {
+        !releasePresentVTableHooks_ || !installPresentVTableHooks_ || !probeDescFreeTargetFormats_ ||
+        !setOverlayDpiScale_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -169,6 +172,10 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     AppConfig hostConfig;
     LoadConfig(configPath, hostConfig);
     hostConfig.graphics.postProcessDisplayGamma = "srgb";
+    // WARP rasterizes everything CE draws on the CPU, so a scenario costs what its outputs' pixels cost: CE's smallest
+    // panel, whatever the PC's monitor scale, keeps its default layout inside the small default frame (kFrameWidth).
+    hostConfig.overlay.fontSize = kOverlayFontSize;
+    setOverlayDpiScale_(kOverlayDpiScale);
     // Pixel scenarios give the frame-time graph a color nothing else in the panel has (output_pixel_probe.h).
     char graphColor[8] = {};
     if (GetEnvironmentVariableA("CE_FLOW_MAGENTA_GRAPH", graphColor, sizeof(graphColor)) != 0 && graphColor[0] == '1')
@@ -246,6 +253,10 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     frameIntervalSpikeDuration_ = options.frameIntervalSpikeDuration;
     frameIntervalSpikeMicroseconds_ = options.frameIntervalSpikeMicroseconds;
     xefgFromSwapchain_ = options.xefgFromSwapchain;
+    setOverlayDpiScale_(options.overlayDpiScale);
+    hostMemory_->BeginWriteOverlayConfig();
+    hostMemory_->overlayConfig.fontSize = options.overlayFontSize;
+    hostMemory_->EndWriteOverlayConfig();
     fsrWrappedGameQueue_ = options.fsrWrappedGameQueue;
     fsrToolRuntimeCopy_ = options.fsrToolRuntimeCopy;
     fsrToolFFXInputs_ = options.fsrToolFFXInputs;

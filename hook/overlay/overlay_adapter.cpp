@@ -11,7 +11,25 @@ void OverlayAdapter::RememberDpiReferenceHwnd(void* hwnd) {
     }
 }
 
+#ifdef CE_FLOW_TEST
+namespace {
+// The FG flow harness pins the overlay's display scale (0 = the monitor's): the panel's size, and with it the frame a
+// scenario needs to hold the panel without reflowing it, then no longer depends on the PC that runs the tests.
+std::atomic<float> g_FlowOverlayDpiScale{0.0f};
+}  // namespace
+
+extern "C" __declspec(dllexport) void CEFlow_SetOverlayDpiScale(float scale) {
+    g_FlowOverlayDpiScale.store(scale, std::memory_order_release);
+}
+#endif
+
 static float GetWindowsDpiScale(HWND targetHwnd) {
+#ifdef CE_FLOW_TEST
+    if (const float pinned = g_FlowOverlayDpiScale.load(std::memory_order_acquire); pinned > 0.0f) {
+        HookLogImportant("[Overlay] DPI scale pinned by the flow harness: hwnd=%p scale=%.2f", targetHwnd, pinned);
+        return pinned;
+    }
+#endif
     // The overlay draws in the swapchain's physical pixels. The nearest monitor's
     // effective DPI is therefore the display truth; a game window can report a
     // DPI-virtualized value (commonly 96) when the game is not per-monitor aware.
