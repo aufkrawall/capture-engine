@@ -9,6 +9,7 @@
 
 #include "runtime/inject/launch_command.h"
 #include "runtime/inject/target_launcher.h"
+#include "scoped_test_directory.h"
 
 // Launches go through a fake injector. The processes that do get created are copies of cmd.exe that
 // exit immediately (`/c exit 0`), placed in a folder with a non-ASCII name; no game, hook or real
@@ -66,15 +67,17 @@ private:
 class TargetLauncherTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        root_ = fs::temp_directory_path() / (L"ce_target_launcher_" + std::to_wstring(GetCurrentProcessId()));
+        // A fresh directory per test: the launched copies of cmd.exe can keep the previous test's directory
+        // delete-pending, and recreating that name failed with ACCESS_DENIED (see scoped_test_directory.h).
+        scoped_ = std::make_unique<ce::test_support::ScopedTestDirectory>("ce_target_launcher");
+        root_ = scoped_->path();
         // Outside every Western code page: U+00DC, then CJK ("game" in Chinese).
         directory_ = root_ / L"Spiele \u00DC\u6E38\u620F";
         fs::create_directories(directory_);
     }
 
     void TearDown() override {
-        std::error_code ignored;
-        fs::remove_all(root_, ignored);
+        scoped_.reset();
     }
 
     // A harmless program: cmd.exe under another name, in the non-ASCII folder.
@@ -104,6 +107,7 @@ protected:
         CloseHandle(process);
     }
 
+    std::unique_ptr<ce::test_support::ScopedTestDirectory> scoped_;
     fs::path root_;
     fs::path directory_;
 };

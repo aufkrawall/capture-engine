@@ -4,9 +4,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 
 #include "common/crash/crash_symbol_store.h"
+#include "scoped_test_directory.h"
 
 namespace fs = std::filesystem;
 
@@ -14,20 +16,16 @@ namespace {
 
 class CrashSymbolStoreTest : public ::testing::Test {
 protected:
+    // Each test owns a fresh directory: reusing one name per process failed with ACCESS_DENIED when the previous
+    // test's directory was still delete-pending (see scoped_test_directory.h).
     void SetUp() override {
-        wchar_t tempPath[MAX_PATH] = {};
-        ASSERT_GT(GetTempPathW(MAX_PATH, tempPath), 0u);
-        root_ = fs::path(tempPath) / (L"ce_symbol_store_test_" + std::to_wstring(GetCurrentProcessId()));
-        std::error_code ec;
-        fs::remove_all(root_, ec);
+        directory_ = std::make_unique<ce::test_support::ScopedTestDirectory>("ce_symbol_store_test");
+        root_ = directory_->path();
         ASSERT_TRUE(fs::create_directories(root_ / L"installed"));
         store_ = ce::crash_symbols::StoreDirForLogsRoot(root_ / L"logs");
     }
 
-    void TearDown() override {
-        std::error_code ec;
-        fs::remove_all(root_, ec);
-    }
+    void TearDown() override { directory_.reset(); }
 
     fs::path WriteInstalled(const wchar_t* name, const std::string& contents) {
         const fs::path path = root_ / L"installed" / name;
@@ -40,6 +38,7 @@ protected:
         return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     }
 
+    std::unique_ptr<ce::test_support::ScopedTestDirectory> directory_;
     fs::path root_;
     fs::path store_;
 };

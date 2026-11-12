@@ -2,12 +2,14 @@
 #include <windows.h>
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
 
 #include "hook/overrides/published_graphics_config.h"
 #include "hook/runtime/dll_utils.h"
 #include "hook/runtime/runtime_override_paths.h"
+#include "scoped_test_directory.h"
 
 namespace {
 
@@ -42,8 +44,9 @@ class RuntimeOverridePathFileTest : public testing::Test {
 protected:
     void SetUp() override {
         // U+00FC plus a CJK character: outside cp1252, so no ANSI API can name it.
-        dir_ = std::filesystem::temp_directory_path() /
-               (L"ce_override_\u00FC\u65E5_" + std::to_wstring(GetCurrentProcessId()));
+        // Inside an exclusive parent, so a delete-pending directory of an earlier run cannot block this one.
+        scoped_ = std::make_unique<ce::test_support::ScopedTestDirectory>("ce_override");
+        dir_ = scoped_->path() / L"ce_override_\u00FC\u65E5";
         std::error_code error;
         std::filesystem::create_directories(dir_, error);
         ASSERT_FALSE(error) << error.message();
@@ -53,10 +56,8 @@ protected:
                                    std::filesystem::copy_options::overwrite_existing, error);
         ASSERT_FALSE(error) << error.message();
     }
-    void TearDown() override {
-        std::error_code error;
-        std::filesystem::remove_all(dir_, error);
-    }
+    void TearDown() override { scoped_.reset(); }
+    std::unique_ptr<ce::test_support::ScopedTestDirectory> scoped_;
     std::filesystem::path dir_;
 };
 

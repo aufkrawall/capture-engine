@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-12 - Unit-test temp directories: never recreate a deleted name
+
+- Gate 0.1.7517: `CrashSymbolStoreTest` x2 failed with ACCESS_DENIED in `create_directories(<pid dir>/installed)`.
+  libc++'s `std::filesystem::remove_all` deletes directories with the legacy delete-on-close disposition, so while
+  any other handle is open (Defender scanning the files just written, a just-exited child) the name stays
+  delete-pending and creating it again fails with ERROR_ACCESS_DENIED (plain `RemoveDirectoryW` uses POSIX
+  semantics here and does not). Proven in `ScopedTestDirectoryTest.AHandleHeldOnADeletedDirectoryNeverBlocksTheNextOne`.
+- Rule: fixtures take a fresh `ce::test_support::ScopedTestDirectory` (`tests/scoped_test_directory.h`) per test,
+  never one fixed per-process name deleted in TearDown and recreated in SetUp. Converted: crash symbol store,
+  target launcher, runtime override paths. The helper skips a delete-pending leftover of an earlier same-pid run.
+
 ### 2026-11-12 - Menu (FSR suspended) overlay graph judder: draws are not displayed frames
 
 - GTA `20261112_030715` (0.1.7516, `source=display-change`): in the menu AMD suspends FSR FG, display timing reports
