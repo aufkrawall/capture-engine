@@ -234,6 +234,7 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
         return false;
     }
 
+    const GraphOutputContext graphOutput = NextGraphOutput();
     auto renderOverlayToResource = [&](ID3D12Resource* targetResource, D3D12_RESOURCE_STATES targetState,
                                        const char* targetName) -> bool {
         if (!targetResource) {
@@ -264,7 +265,7 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
         dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI(Dx12OverlayApiLabel().c_str());
         dx12_hook_g_FFXPresentOverlayAdapter.SetDX12RenderTarget(cmdList, reinterpret_cast<void*>(rtvHandle.ptr));
         dx12_hook_g_FFXPresentOverlayAdapter.RenderOverlay(static_cast<int>(targetDesc.Width),
-                                                 static_cast<int>(targetDesc.Height));
+                                                           static_cast<int>(targetDesc.Height), graphOutput);
 
         TransitionResourceIfNeeded(cmdList, targetResource, D3D12_RESOURCE_STATE_RENDER_TARGET, targetState);
 

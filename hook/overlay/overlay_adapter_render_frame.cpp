@@ -33,7 +33,7 @@ void OverlayAdapter::NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t el
     lastFrameKindLogTime = now;
 }
 
-void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
+void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight, GraphOutputContext graphOutput) {
     const int64_t entryUs = PerfLogger::GetQpcUs();
     std::lock_guard<std::mutex> lock(stateMutex);
     static int renderLogCount = 0;
@@ -474,7 +474,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     GraphFrame graphFrame;
     const int64_t layoutDoneUs = PerfLogger::GetQpcUs();
     if (showGraph)
-        PrepareGraphFrame(graphFrame);
+        PrepareGraphFrame(graphFrame, currentQpcUs, graphOutput);
     const int64_t graphDoneUs = PerfLogger::GetQpcUs();
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);

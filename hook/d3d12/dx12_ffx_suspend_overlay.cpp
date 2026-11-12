@@ -161,7 +161,8 @@ RenderOutcome RenderWithOutcome(const RenderRequest& request) {
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
                       request.renderOverlay, request.applyPostProcess, request.routeName, request.submitCommandList,
                       request.signalFence, request.embeddedInExistingBatch, request.reservedSlot,
-                      request.submitPreparedCommandLists, request.separatePostProcess, request.precedingCommandList);
+                      request.submitPreparedCommandLists, request.separatePostProcess, request.precedingCommandList,
+                      request.graphOutput);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");
         return RenderOutcome::kRendered;

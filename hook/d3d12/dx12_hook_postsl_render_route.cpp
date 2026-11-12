@@ -492,6 +492,7 @@ if (willRender) {
     }
 }
 if (willRender) {
+    const GraphOutputContext graphOutput = cachedSLFGActive ? NextGraphOutput() : GraphOutputContext{};
     if (ce::dx12_overlay_policy::ShouldSyntheticPostSLRefreshMetrics(cachedSLFGActive, processFrameRecentlySeen)) {
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             perf->Update(PerfLogger::GetQpcUs());
@@ -577,7 +578,7 @@ if (willRender) {
         dx12_hook_s_descFreeCmdList = list;
         dx12_hook_s_descFreeRtv = dx12_hook_g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
-        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
+        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight, graphOutput);
         dx12_hook_s_descFreeCmdList = nullptr;
 
         D3D12_RESOURCE_BARRIER toCopySource = {};
@@ -627,7 +628,7 @@ if (willRender) {
         dx12_hook_s_descFreeCmdList = list;
         dx12_hook_s_descFreeRtv = rtvHandle;
         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
-        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
+        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight, graphOutput);
         dx12_hook_s_descFreeCmdList = nullptr;
     }
     rendered = true;

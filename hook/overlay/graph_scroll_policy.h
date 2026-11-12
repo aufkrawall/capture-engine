@@ -1,6 +1,33 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstdint>
+
+enum class GraphOutputKind { kApplicationDraw, kDistinctOutput };
+struct GraphOutputContext {
+    GraphOutputKind kind = GraphOutputKind::kApplicationDraw;
+    uint64_t outputId = 0;
+};
+inline GraphOutputContext NextGraphOutput() {
+    static std::atomic<uint64_t> next{1};
+    return {GraphOutputKind::kDistinctOutput, next.fetch_add(1, std::memory_order_relaxed)};
+}
+
+// The time values use the display timing stream's QPC microsecond domain. The measured sample values are never
+// modified: this snapshot only associates a horizontal graph position with the output being rendered.
+struct GraphCadenceSnapshot {
+    uint64_t historyIdentity = 0;
+    uint64_t sampleCount = 0;
+    int64_t lastSampleUs = 0;
+    double sampleIntervalUs = 0.0;
+    int64_t lastDisplayUs = 0;
+    double displayIntervalUs = 0.0;
+    int64_t drawUs = 0;
+    GraphOutputKind outputKind = GraphOutputKind::kApplicationDraw;
+    uint64_t outputId = 0;
+};
 
 // A scrolling graph advances one slot per drawn frame. That is automatic while
 // every drawn frame produces exactly one sample, which is what presentation
@@ -105,7 +132,72 @@ public:
         return position_;
     }
 
+    // Predict the display slot the image can reach. Multiple application draws for that slot get the same
+    // position; distinct runtime outputs reserve successive slots even if submitted in one CPU burst.
+    double Advance(const GraphCadenceSnapshot& sample) {
+        const bool restarted = !cadencePrimed_ || sample.historyIdentity != cadenceHistoryIdentity_ ||
+                               sample.sampleCount < lastSampleCount_;
+        if (restarted) {
+            Reset();
+            cadencePrimed_ = true;
+            cadenceHistoryIdentity_ = sample.historyIdentity;
+        }
+        if (sample.sampleCount < 2) {
+            lastSampleCount_ = sample.sampleCount;
+            return 0.0;
+        }
+        if (sample.lastSampleUs <= 0 || sample.lastDisplayUs <= 0 || sample.drawUs <= 0 ||
+            sample.sampleIntervalUs <= 0.0 || sample.displayIntervalUs <= 0.0) {
+            // Without a cadence there is no evidence that a draw represents a new display. Hold within history.
+            lastSampleCount_ = sample.sampleCount;
+            return position_;
+        }
+        if (sample.outputKind == GraphOutputKind::kDistinctOutput && sample.outputId != 0 &&
+            lastOutputKind_ == GraphOutputKind::kDistinctOutput && sample.outputId == lastOutputId_) {
+            return position_;
+        }
+        // QPC times are published in integral microseconds. Select the first slot strictly after the draw,
+        // comparing in that same domain so rounding a fractional refresh period cannot repeat a slot.
+        double displaySteps = (std::max)(1.0, std::floor((static_cast<double>(sample.drawUs) - sample.lastDisplayUs) /
+                                                        sample.displayIntervalUs));
+        double displayTime = static_cast<double>(sample.lastDisplayUs) + displaySteps * sample.displayIntervalUs;
+        if (std::llround(displayTime) <= sample.drawUs)
+            displayTime += sample.displayIntervalUs;
+        if (sample.outputKind == GraphOutputKind::kDistinctOutput &&
+            lastOutputKind_ == GraphOutputKind::kDistinctOutput && lastOutputId_ != 0) {
+            displayTime = (std::max)(displayTime, lastScheduledDisplayUs_ + sample.displayIntervalUs);
+        }
+        // A missing display stream must not build an unbounded queue of invented output times.
+        const double latestPrediction = (std::max)(static_cast<double>(sample.drawUs),
+                                                    static_cast<double>(sample.lastDisplayUs)) +
+                                        kMaxDryStreak * sample.displayIntervalUs;
+        displayTime = (std::min)(displayTime, latestPrediction);
+        const double ahead = (std::max)(0.0, (displayTime - sample.lastSampleUs) / sample.sampleIntervalUs);
+        const double boundedLead = (std::min)(ahead, static_cast<double>(kMaxDryStreak));
+        trail_ = (std::max)(trail_, kMinTrailSlots + std::ceil(boundedLead));
+        const double newest = static_cast<double>(sample.sampleCount) - 2.0;
+        double target = static_cast<double>(sample.sampleCount) - 1.0 + ahead - trail_;
+        target = (std::max)(0.0, (std::min)(target, newest));
+        if (!primed_) {
+            position_ = target;
+            primed_ = true;
+        } else {
+            position_ = (std::max)(position_, target);
+            position_ = (std::min)(position_, newest);
+        }
+        lastSampleCount_ = sample.sampleCount;
+        lastOutputKind_ = sample.outputKind;
+        lastOutputId_ = sample.outputId;
+        lastScheduledDisplayUs_ = displayTime;
+        return position_;
+    }
+
     void Reset() {
+        cadencePrimed_ = false;
+        cadenceHistoryIdentity_ = 0;
+        lastOutputKind_ = GraphOutputKind::kApplicationDraw;
+        lastOutputId_ = 0;
+        lastScheduledDisplayUs_ = 0.0;
         primed_ = false;
         position_ = 0.0;
         trail_ = kMinTrailSlots;
@@ -117,6 +209,11 @@ public:
     double trail() const noexcept { return trail_; }
 
 private:
+    bool cadencePrimed_ = false;
+    uint64_t cadenceHistoryIdentity_ = 0;
+    GraphOutputKind lastOutputKind_ = GraphOutputKind::kApplicationDraw;
+    uint64_t lastOutputId_ = 0;
+    double lastScheduledDisplayUs_ = 0.0;
     double position_ = 0.0;
     double trail_ = kMinTrailSlots;
     uint64_t lastSampleCount_ = 0;

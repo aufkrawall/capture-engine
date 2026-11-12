@@ -3,6 +3,8 @@
 #include <d3d12.h>
 #include <dxgi.h>
 
+#include "hook/overlay/graph_scroll_policy.h"
+
 namespace ce::dx12_ffx_suspend_overlay {
 
 using SubmitCommandListCallback = bool (*)(ID3D12CommandQueue* queue, ID3D12CommandList* commandList);
@@ -23,6 +25,7 @@ struct RenderRequest {
     // False records only the requested clear/transitions, or only the inline completion marker when clear is
     // also false. The FSR handoffs use a marker-only submit to prove the new route before it may blend pixels.
     bool renderOverlay = true;
+    GraphOutputContext graphOutput;
     // True only when targetResource (or the proxy's current backbuffer) is a final presented output backbuffer
     // owned by this route. Must remain false for FFX UI textures and marker-only activation probes.
     bool applyPostProcess = false;

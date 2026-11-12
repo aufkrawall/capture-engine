@@ -116,7 +116,7 @@ public:
     bool HasPendingDX12Resources() const;
 
     // Render the overlay (called after BeginFrame in hook's render path)
-    void RenderOverlay(int viewportWidth, int viewportHeight);
+    void RenderOverlay(int viewportWidth, int viewportHeight, GraphOutputContext graphOutput = {});
     // Frames drawn since the last cost line: full builds, graph-only redraws, cached replays.
     uint64_t FullFramesForTest() const {
         return frameKinds.full;
@@ -204,7 +204,7 @@ private:
         bool labelsChanged = false;  // the 2 s max/average labels were recomputed
     };
     static const char* FrameTimingLabel(PerformanceMetrics::FrameTimingState state);
-    void PrepareGraphFrame(GraphFrame& graph);
+    void PrepareGraphFrame(GraphFrame& graph, int64_t drawUs, GraphOutputContext output);
     // Redraws only the graph over the last full build's other geometry; false when its labels
     // would change, which takes a full build.
     bool RenderGraphOnlyFrame(const GraphFrame& graph);
@@ -273,9 +273,6 @@ private:
     float cachedMaxFrameTime = 0.0f;
     float cachedAvgFrameTimeForColor = 0.0f;
 
-    // Scrolls the frame time graph by drawn frames rather than by sample
-    // arrival; see graph_scroll_policy.h.
-    GraphScrollCursor graphScroll;
     uint64_t graphHistoryIdentity = UINT64_MAX;
     PerformanceMetrics::FrameTimingState graphTimingState = PerformanceMetrics::FrameTimingState::Presentation;
 

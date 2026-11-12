@@ -322,6 +322,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
     if (m_displayGeneration != generationBefore) {
         ce::pacing_trace::Invalidate(currentQpcUs);
         m_display.Reset();
+        m_graphLastDisplayUs = 0;
         m_displayHistoryEpoch.fetch_add(1, std::memory_order_release);
         m_systemLatency.ResetDisplayHistory();
         m_displayScreenTimeCadence.Reset();
@@ -336,7 +337,8 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
             inputWriteSequence >= DISPLAY_INPUT_RING_SIZE ? inputWriteSequence - DISPLAY_INPUT_RING_SIZE + 1 : 1;
     }
 
-    m_systemLatency.SetDisplayScanoutPeriod(timing.refreshPeriodUs.load(std::memory_order_relaxed));
+    m_graphRefreshPeriodUs = timing.refreshPeriodUs.load(std::memory_order_relaxed);
+    m_systemLatency.SetDisplayScanoutPeriod(m_graphRefreshPeriodUs);
 
     // Input retrievals first: the display samples below resolve each frame's
     // input anchor against them. A ring this reader fell behind on only loses
@@ -409,6 +411,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
                                            screenTimeUs - association.callbackEndUs, screenTimeUs, fsrTag);
             }
         }
+        m_graphLastDisplayUs = graphTimeUs > 0 ? graphTimeUs : screenTimeUs;
         // The series stays warm whatever the provenance is: an unresolved
         // timestamp is still an ordered displayed transition, it is only its
         // *interval* that cannot be trusted, and a stream that starts resolving
@@ -738,3 +741,6 @@ float PerformanceMetrics::GetMaxFrameTime(float windowSeconds) const {
     }
     return maxMs;
 }
+
+// Graph cursor: one owner for every renderer drawing this stream.
+#include "performance_metrics_graph.inl"

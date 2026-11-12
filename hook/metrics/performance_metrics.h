@@ -2,6 +2,7 @@
 
 #include "common/ipc/display_timing_shared.h"
 #include "system_latency_metrics.h"
+#include "hook/overlay/graph_scroll_policy.h"
 
 #include <atomic>
 #include <cstdint>
@@ -84,6 +85,13 @@ public:
     // oldest first. Indices outside the retained window read back as zero, the
     // same as an unfilled ring.
     void GetHistoryEndingAt(uint64_t endIndex, float* outBuffer, int count) const;
+    struct GraphHistoryFrame {
+        FrameTimingState state = FrameTimingState::Presentation;
+        uint64_t identity = 0;
+        double cursor = 0.0;
+    };
+    // One history and scroll owner is shared by every renderer using these metrics.
+    GraphHistoryFrame PrepareGraphHistory(int64_t drawUs, GraphOutputContext output, float* data, int count);
     float GetCurrentFPS() const;
 
     float GetAverageFPS() const;
@@ -304,6 +312,19 @@ private:
     std::atomic<uint64_t> m_displayHistoryEpoch{0};
     std::mutex m_displayConsumeMutex;
     std::mutex m_presentationUpdateMutex;
+    std::mutex m_graphMutex;
+    GraphScrollCursor m_graphScroll;
+    int64_t m_graphLastDisplayUs = 0;  // guarded by m_displayConsumeMutex
+    int64_t m_graphRefreshPeriodUs = 0;
+    uint64_t m_graphDraws = 0;
+    uint64_t m_graphOutputs = 0;
+    uint64_t m_graphDuplicatePositions = 0;
+    uint64_t m_graphLastIdentity = UINT64_MAX;
+    uint64_t m_graphCursorIdentity = UINT64_MAX;
+    uint64_t m_graphHistoryResets = 0;
+    uint64_t m_graphLastSampleCount = 0;
+    double m_graphLastPosition = -1.0;
+    int64_t m_graphLogStartUs = 0;
     uint64_t m_displayGeneration = UINT64_MAX;
     uint64_t m_nextDisplaySequence = 1;
     uint64_t m_nextInputSequence = 1;

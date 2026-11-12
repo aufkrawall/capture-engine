@@ -26,25 +26,21 @@ const char* OverlayAdapter::FrameTimingLabel(PerformanceMetrics::FrameTimingStat
     return "Present";
 }
 
-void OverlayAdapter::PrepareGraphFrame(GraphFrame& graph) {
-    const auto state = metrics->GetFrameTimingState();
-    const uint64_t identity = metrics->GetHistoryIdentity();
+void OverlayAdapter::PrepareGraphFrame(GraphFrame& graph, int64_t drawUs, GraphOutputContext output) {
+    const auto history = metrics->PrepareGraphHistory(drawUs, output, graph.data, kGraphPoints);
+    const auto state = history.state;
+    const uint64_t identity = history.identity;
     const bool changed = identity != graphHistoryIdentity || state != graphTimingState;
     if (changed) {
-        graphScroll.Reset();
         graphHistoryIdentity = identity;
         graphTimingState = state;
         cachedMaxFrameTime = 0.0f;
         cachedAvgFrameTimeForColor = 0.0f;
     }
     graph.waiting = state == PerformanceMetrics::FrameTimingState::DisplayStarting;
-    // One slot per drawn frame, gently locked to the sample stream, so a
-    // burst of display-change samples does not step the graph.
     if (!graph.waiting) {
-        const double cursor = graphScroll.Advance(metrics->GetSampleCount());
-        const double cursorSlot = std::floor(cursor);
-        graph.scrollOffset = static_cast<float>(cursor - cursorSlot);
-        metrics->GetHistoryEndingAt(static_cast<uint64_t>(cursorSlot) + 1, graph.data, kGraphPoints);
+        const double cursorSlot = std::floor(history.cursor);
+        graph.scrollOffset = static_cast<float>(history.cursor - cursorSlot);
     }
 
     // Max frame time display values – recomputed at most once every 2 seconds so

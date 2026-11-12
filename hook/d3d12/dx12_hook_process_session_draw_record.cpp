@@ -6,6 +6,7 @@
 
 ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
     ID3D12Resource* bb = backBuffer.Borrow();
+    const GraphOutputContext graphOutput = runtimeOwnedOutputChain ? NextGraphOutput() : GraphOutputContext{};
     cmdRecordOk = false;
     // A callback can finish a queued FSR output before an OFF configure
     // arrives, while the output's physical Present enters afterward.
@@ -334,7 +335,7 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                         }
                         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
                         dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth,
-                                                         dx12_hook_g_State.cachedHeight);
+                                                         dx12_hook_g_State.cachedHeight, graphOutput);
                         if (!useTextureDx12Backend) {
                             dx12_hook_s_descFreeCmdList = nullptr;
                         }
@@ -446,7 +447,7 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
 
                 SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
                 dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth,
-                                                 dx12_hook_g_State.cachedHeight);
+                                                 dx12_hook_g_State.cachedHeight, graphOutput);
 
                 // Transition back to PRESENT after overlay draw
                 if (fgBarriersNeeded && bb) {

@@ -217,7 +217,6 @@ void OverlayAdapter::ResetStateLocked() {
     panelHardware = {};
     hdrPaperWhiteMonitor = nullptr;
     resolvedHdrPaperWhiteNits = 203.0f;
-    graphScroll.Reset();
     graphHistoryIdentity = UINT64_MAX;
     graphTimingState = PerformanceMetrics::FrameTimingState::Presentation;
     graphTail = {};

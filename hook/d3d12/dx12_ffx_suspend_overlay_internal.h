@@ -268,7 +268,7 @@ public:
                         SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence,
                         bool embeddedInExistingBatch, bool reservedSlot,
                         SubmitPreparedCommandListsCallback submitPreparedCommandLists, bool separatePostProcess,
-                        ID3D12CommandList* precedingCommandList) {
+                        ID3D12CommandList* precedingCommandList, GraphOutputContext graphOutput) {
         if (!targetResource || (!submitCommandList && !submitPreparedCommandLists) ||
             (!inlineCompletionMarker && !signalFence) || !DeviceHealthy()) {
             return RenderResult::kFailed;
@@ -413,7 +413,8 @@ public:
                 overlay.SetDX12UploadSlotFence(fence.Get(), inlineCompletionMarker ? 0 : submitFenceValue);
                 overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex));
                 overlay.SetDX12RenderTarget(slot.commandList.Get(), reinterpret_cast<void*>(rtv.ptr));
-                overlay.RenderOverlay(static_cast<int>(targetDesc.Width), static_cast<int>(targetDesc.Height));
+                overlay.RenderOverlay(static_cast<int>(targetDesc.Width), static_cast<int>(targetDesc.Height),
+                                      graphOutput);
             }
             Transition(slot.commandList.Get(), targetResource, D3D12_RESOURCE_STATE_RENDER_TARGET, targetState);
         }

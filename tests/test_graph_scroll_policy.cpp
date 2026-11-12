@@ -241,6 +241,185 @@ TEST(GraphScrollCursorTest, CursorNeverRewindsAcrossMixedArrivalPatterns) {
     }
 }
 
+// Display and draw clocks are independent. The compositor chooses the latest submitted frame at each 144 Hz
+// scanout while the application submits at 160 Hz. A display step must move the visible graph one slot, even when
+// two application frames were submitted since the preceding scanout. Measured bounds: 0.75-1.25 slots per displayed
+// step after warmup; aggregate drift must remain below two slots over the measured window.
+TEST(GraphScrollCursorTest, DisplayedSequenceDoesNotAccelerateOnDiscardedApplicationPresents) {
+    GraphScrollCursor cursor;
+    uint64_t sampleCount = 100;
+    int draw = 0;
+    constexpr int64_t kOriginUs = 1'000'000;
+    constexpr double kDisplayPeriodUs = 1'000'000.0 / 144.0;
+    int64_t lastPublishedUs = kOriginUs;
+    double latest = 0.0;
+    double previous = 0.0;
+    double firstMeasured = 0.0;
+    constexpr int kWarmupDisplays = 120;
+    constexpr int kDisplays = 600;
+    for (int display = 1; display <= kDisplays; ++display) {
+        const int64_t displayUs = kOriginUs + static_cast<int64_t>(display) * 1'000'000 / 144;
+        while (kOriginUs + static_cast<int64_t>(draw) * 1'000'000 / 160 < displayUs) {
+            const int64_t drawUs = kOriginUs + static_cast<int64_t>(draw) * 1'000'000 / 160;
+            latest = cursor.Advance({1, sampleCount, lastPublishedUs, kDisplayPeriodUs, lastPublishedUs,
+                                     kDisplayPeriodUs, drawUs});
+            ++draw;
+        }
+        if (display == kWarmupDisplays) {
+            firstMeasured = latest;
+        } else if (display > kWarmupDisplays) {
+            EXPECT_GE(latest - previous, 0.75) << "display " << display;
+            EXPECT_LE(latest - previous, 1.25) << "display " << display;
+        }
+        previous = latest;
+        if (display % 4 == 0) {
+            sampleCount += 4;  // delayed, batched publication after the selected frame reaches the display
+            lastPublishedUs = displayUs;
+        }
+    }
+    EXPECT_NEAR(latest - firstMeasured, kDisplays - kWarmupDisplays, 2.0);
+}
+
+TEST(GraphScrollCursorTest, DistinctGeneratedOutputsAdvanceInBurstsAndDuplicatesDoNot) {
+    constexpr int64_t kPeriodUs = 10'000;
+    constexpr int64_t kOriginUs = 1'000'000;
+    for (uint64_t multiplier : {2u, 3u, 4u}) {
+        SCOPED_TRACE(multiplier);
+        GraphScrollCursor cursor;
+        double previous = 0.0;
+        double first = 0.0;
+        uint64_t outputId = 1;
+        for (uint64_t group = 0; group < 200; ++group) {
+            const uint64_t samples = 100 + group * multiplier;
+            const int64_t lastDisplay = kOriginUs + static_cast<int64_t>(group * multiplier) * kPeriodUs;
+            for (uint64_t output = 0; output < multiplier; ++output) {
+                GraphCadenceSnapshot snapshot{1, samples, lastDisplay, static_cast<double>(kPeriodUs), lastDisplay,
+                                              static_cast<double>(kPeriodUs), lastDisplay + 1,
+                                              GraphOutputKind::kDistinctOutput, outputId++};
+                const double position = cursor.Advance(snapshot);
+                EXPECT_DOUBLE_EQ(cursor.Advance(snapshot), position) << "duplicate output must not scroll twice";
+                EXPECT_LE(position, static_cast<double>(samples) - 2.0);
+                if (group == 20 && output == 0)
+                    first = position;
+                else if (group > 20 || (group == 20 && output > 0)) {
+                    EXPECT_NEAR(position - previous, 1.0, 0.001);
+                }
+                previous = position;
+            }
+        }
+        EXPECT_NEAR(previous - first, static_cast<double>((200 - 20) * multiplier - 1), 0.01);
+    }
+}
+
+TEST(GraphScrollCursorTest, UnevenDrawIntervalsStillTrackRegularDisplayedFrames) {
+    GraphScrollCursor cursor;
+    constexpr int64_t kPeriodUs = 10'000;
+    constexpr int64_t kOriginUs = 1'000'000;
+    constexpr std::array<int64_t, 4> kLeadUs = {1000, 6000, 3000, 8000};
+    uint64_t samples = 100;
+    int64_t lastPublished = kOriginUs;
+    double previous = 0.0;
+    for (int display = 1; display <= 400; ++display) {
+        const int64_t displayUs = kOriginUs + display * kPeriodUs;
+        const int64_t drawUs = displayUs - kLeadUs[static_cast<size_t>(display) % kLeadUs.size()];
+        const double position = cursor.Advance({2, samples, lastPublished, static_cast<double>(kPeriodUs),
+                                                lastPublished, static_cast<double>(kPeriodUs), drawUs});
+        if (display > 50)
+            EXPECT_NEAR(position - previous, 1.0, 0.001) << "display " << display;
+        previous = position;
+        if (display % 4 == 0) {
+            samples += 4;
+            lastPublished = displayUs;
+        }
+    }
+}
+
+TEST(GraphScrollCursorTest, CadenceHoldsWithinHistoryOnStallAndRearmsOnNewHistory) {
+    GraphScrollCursor cursor;
+    GraphCadenceSnapshot sample{3, 100, 1'000'000, 10'000, 1'000'000, 10'000, 1'000'001};
+    double position = cursor.Advance(sample);
+    for (int i = 0; i < 100; ++i) {
+        sample.drawUs += 10'000;
+        const double next = cursor.Advance(sample);
+        EXPECT_GE(next, position);
+        EXPECT_LE(next, 98.0);
+        position = next;
+    }
+    sample.historyIdentity = 4;
+    sample.sampleCount = 20;
+    sample.lastSampleUs = sample.lastDisplayUs = sample.drawUs;
+    const double reset = cursor.Advance(sample);
+    EXPECT_GE(reset, 0.0);
+    EXPECT_LE(reset, 18.0);
+}
+
+TEST(GraphScrollCursorTest, GeneratedAndSuspendedRoutesShareOneHistoryThroughRepeatedHandoffs) {
+    GraphScrollCursor cursor;
+    constexpr int64_t kPeriod = 10'000;
+    int64_t displayTime = 1'000'000;
+    int64_t publishedTime = displayTime;
+    uint64_t samples = 100;
+    uint64_t outputId = 1;
+    double previous = -1.0;
+    int shown = 0;
+    auto check = [&](double position) {
+        if (shown > 80) {
+            EXPECT_GE(position - previous, 0.75) << "display " << shown;
+            EXPECT_LE(position - previous, 1.25) << "display " << shown;
+        }
+        previous = position;
+        ++shown;
+    };
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        for (int group = 0; group < 50; ++group) {
+            for (int output = 0; output < 4; ++output) {
+                GraphCadenceSnapshot snapshot{5, samples, publishedTime, kPeriod, publishedTime, kPeriod,
+                                              displayTime + 1, GraphOutputKind::kDistinctOutput, outputId++};
+                check(cursor.Advance(snapshot));
+            }
+            displayTime += 4 * kPeriod;
+            publishedTime = displayTime;
+            samples += 4;
+        }
+        // Two app/proxy draws reach each output; only the latter frame is displayed. Route changes do not
+        // change the stream identity and therefore may not reset the graph history.
+        for (int frame = 0; frame < 200; ++frame) {
+            GraphCadenceSnapshot snapshot{5, samples, publishedTime, kPeriod, publishedTime, kPeriod,
+                                          displayTime + 1000};
+            cursor.Advance(snapshot);
+            snapshot.drawUs = displayTime + 6000;
+            check(cursor.Advance(snapshot));
+            displayTime += kPeriod;
+            if (frame % 4 == 3) {
+                publishedTime = displayTime;
+                samples += 4;
+            }
+        }
+    }
+}
+
+TEST(GraphScrollCursorTest, DistinctOutputsAfterAStallRecoverWithoutUnboundedPrediction) {
+    GraphScrollCursor cursor;
+    GraphCadenceSnapshot sample{6, 100, 1'000'000, 10'000, 1'000'000, 10'000, 1'000'001,
+                                GraphOutputKind::kDistinctOutput, 1};
+    for (int i = 0; i < 200; ++i) {
+        sample.drawUs += 10'000;
+        ++sample.outputId;
+        EXPECT_LE(cursor.Advance(sample), 98.0);
+    }
+    double previous = cursor.Advance(sample);
+    for (int i = 0; i < 40; ++i) {
+        sample.drawUs += 10'000;
+        sample.lastSampleUs = sample.lastDisplayUs = sample.drawUs - 1;
+        ++sample.sampleCount;
+        ++sample.outputId;
+        const double position = cursor.Advance(sample);
+        if (i > 10)
+            EXPECT_NEAR(position - previous, 1.0, 0.01);
+        previous = position;
+    }
+}
+
 // --- Absolute-index history access the scrolling graph reads through ---
 
 namespace {
