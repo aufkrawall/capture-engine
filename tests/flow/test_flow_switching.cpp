@@ -187,6 +187,128 @@ TEST(FlowSwitch, FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches) {
     ExpectNoDebugLayerErrors();
 }
 
+// A disabled Streamline replacement must keep drawing after its one-shot prewarm is consumed.
+TEST(FlowSwitch, DisabledStreamlineReplacementOnNewQueueKeepsEveryOutput) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    game.AdvanceVirtualClock(3'000'000);
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ExpectPublished(game, 0, 1, "disabled chain A");
+    const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+    ASSERT_NE(plugin, nullptr);
+    const auto lookup = reinterpret_cast<void* (*)(const char*)>(GetProcAddress(plugin, "slGetPluginFunction"));
+    ASSERT_NE(lookup, nullptr);
+    const auto nativeBinding = reinterpret_cast<void (*)(IDXGISwapChain**, ID3D12CommandQueue**)>(
+        lookup("flowNativeBinding"));
+    const auto inspectBinding = reinterpret_cast<uint64_t (*)(IDXGISwapChain*, ID3D12CommandQueue**, bool)>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_StreamlineBinding"));
+    const auto startupPending = reinterpret_cast<bool (*)()>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_StreamlineStartupPending"));
+    const auto candidateToken = reinterpret_cast<uint64_t (*)(IDXGISwapChain*)>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_StreamlineNormalToken"));
+    const auto tryPromote = reinterpret_cast<bool (*)(IDXGISwapChain*, ID3D12CommandQueue*, uint64_t)>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_TryPromoteStreamlineBinding"));
+    ASSERT_NE(nativeBinding, nullptr);
+    ASSERT_NE(inspectBinding, nullptr);
+    ASSERT_NE(tryPromote, nullptr);
+    ASSERT_NE(candidateToken, nullptr);
+    ASSERT_NE(startupPending, nullptr);
+    const auto sampleOutput = reinterpret_cast<void (*)(bool)>(lookup("flowSamplePhysicalOutput"));
+    const auto differentPixels = reinterpret_cast<uint64_t (*)()>(lookup("flowLastOutputDifferentPixels"));
+    ASSERT_NE(sampleOutput, nullptr);
+    ASSERT_NE(differentPixels, nullptr);
+
+    uint64_t previousToken = 0;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        SCOPED_TRACE(cycle);
+        const auto previousEpoch = game.PostSLLifecycle().epoch;
+        IDXGISwapChain* oldNative = nullptr;
+        ID3D12CommandQueue* oldPresentQueue = nullptr;
+        nativeBinding(&oldNative, &oldPresentQueue);
+        ID3D12CommandQueue* oldRegisteredQueue = nullptr;
+        const uint64_t oldLifetime = inspectBinding(oldNative, &oldRegisteredQueue, false);
+        ASSERT_NE(oldLifetime, 0u);
+        ASSERT_EQ(oldRegisteredQueue, oldPresentQueue);
+        Microsoft::WRL::ComPtr<ID3D12CommandQueue> oldPresenterOwner = oldPresentQueue;
+        const auto oldQueue = game.RetainGameQueue();
+        ASSERT_TRUE(game.ReplaceStreamlineSwapchainOnNewQueue()) << game.Error();
+        ASSERT_NE(game.RetainGameQueue().Get(), oldQueue.Get());
+        EXPECT_FALSE(game.TryConfirmPostSLEpoch(previousEpoch));
+        IDXGISwapChain* native = nullptr;
+        ID3D12CommandQueue* presentQueue = nullptr;
+        nativeBinding(&native, &presentQueue);
+        ID3D12CommandQueue* registeredQueue = nullptr;
+        const uint64_t lifetime = inspectBinding(native, &registeredQueue, false);
+        ASSERT_NE(lifetime, oldLifetime);
+        ASSERT_NE(presentQueue, oldPresentQueue);
+        ASSERT_EQ(registeredQueue, presentQueue);
+        EXPECT_EQ(inspectBinding(native, &registeredQueue, true), 0u);
+        const uint64_t token = candidateToken(native);
+        ASSERT_NE(token, 0u);
+        EXPECT_FALSE(tryPromote(native, oldPresentQueue, token));
+        if (previousToken != 0) {
+            EXPECT_NE(token, previousToken);
+            EXPECT_FALSE(tryPromote(native, presentQueue, previousToken));
+        }
+        sampleOutput(true);
+        for (int output = 0; output < 4; ++output) {
+            SCOPED_TRACE(output);
+            if (output == 2)
+                game.AdvanceVirtualClock(3'000'000);
+            const auto before = game.Coverage();
+            const auto physicalBefore = game.PhysicalPresents();
+            ASSERT_TRUE(game.RenderFrame()) << game.Error();
+            const auto after = game.Coverage();
+            EXPECT_EQ(game.PhysicalPresents() - physicalBefore, 1u);
+            EXPECT_EQ(after.presents - before.presents, 1u) << game.LogDirectory();
+            EXPECT_EQ(after.draws - before.draws, 1u) << game.LogDirectory();
+            EXPECT_EQ(after.doubleDraws - before.doubleDraws, 0u);
+            EXPECT_GT(differentPixels(), 100u) << "overlay pixels absent on physical output; " << game.LogDirectory();
+            EXPECT_NE(inspectBinding(native, &registeredQueue, true), 0u);
+            EXPECT_FALSE(startupPending()) << "disabled normal route must finish startup";
+            EXPECT_EQ(registeredQueue, presentQueue);
+            ExpectPublished(game, 0, 1, "disabled replacement");
+        }
+        previousToken = token;
+        ASSERT_TRUE(game.ResizeSwapchain(640, 360)) << game.Error();
+        EXPECT_EQ(inspectBinding(native, &registeredQueue, true), 0u);
+        EXPECT_EQ(candidateToken(native), 0u);
+        EXPECT_FALSE(tryPromote(native, presentQueue, token));
+        for (int output = 0; output < 2; ++output) {
+            SCOPED_TRACE(output);
+            const auto before = game.Coverage();
+            const auto physicalBefore = game.PhysicalPresents();
+            ASSERT_TRUE(game.RenderFrame()) << game.Error();
+            const auto after = game.Coverage();
+            EXPECT_EQ(game.PhysicalPresents() - physicalBefore, 1u);
+            EXPECT_EQ(after.draws - before.draws, 1u) << game.LogDirectory();
+            EXPECT_EQ(after.doubleDraws - before.doubleDraws, 0u);
+            EXPECT_GT(differentPixels(), 100u) << "overlay pixels absent after resize; " << game.LogDirectory();
+            ExpectPublished(game, 0, 1, "resized disabled replacement");
+        }
+        sampleOutput(false);
+        ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+        game.AdvanceVirtualClock(3'000'000);
+        ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowSwitch, NativeReturnDuringHeldDLSSOffDrawsItsFirstOutput) {
     FlowGame game(CurrentTestName());
     GameOptions options;

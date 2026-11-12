@@ -207,6 +207,17 @@ struct Binding {
     HMODULE creator = nullptr;  // identity only, null when the create stack named no module
 };
 Binding BindingFor(IDXGISwapChain* swapchain);
+
+// A prewarmed disabled Streamline chain may use its create queue for normal rendering. Admission is published
+// only after a real submission on that exact registration; replacement and queue rebinding retire it.
+using NormalRenderPromotion = bool (*)();
+bool ArmStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
+                              NormalRenderPromotion mayArm);
+uint64_t StreamlineNormalRenderToken(IDXGISwapChain* swapchain, bool requireSubmitted);
+bool PromoteStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, uint64_t token,
+                                  NormalRenderPromotion commitTransition);
+void InvalidateStreamlineNormalRender(const char* reason);
+void InvalidateStreamlineNormalRenderForSwapchain(IDXGISwapChain* swapchain, const char* reason);
 // The competing presenter that holds presentation (DoesCompetingPresenterHoldPresentation), or kApplication.
 Binding CompetingPresenterHoldingPresentation();
 // Counts every registration change (create, owner retirement, DLSS-G load state): DidObservationStraddleHandoff.

@@ -10,6 +10,8 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject overlay disappearing after a DirectX 12 frame-generation switch:** keep drawing when a disabled Streamline swapchain is replaced after FSR or DLSS Frame Generation. The replacement now proves its own presentation queue and successful overlay submission before continuing, so it does not rely on the departed swapchain or wait for DLSS to turn on.
+
 - **Late DirectX 12 inject overlay at startup:** removed an unnecessary resource-upload submission and a fixed 100 ms pause before the first draw. The selected renderer prepares its resources together with the draw, so GPU command ordering establishes readiness without leaving extra frames blank.
 
 - **Inject overlay appearing late in games with the Social Club or Epic overlay (GTA V Enhanced):** with either overlay's module loaded, Capture Engine held its DirectX 12 overlay back for a fixed 500 ms startup warm-up, then a further settle and staged initialization, so it appeared about 0.6 s after other overlays such as ReShade's. The warm-up now applies only while a frame generation runtime owns the game's swapchain at startup; the game's own swapchain gets the overlay from its first frame. A visible startup window of those overlays still pauses it.

@@ -158,6 +158,7 @@ D3D12ResizePreparation PrepareD3D12Resize(IDXGISwapChain* pSwapChain) {
     if (preparation.before.probed == 0) {
         return preparation;  // not a D3D12 chain: CE's D3D12 capture cannot be bound to it
     }
+    ce::fg_presenter::InvalidateStreamlineNormalRenderForSwapchain(pSwapChain, "swapchain buffers resizing");
     // Final-output FFX command lists retain this chain's old buffers too. Retire only its renderer at the
     // actual native ResizeBuffers boundary; completed GPU work releases at once, unfinished work stays fenced.
     ce::dx12_ffx_suspend_overlay::RetireProxy(pSwapChain, "swapchain resize");

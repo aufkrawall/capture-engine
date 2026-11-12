@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 
 // REQUIRED EXPORTS
 void DX12_AdjustWrapperResizeDepth(int delta) {
@@ -9,6 +10,7 @@ void DX12_AdjustWrapperResizeDepth(int delta) {
 }
 
 void DX12_InvalidateSwapchain() {
+    ce::fg_presenter::InvalidateStreamlineNormalRender("swapchain invalidated");
     DXGIShared::g_SharedState.swapchainInvalid.store(true, std::memory_order_release);
     HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
     ReleaseStreamlineStartupActivationSwapchain("DX12_InvalidateSwapchain");

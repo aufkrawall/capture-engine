@@ -1,9 +1,11 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
+#include "hook/fg/fg_presenter.h"
 #include "common/logging/log_meter.h"
 
 
 void DX12_OnSwapchainResizeBegin() {
+    ce::fg_presenter::InvalidateStreamlineNormalRender("swapchain resize");
     bool wasAlreadySet = dx12_hook_g_InSwapchainResizeCleanup.exchange(true);
     HookLog("DX12: DX12_OnSwapchainResizeBegin called, wasAlreadySet=%d", wasAlreadySet);
 

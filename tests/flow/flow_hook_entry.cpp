@@ -9,6 +9,7 @@
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "hook/d3d12/dx12_hook_ecl_forward.h"
 #include "hook/d3d12/dx12_device_trace.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/overrides/published_graphics_config.h"
@@ -591,6 +592,25 @@ extern "C" __declspec(dllexport) void CEFlow_GetPostSLLifecycle(CEFlowPostSLLife
     *out = {g_PostSLLifecycle.Epoch(), g_PostSLLifecycle.CallbacksInFlight(),
             g_PostSLLifecycle.CallbacksEnabled(), g_PostSLLifecycle.ConfirmedInCurrentEpoch()};
 }
+extern "C" __declspec(dllexport) uint64_t CEFlow_StreamlineBinding(IDXGISwapChain* chain,
+                                                                  ID3D12CommandQueue** queue, bool submitted) {
+    const auto binding = ce::fg_presenter::BindingFor(chain);
+    *queue = binding.queue;
+    return submitted ? ce::fg_presenter::StreamlineNormalRenderToken(chain, true) : binding.lifetime;
+}
+extern "C" __declspec(dllexport) bool CEFlow_StreamlineStartupPending() {
+    return DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire) ||
+           DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+}
+extern "C" __declspec(dllexport) uint64_t CEFlow_StreamlineNormalToken(IDXGISwapChain* chain) {
+    return ce::fg_presenter::StreamlineNormalRenderToken(chain, false);
+}
+extern "C" __declspec(dllexport) bool CEFlow_TryPromoteStreamlineBinding(IDXGISwapChain* chain,
+                                                                          ID3D12CommandQueue* queue,
+                                                                          uint64_t lifetime) {
+    return ce::fg_presenter::PromoteStreamlineNormalRender(chain, queue, lifetime, [] { return true; });
+}
+
 extern "C" __declspec(dllexport) bool CEFlow_TryConfirmPostSLEpoch(uint32_t epoch) {
     return g_PostSLLifecycle.ConfirmRender(epoch, [] {});
 }

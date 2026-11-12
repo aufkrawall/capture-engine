@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "hook/fg/fg_presenter.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_main_shared.h"
 
 bool DX12_HasPrewarmedActiveStreamlineHandoff(IDXGISwapChain* pSwapChain) {
@@ -446,24 +447,36 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
         DXGIShared::ClearStreamlineStartupTransitionWindow();
     }
 
-    HookLogImportant(
-        "DX12: Invoking retained-swapchain PostSL startup activation callback "
-        "(source=%s swapchain=%p clearWindow=%d startupPending=%d activeButUnconfirmed=%d "
-        "startupActivationEntered=%d confirmed=%d warmupService=%d tid=0x%04X)",
-        source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0,
-        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
-        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
-        g_PostSLLifecycle.RouteConfirmed() ? 1 : 0, allowConfirmedWarmupService ? 1 : 0,
-        GetCurrentThreadId());
+    static ce::log_meter::ChangeGate s_serviceEntryGate;
+    static std::atomic<uint32_t> s_serviceCalls{0};
+    const uint32_t serviceCalls = s_serviceCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto serviceKey = ce::log_meter::FieldKey(activationSwapchain, activationPendingAfterClaim,
+                                                     postSLStartupActivationEnteredAfterClaim,
+                                                     postSLConfirmedRenderingAfterClaim, allowConfirmedWarmupService);
+    if (const auto verdict = s_serviceEntryGate.ObserveOrEvery(serviceKey, serviceCalls, 600)) {
+        HookLogImportant("DX12: Invoking retained-swapchain PostSL startup activation callback "
+                         "(source=%s swapchain=%p pending=%d entered=%d confirmed=%d warmup=%d)%s",
+                         source ? source : "unknown", activationSwapchain, activationPendingAfterClaim ? 1 : 0,
+                         postSLStartupActivationEnteredAfterClaim ? 1 : 0, postSLConfirmedRenderingAfterClaim ? 1 : 0,
+                         allowConfirmedWarmupService ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    // Servicing is not itself a physical Present. The next real output accounts any submitted draw.
+    const bool previousCoverageOwner = dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent;
+    dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent = true;
     postSLCallback(activationSwapchain);
-    HookLogImportant(
-        "DX12: Retained-swapchain PostSL startup activation callback returned "
-        "(source=%s swapchain=%p startupPending=%d activeButUnconfirmed=%d startupActivationEntered=%d "
-        "confirmed=%d tid=0x%04X)",
-        source ? source : "unknown", activationSwapchain,
-        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
-        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
-        g_PostSLLifecycle.RouteConfirmed() ? 1 : 0, GetCurrentThreadId());
+    dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent = previousCoverageOwner;
+    static ce::log_meter::ChangeGate s_serviceReturnGate;
+    const bool pendingAfter = DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool enteredAfter = HookHasPostSLSyntheticStartupActivationEntered();
+    const bool confirmedAfter = g_PostSLLifecycle.RouteConfirmed();
+    const auto returnKey = ce::log_meter::FieldKey(activationSwapchain, pendingAfter, enteredAfter, confirmedAfter);
+    if (const auto verdict = s_serviceReturnGate.ObserveOrEvery(returnKey, serviceCalls, 600)) {
+        HookLogImportant("DX12: Retained-swapchain PostSL startup activation callback returned "
+                         "(source=%s swapchain=%p pending=%d entered=%d confirmed=%d)%s",
+                         source ? source : "unknown", activationSwapchain, pendingAfter ? 1 : 0,
+                         enteredAfter ? 1 : 0, confirmedAfter ? 1 : 0,
+                         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
     g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
     SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
     return true;

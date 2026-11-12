@@ -695,6 +695,18 @@ continues through the normal held-OFF replay policy. The existing native-return 
 queue and rebuilds the overlay for the first Present, including when DXGI reuses a COM address.
 The WARP regression is `FlowSwitch.NativeReturnDuringHeldDLSSOffDrawsItsFirstOutput`.
 
+### Disabled Streamline replacement after FSR (2026-11-12)
+
+GTA session `20261112_030715` drew the prewarmed replacement once, then lost the overlay while DLSS stayed off:
+the one-use backend marker was not durable queue proof. `fg_presenter` now owns normal-route admission for an
+authoritative Streamline chain: a live lifetime witness, retained create queue and ready backend arm it, and a
+device-healthy normal submission promotes an opaque binding token. A new registration, queue rebind, resize, FG
+activation or lifecycle cancellation retires it; a destroyed witness cannot authorize it. Promotion and FG-ON
+cancellation serialize in the registry. The successful disabled route clears the pending startup state, without
+claiming PostSL confirmation. Retained startup servicing is not a physical Present for coverage accounting.
+`FlowSwitch.DisabledStreamlineReplacementOnNewQueueKeepsEveryOutput` checks two replacements, including observed same-address reuse,
+stale tokens, resize, actual output pixels and the D3D12 debug layer. Hardware validation remains pending.
+
 ### First Streamline passthrough after FSR teardown (2026-11-09)
 
 The DX12 switch app with Steam Overlay active (session `20261109_204334`) had two FSR-to-DLSS

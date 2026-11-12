@@ -44,7 +44,12 @@ const bool ffxOutputChain = presenter == ce::fg_presenter::Presenter::kFFXSwapch
                                                           : DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
     const bool interposerPrivateChain =
         runtimeOwnedOutputChain || DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
-    if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(interposerPrivateChain,
+    if (!slFGNow && !fsrFGNow &&
+        ce::fg_presenter::StreamlineNormalRenderToken(pSwapChain, true) != 0 &&
+        dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire) == pSwapChain &&
+        dx12_hook_g_SwapchainQueue == ce::fg_presenter::OutputQueue(pSwapChain)) {
+        gameQueue = dx12_hook_g_SwapchainQueue;
+    } else if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(interposerPrivateChain,
                                                                       interposerOutputQueue != nullptr)) {
         // pSwapChain is the present interposer's own output chain (NVIDIA Smooth Motion), so its
         // backbuffers belong to the queue that created it. This is the same rule as the FSR

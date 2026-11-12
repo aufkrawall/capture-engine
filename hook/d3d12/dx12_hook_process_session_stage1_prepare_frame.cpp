@@ -331,6 +331,10 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
     // backbuffer: a confirmed Streamline proxy stays on its warm PostSL route;
     // a proven normal swapchain proceeds below; an unknown identity stays
     // GPU-quiet instead of guessing a queue and removing the device.
+    streamlineNormalRenderToken =
+        dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(std::memory_order_acquire) == pSwapChain
+            ? ce::fg_presenter::StreamlineNormalRenderToken(pSwapChain, false)
+            : 0;
     postFSRNormalRouteExplicitQueueProof = false;
     postFSRNormalRouteRememberedSwapchainProof = false;
     postFSRNormalRouteOwnershipProven = false;
@@ -389,7 +393,9 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
             ce::fg_presenter::PresenterFor(pSwapChain) == ce::fg_presenter::Presenter::kFFXSwapchain &&
             ce::fg_presenter::OutputQueue(pSwapChain) != nullptr;
         const auto recoveryRoute = ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
-            true, actualFGActive, streamlineFGRunning, postFSRNormalRouteOwnershipProven || exactFFXOutputQueue,
+            true, actualFGActive, streamlineFGRunning,
+            postFSRNormalRouteOwnershipProven || exactFFXOutputQueue ||
+                ce::fg_presenter::StreamlineNormalRenderToken(pSwapChain, true) != 0,
             postSLKeepAliveArmed,
             postSLCallbackReady, hasPostSLRenderQueue,
             lastSuccessfulPostSLSwapchain != nullptr && pSwapChain == lastSuccessfulPostSLSwapchain,

@@ -153,6 +153,7 @@ public:
     // contexts go with it), as a game does when its frame generation setting changes runtime.
     bool UseSwapchain(SwapchainKind kind);
     bool ReturnToNativeSwapchainOnNewQueue();
+    bool ReplaceStreamlineSwapchainOnNewQueue();
     bool ReturnToNativeSwapchainThroughStreamline();
     void AdvanceVirtualClock(int64_t microseconds) { advanceClock_(microseconds); }
     // The sensor service's side of the display stream: publishes one transition reaching the screen now. A scenario

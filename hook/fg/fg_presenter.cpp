@@ -1,11 +1,15 @@
 #include "fg_presenter.h"
 
+#include <d3d12.h>
+#include <wrl/client.h>
+
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
 
 #include "common/logging/log_meter.h"
 #include "hook/fg/fg_detection.h"
+#include "hook/present/swapchain_lifetime_witness.h"
 #include "hook/runtime/hook_common.h"
 
 namespace ce::fg_presenter {
@@ -18,6 +22,10 @@ struct Record {
     uintptr_t owner = 0;
     uint64_t lifetime = 0;
     HMODULE creator = nullptr;  // identity only
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> normalRenderQueue;
+    bool normalRenderSubmitted = false;
+    uint64_t normalRenderWitness = 0;
+    uint64_t normalRenderToken = 0;
 };
 
 struct OpenScope {
@@ -32,6 +40,7 @@ struct State {
     std::unordered_map<IDXGISwapChain*, Record> swapchains;
     OpenScope scope;
     uint64_t nextLifetime = 1;
+    uint64_t nextNormalRenderToken = 1;
 };
 
 State& Registry() {
@@ -39,6 +48,7 @@ State& Registry() {
     return state;
 }
 
+std::atomic<bool> g_normalRenderArmed{false};
 std::atomic<size_t> g_runtimeOwnedCount{0};
 std::atomic<size_t> g_outputPresenterCount{0};
 // The newest competing registration (IsCompetingPresenter) while it holds presentation, else 0 / kApplication; read on
@@ -57,7 +67,15 @@ bool g_runtimePresenterActive = false;
 std::atomic<bool> g_runtimeInputBoundary{false};
 std::atomic<uint8_t> g_dlssgApiProvider{static_cast<uint8_t>(DLSSGApiProvider::kUnknown)};
 
+void PublishNormalRenderArmedLocked(const State& state) {
+    bool armed = false;
+    for (const auto& entry : state.swapchains)
+        armed = armed || entry.second.normalRenderQueue.Get() != nullptr;
+    g_normalRenderArmed.store(armed, std::memory_order_release);
+}
+
 void PublishCountLocked(State& state) {
+    PublishNormalRenderArmedLocked(state);
     size_t count = 0;
     size_t outputPresenters = 0;
     uint64_t newestDLSSG = 0;
@@ -239,6 +257,102 @@ Binding BindingFor(IDXGISwapChain* swapchain) {
                : Binding{it->second.presenter, it->second.lifetime, it->second.queue, it->second.creator};
 }
 
+bool ArmStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
+                              NormalRenderPromotion mayArm) {
+    if (!swapchain || !queue || !mayArm)
+        return false;
+    const auto witness = ce::swapchain_lifetime_witness::Describe(swapchain);
+    if (witness.state != ce::swapchain_lifetime_witness::ChainState::kAlive || witness.generation == 0)
+        return false;
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.swapchains.find(swapchain);
+    if (it == state.swapchains.end() || it->second.presenter != Presenter::kStreamlineDLSSG ||
+        it->second.queue != queue || !mayArm())
+        return false;
+    it->second.normalRenderWitness = witness.generation;
+    it->second.normalRenderToken = state.nextNormalRenderToken++;
+    it->second.normalRenderQueue = queue;
+    it->second.normalRenderSubmitted = false;
+    g_normalRenderArmed.store(true, std::memory_order_release);
+    HookLogImportant("[STREAMLINE NORMAL] armed sc=%p lifetime=%llu queue=%p", swapchain,
+                     static_cast<unsigned long long>(it->second.lifetime), queue);
+    return true;
+}
+
+uint64_t StreamlineNormalRenderToken(IDXGISwapChain* swapchain, bool requireSubmitted) {
+    if (!g_normalRenderArmed.load(std::memory_order_acquire))
+        return 0;
+    const auto witness = ce::swapchain_lifetime_witness::Describe(swapchain);
+    if (witness.state != ce::swapchain_lifetime_witness::ChainState::kAlive)
+        return 0;
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.swapchains.find(swapchain);
+    if (it == state.swapchains.end() || !it->second.normalRenderQueue ||
+        it->second.normalRenderWitness != witness.generation ||
+        it->second.normalRenderQueue.Get() != it->second.queue ||
+        (requireSubmitted && !it->second.normalRenderSubmitted))
+        return 0;
+    return it->second.normalRenderToken;
+}
+
+bool PromoteStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, uint64_t token,
+                                  NormalRenderPromotion commitTransition) {
+    if (!token || !queue || !commitTransition)
+        return false;
+    const auto witness = ce::swapchain_lifetime_witness::Describe(swapchain);
+    if (witness.state != ce::swapchain_lifetime_witness::ChainState::kAlive)
+        return false;
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.swapchains.find(swapchain);
+    if (it == state.swapchains.end() || it->second.normalRenderToken != token || it->second.queue != queue ||
+        it->second.normalRenderWitness != witness.generation || it->second.normalRenderQueue.Get() != queue)
+        return false;
+    if (it->second.normalRenderSubmitted || !commitTransition())
+        return false;
+    it->second.normalRenderSubmitted = true;
+    HookLogImportant("[STREAMLINE NORMAL] submitted sc=%p lifetime=%llu queue=%p", swapchain,
+                     static_cast<unsigned long long>(it->second.lifetime), queue);
+    return true;
+}
+
+void InvalidateStreamlineNormalRender(const char* reason) {
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto& entry : state.swapchains) {
+        auto& record = entry.second;
+        if (record.normalRenderQueue) {
+            HookLogImportant("[STREAMLINE NORMAL] invalidated sc=%p lifetime=%llu queue=%p reason=%s", entry.first,
+                             static_cast<unsigned long long>(record.lifetime), record.normalRenderQueue.Get(),
+                             reason ? reason : "unknown");
+            record.normalRenderQueue.Reset();
+            record.normalRenderSubmitted = false;
+            record.normalRenderWitness = 0;
+            record.normalRenderToken = 0;
+        }
+    }
+    g_normalRenderArmed.store(false, std::memory_order_release);
+}
+
+void InvalidateStreamlineNormalRenderForSwapchain(IDXGISwapChain* swapchain, const char* reason) {
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.swapchains.find(swapchain);
+    if (it == state.swapchains.end() || !it->second.normalRenderQueue)
+        return;
+    auto& record = it->second;
+    HookLogImportant("[STREAMLINE NORMAL] invalidated sc=%p lifetime=%llu queue=%p reason=%s", swapchain,
+                     static_cast<unsigned long long>(record.lifetime), record.normalRenderQueue.Get(),
+                     reason ? reason : "unknown");
+    record.normalRenderQueue.Reset();
+    record.normalRenderSubmitted = false;
+    record.normalRenderWitness = 0;
+    record.normalRenderToken = 0;
+    PublishNormalRenderArmedLocked(state);
+}
+
 Binding CompetingPresenterHoldingPresentation() {
     const uint64_t lifetime = g_holdingCompetingLifetime.load(std::memory_order_acquire);
     if (lifetime == 0) {
@@ -282,6 +396,10 @@ void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* qu
             return;
         }
         previous = it->second.queue;
+        it->second.normalRenderQueue.Reset();
+        it->second.normalRenderSubmitted = false;
+        it->second.normalRenderWitness = 0;
+        it->second.normalRenderToken = 0;
         it->second.queue = queue;
         presenter = it->second.presenter;
         PublishCountLocked(state);

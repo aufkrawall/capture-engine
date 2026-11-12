@@ -200,6 +200,21 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
     }
     if (overlayDrawRecorded) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+        auto* submissionDevice = g_Device.load(std::memory_order_acquire);
+        if (streamlineNormalRenderToken != 0 && !useDedicated && submissionDevice &&
+            SUCCEEDED(submissionDevice->GetDeviceRemovedReason())) {
+            // The registry serializes this transition with replacement and FG-ON invalidation. The signal is
+            // published before FG-ON takes that lock, so a racing activation cannot have its startup state erased.
+            ce::fg_presenter::PromoteStreamlineNormalRender(pSwapChain, eclQueue, streamlineNormalRenderToken, [] {
+                if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
+                    return false;
+                dx12_hook_g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+                DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                DXGIShared::ResetStreamlineStartupTransitionState();
+                return true;
+            });
+        }
         if (!useDedicated && pSwapChain && eclQueue == dx12_hook_g_OriginalGameQueue) {
             IDXGISwapChain* previous =
                 dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.load(std::memory_order_relaxed);

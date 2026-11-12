@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-11-12 - Disabled Streamline replacement lost its overlay after the first Present
+
+- GTA `20261112_030715` (0.1.7516): a prewarmed replacement drew once, then inactive-DLSS routing rejected
+  its unproven queue. The one-shot marker now promotes lifetime- and buffer-bound normal-route admission on a
+  successful submit; active FG cancels it and keeps its own PostSL proof. Retained startup callbacks no longer
+  count as physical outputs. The real-hook regression covers two replacements, including observed same-address reuse, stale tokens,
+  resize and output pixels; it failed before and passes after. Details: [FG guardrails](../frame-generation/guardrails.md#disabled-streamline-replacement-after-fsr-2026-11-12).
+- Hardware retest pending. The saved pacing trace ends before the suspended-FSR intervals; animation timing
+  and output freshness during those intervals remain separate, unproven questions.
+
 ### 2026-11-12 - GTA FSR FG overlay at the rendered rate: Streamline's DLSS-G proxy presents AMD's swapchain
 
 - `20261112_013802` (0.1.7514, ReShade): crash gone, overlay/graph juddering after DLSS FG -> FSR FG. Every

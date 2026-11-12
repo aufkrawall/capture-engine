@@ -447,6 +447,20 @@ bool FlowGame::ReturnToNativeSwapchainOnNewQueue() {
     return CreateSwapchain(SwapchainKind::kNative);
 }
 
+bool FlowGame::ReplaceStreamlineSwapchainOnNewQueue() {
+    if (!error_.empty())
+        return false;
+    ReleaseSwapchain();
+    D3D12_COMMAND_QUEUE_DESC desc{};
+    const HRESULT hr = device_->CreateCommandQueue(&desc, IID_PPV_ARGS(queue_.ReleaseAndGetAddressOf()));
+    if (FAILED(hr))
+        return Fail("CreateCommandQueue for Streamline replacement", hr);
+    queue_->SetName(L"FlowGame_StreamlineReplacementQueue");
+    if (!RefreshPresentChainQueue())
+        return false;
+    return CreateSwapchain(SwapchainKind::kStreamline);
+}
+
 bool FlowGame::SetBackBufferFormat(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace) {
     if (!error_.empty() || !swapchain_ || kind_ != SwapchainKind::kNative)
         return false;

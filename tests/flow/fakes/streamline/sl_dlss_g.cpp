@@ -47,6 +47,11 @@ std::atomic<uint64_t> g_inputsFenceValue{0};
 // factor (0: outputs share the game's frame interval, as with a fixed factor).
 std::atomic<int64_t> g_constantOutputIntervalUs{0};
 std::atomic<bool> g_nextPresentOnTitleThread{false};
+// Opt-in readback in the WARP flow test; the production path never runs this fake.
+std::atomic<bool> g_samplePhysicalOutput{false};
+std::atomic<uint64_t> g_lastOutputDifferentPixels{0};
+std::atomic<IDXGISwapChain*> g_testNativeChain{nullptr};
+std::atomic<ID3D12CommandQueue*> g_testPresentQueue{nullptr};
 
 struct PresentJob {
     UINT syncInterval = 0;
@@ -113,12 +118,17 @@ public:
         device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
+        g_testPresentQueue.store(presentQueue_.Get(), std::memory_order_release);
+        g_testNativeChain.store(real_, std::memory_order_release);
         presenter_ = std::thread([this] { PresenterLoop(); });
         Log(kModule, "proxy swapchain %p created over real %p (proxy buffers=%u presentQueue=%p gameQueue=%p)", this,
             real_, proxyBufferCount_, presentQueue_.Get(), gameQueue_.Get());
     }
 
     ~DLSSGProxySwapChain() override {
+        IDXGISwapChain* expected = real_;
+        if (g_testNativeChain.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel))
+            g_testPresentQueue.store(nullptr, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(jobMutex_);
             stop_ = true;
@@ -252,9 +262,12 @@ private:
                 AdvanceClock(constantOutputInterval);
             else if (output != 0)
                 AdvanceClock(FrameIntervalMicroseconds() / (generated + 1));
+            const UINT presentedIndex = real_->GetCurrentBackBufferIndex();
             CopyIntoRealBackBuffer();
             const bool last = output == generated;
             const HRESULT hr = real_->Present(last ? job.syncInterval : 0, job.flags);
+            if (g_samplePhysicalOutput.load(std::memory_order_relaxed))
+                SamplePhysicalOutput(presentedIndex);
             CountPhysicalPresent();
             if (FAILED(hr))
                 result = hr;
@@ -263,6 +276,75 @@ private:
         proxyIndex_ = (proxyIndex_ + 1) % proxyBufferCount_;
         g_inputsFenceValue.fetch_add(1, std::memory_order_relaxed);
         return result;
+    }
+
+    void SamplePhysicalOutput(UINT index) {
+        g_lastOutputDifferentPixels.store(0, std::memory_order_release);
+        if (index >= realBuffers_.size())
+            return;
+        auto* target = realBuffers_[index].Get();
+        const auto desc = target->GetDesc();
+        if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)
+            return;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+        UINT rows = 0;
+        UINT64 rowBytes = 0, size = 0;
+        device_->GetCopyableFootprints(&desc, 0, 1, 0, &layout, &rows, &rowBytes, &size);
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC buffer{};
+        buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        buffer.Width = size;
+        buffer.Height = 1;
+        buffer.DepthOrArraySize = 1;
+        buffer.MipLevels = 1;
+        buffer.SampleDesc.Count = 1;
+        buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> readback;
+        if (FAILED(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+                                                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                    IID_PPV_ARGS(&readback))))
+            return;
+        WaitForQueue(presentQueue_.Get());
+        if (FAILED(allocator_->Reset()) || FAILED(list_->Reset(allocator_.Get(), nullptr)))
+            return;
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = target;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list_->ResourceBarrier(1, &barrier);
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = target;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = readback.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = layout;
+        list_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+        list_->ResourceBarrier(1, &barrier);
+        if (FAILED(list_->Close()))
+            return;
+        ID3D12CommandList* lists[] = {list_.Get()};
+        presentQueue_->ExecuteCommandLists(1, lists);
+        WaitForQueue(presentQueue_.Get());
+        void* mapped = nullptr;
+        if (FAILED(readback->Map(0, nullptr, &mapped)) || !mapped)
+            return;
+        const auto* bytes = static_cast<const uint8_t*>(mapped);
+        const auto* background = reinterpret_cast<const uint32_t*>(bytes + (rows - 1) * layout.Footprint.RowPitch);
+        const uint32_t backgroundPixel = background[desc.Width - 1];
+        uint64_t different = 0;
+        for (UINT y = 0; y < rows; ++y) {
+            const auto* pixels = reinterpret_cast<const uint32_t*>(bytes + y * layout.Footprint.RowPitch);
+            for (UINT x = 0; x < desc.Width; ++x)
+                different += pixels[x] != backgroundPixel ? 1 : 0;
+        }
+        D3D12_RANGE noWrites{};
+        readback->Unmap(0, &noWrites);
+        g_lastOutputDifferentPixels.store(different, std::memory_order_release);
     }
 
     void CopyIntoRealBackBuffer() {
@@ -606,6 +688,18 @@ void FlowSetConstantOutputInterval(int64_t microseconds) {
     g_constantOutputIntervalUs.store(microseconds, std::memory_order_relaxed);
 }
 
+void FlowNativeBinding(IDXGISwapChain** chain, ID3D12CommandQueue** queue) {
+    *chain = g_testNativeChain.load(std::memory_order_acquire);
+    *queue = g_testPresentQueue.load(std::memory_order_acquire);
+}
+
+void FlowSamplePhysicalOutput(bool enabled) {
+    g_samplePhysicalOutput.store(enabled, std::memory_order_release);
+}
+uint64_t FlowLastOutputDifferentPixels() {
+    return g_lastOutputDifferentPixels.load(std::memory_order_acquire);
+}
+
 void FlowPresentNextBatchOnTitleThread() {
     g_nextPresentOnTitleThread.store(true, std::memory_order_relaxed);
 }
@@ -635,6 +729,12 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&FlowSetModeUnobserved);
     if (std::strcmp(name, "flowSetConstantOutputInterval") == 0)
         return reinterpret_cast<void*>(&FlowSetConstantOutputInterval);
+    if (std::strcmp(name, "flowNativeBinding") == 0)
+        return reinterpret_cast<void*>(&FlowNativeBinding);
+    if (std::strcmp(name, "flowSamplePhysicalOutput") == 0)
+        return reinterpret_cast<void*>(&FlowSamplePhysicalOutput);
+    if (std::strcmp(name, "flowLastOutputDifferentPixels") == 0)
+        return reinterpret_cast<void*>(&FlowLastOutputDifferentPixels);
     if (std::strcmp(name, "flowPresentNextBatchOnTitleThread") == 0)
         return reinterpret_cast<void*>(&FlowPresentNextBatchOnTitleThread);
     return nullptr;

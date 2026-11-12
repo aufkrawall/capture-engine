@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/fg/fg_transition_trace.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_apply.h"
@@ -201,6 +202,11 @@ if (SUCCEEDED(qiHr) && pQueue) {
             const bool prewarmReady = PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context);
             if (prewarmReady) {
                 dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain, std::memory_order_release);
+                if (!streamlineFGRunning) {
+                    ce::fg_presenter::ArmStreamlineNormalRender(pSwapChain, pQueue, [] {
+                        return !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                    });
+                }
                 HookLogImportant(
                     "[OVERLAY VISIBILITY] Armed exact prewarmed PostSL handoff backend for its first Present "
                     "(swapchain=%p queue=%p hadFSR=%d priorPostSL=%d slFG=%d)",

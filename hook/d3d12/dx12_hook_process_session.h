@@ -58,6 +58,7 @@ private:
     bool exactGameSwapchainRecoverySwapchainProof = false;
     bool exactRuntimePresentedSwapchainLifetimeProof = false;
     bool exactPrewarmedPostSLHandoffBackendPreservedThisPresent = false;
+    uint64_t streamlineNormalRenderToken = 0;
     bool independentFSRTopmostCompositedThisPresent = false;
     ce::dx12::FrameRenderAdmission<std::recursive_mutex> renderAdmission;
     bool allowOverlayRender;
