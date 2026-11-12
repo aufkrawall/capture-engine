@@ -98,12 +98,12 @@ void AdvanceFFXComposingFrame(uint64_t frame, bool atFirstSubmission) {
         return;
     }
     uint64_t clearAfter = g_TopmostClearAfterFrame.load(std::memory_order_acquire);
-    if (clearAfter != 0 && frame > clearAfter &&
+    if (ce::dx12_overlay_policy::ShouldRetireKeptTopmostRoute(frame, clearAfter) &&
         g_TopmostClearAfterFrame.compare_exchange_strong(clearAfter, 0, std::memory_order_acq_rel)) {
         const char* reason = g_TopmostClearReason.load(std::memory_order_acquire);
         HookLogImportant(
-            "DX12: No-callback FSR topmost route retired at AMD frame %llu, the first composed after the routing "
-            "change (%s); frames up to %llu kept their owner's route",
+            "DX12: No-callback FSR topmost route retired at AMD frame %llu, once every output of the frames before "
+            "the routing change was presented (%s); frames up to %llu kept their owner's route",
             static_cast<unsigned long long>(frame), reason ? reason : "unspecified",
             static_cast<unsigned long long>(clearAfter));
         DX12_ClearNoCallbackFSRTopmostBatch(reason);
@@ -738,8 +738,8 @@ bool DX12_IsFFXComposingFrameOwnedByTopmost() {
 }
 
 // A routing change made by the game's ffxConfigure for its next frame: AMD composes the frames presented before it
-// with the routing they were scheduled with, so a frame the topmost route owns keeps it until AMD composes the
-// first frame after the change. Clearing at once left the last FSR FG frame's real output without any overlay
+// with the routing they were scheduled with, so a frame the topmost route owns keeps it until all of its outputs were
+// presented (ShouldRetireKeptTopmostRoute). Clearing at once left the last FSR FG frame's real output without any overlay
 // (FG flow test FlowFSR, FSR disable edge: the configure for frame N+1 ran before AMD composed frame N's).
 void DX12_ClearNoCallbackFSRTopmostBatchAfterComposedFrames(const char* reason) {
     const uint64_t lastFrame = g_FFXProxyFrame.load(std::memory_order_acquire);
@@ -757,7 +757,7 @@ void DX12_ClearNoCallbackFSRTopmostBatchAfterComposedFrames(const char* reason) 
     g_TopmostClearAfterFrame.store(lastFrame, std::memory_order_release);
     HookLogImportant(
         "DX12: No-callback FSR topmost route kept for AMD frames up to %llu (composing %llu) after a routing change "
-        "(%s) - retired when AMD composes the next frame",
+        "(%s) - retired once their outputs were presented",
         static_cast<unsigned long long>(lastFrame), static_cast<unsigned long long>(g_FFXComposingFrame.Current()),
         reason ? reason : "unspecified");
 }

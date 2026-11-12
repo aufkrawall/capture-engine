@@ -108,6 +108,17 @@ private:
     std::atomic<uint64_t> frame_{0};
 };
 
+// A routing change keeps the final-batch route for the frames up to `lastKeptFrame` until every one of their outputs
+// was presented, not merely composed: a nested presenter (Streamline's sl.dlss_g.dll under AMD) carries CE's draw on
+// its copy inside the output's Present, which can follow AMD's composition of it by up to a frame. AMD's presenter
+// thread presents frame N's last output before it composes N+1's first, and the game's Present for N+2 submits only
+// once N+1's outputs are all composed, so composing N+2 is the first point that proves N's outputs presented.
+// Retiring when AMD composed N+1 left the real output of the last frame before an FSR suspension without any overlay
+// (FG flow test FlowFSRMenuPixels, nested presenter under ReShade, menu entry).
+inline bool ShouldRetireKeptTopmostRoute(uint64_t composingFrame, uint64_t lastKeptFrame) {
+    return lastKeptFrame != 0 && composingFrame > lastKeptFrame + 1;
+}
+
 // Whether the final-batch route draws on an output of a frame with `record`: exactly when its prework retired the
 // baseline for it, so the frames still composing with the baseline get only the marker. A frame without a prework
 // record keeps the frame-agnostic ownership grant.

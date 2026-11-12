@@ -23,6 +23,7 @@ using ce::dx12_overlay_policy::FFXProxyPreworkRouteName;
 using ce::dx12_overlay_policy::IsFFXProxyBackbufferRoute;
 using ce::dx12_overlay_policy::JudgeFrameExactFFXOutput;
 using ce::dx12_overlay_policy::ShouldDrawTopmostOnFFXOutput;
+using ce::dx12_overlay_policy::ShouldRetireKeptTopmostRoute;
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
@@ -73,6 +74,15 @@ TEST(FFXOutputFramesPolicyTest, GrantDrawsOnlyOnFramesWhoseBaselineWasRetired) {
     // Without a frame record (the prework did not run) the grant decides.
     EXPECT_FALSE(ShouldDrawTopmostOnFFXOutput(FFXFrameOwnerRecord{}, false));
     EXPECT_TRUE(ShouldDrawTopmostOnFFXOutput(FFXFrameOwnerRecord{}, true));
+}
+
+// Menu entry with a nested presenter: the configure-off for frame 428 kept the route for 427, whose real output the
+// nested presenter presented after AMD had started composing 428.
+TEST(FFXOutputFramesPolicyTest, AKeptRouteOutlivesItsFramesUntilTheirOutputsWerePresented) {
+    EXPECT_FALSE(ShouldRetireKeptTopmostRoute(427, 427));
+    EXPECT_FALSE(ShouldRetireKeptTopmostRoute(428, 427));
+    EXPECT_TRUE(ShouldRetireKeptTopmostRoute(429, 427));
+    EXPECT_FALSE(ShouldRetireKeptTopmostRoute(429, 0));
 }
 
 TEST(FFXOutputFramesPolicyTest, OutputIsCoveredByExactlyOneOwner) {
