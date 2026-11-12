@@ -3,6 +3,7 @@
 #include "common/ipc/display_timing_shared.h"
 #include "system_latency_metrics.h"
 #include "hook/overlay/graph_scroll_policy.h"
+#include "hook/overlay/graph_step_audit.h"
 
 #include <atomic>
 #include <cstdint>
@@ -320,6 +321,7 @@ private:
     uint64_t m_graphOutputs = 0;
     uint64_t m_graphDuplicatePositions = 0;
     uint64_t m_graphJumps = 0;  // steps of 1.5 slots or more: the visible counterpart of a hold
+    GraphStepAudit m_graphSteps;  // per route, against the elapsed time
     uint64_t m_graphLastIdentity = UINT64_MAX;
     uint64_t m_graphCursorIdentity = UINT64_MAX;
     uint64_t m_graphHistoryResets = 0;

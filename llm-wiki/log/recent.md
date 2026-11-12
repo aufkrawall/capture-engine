@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-11-12 - FSR menu transition: final-output pixel oracle, one real gap fixed
+
+- `FlowFSRMenuPixels` reads every FidelityFX output back after its Present and judges panel, single blend, HUD,
+  text freshness and graph motion from pixels (graph_motion_oracle.h). WARP result through DLSS -> FSR -> menu ->
+  resume (nested presenter under ReShade) and direct/callback FSR: uniform ~2.6-2.9 px (one slot) per shown output,
+  residual ~0.1 px, no double blend. Flow graphs run on presentation timing (no ETW display data), so GTA's
+  display-timed menu cadence is NOT reproduced; no cursor change was made from this.
+- Expected, by design: the first ~3 frames after an FSR enable show the same graph on both outputs of a frame (UI
+  baseline until the final-batch route re-proves itself). The oracle allows that pattern only in that window.
+- Real defect found and fixed (1f58e95e): FSR configure-off kept the topmost route for frame N but retired it when
+  AMD began composing N+1; the nested presenter presents N's real output later, so it went out without overlay
+  (`AMD FG output of frame 427 has NO overlay owner`, coverage uncovered=1). Retire on composing N+2
+  (`ShouldRetireKeptTopmostRoute`). Plausibly a one-frame overlay blink at GTA menu entry; not hardware-verified.
+- Test artefacts ruled out on the way: a probe inside the runtime image before Present was learned as CE's anchor
+  batch (overlay after the copy), and runtime-image frames between ReShade and DXGI made each real output attribute to
+  the next frame (double blend at the handover). Both disappeared with the host-side post-Present probe.
+- `[OverlayGraph]` now appends `app=draws/holds/jumps/meanResidual/maxStep out=...` (GraphStepAudit): steps vs the
+  elapsed draw interval (application draws) or one display interval per new output, in sample slots. Next GTA run:
+  read these in the menu window to see which route holds and whether residual is clamp/resync driven.
+
 ### 2026-11-12 - FSR menu transition: displayed pixels still unverified
 
 - Session `gtajudder` (0.1.7519) confirms the nested presenter and final-batch route during active FSR, then the

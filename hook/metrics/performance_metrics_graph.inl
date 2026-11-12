@@ -32,6 +32,7 @@ PerformanceMetrics::GraphHistoryFrame PerformanceMetrics::PrepareGraphHistory(in
     const int64_t lastDisplayUs = m_graphLastDisplayUs > 0 ? m_graphLastDisplayUs : lastSampleUs;
     if (result.identity != m_graphCursorIdentity) {
         m_graphScroll.Reset();
+        m_graphSteps.Restart();
         m_graphCursorIdentity = result.identity;
     }
     if (result.state != FrameTimingState::DisplayStarting) {
@@ -42,6 +43,8 @@ PerformanceMetrics::GraphHistoryFrame PerformanceMetrics::PrepareGraphHistory(in
                                                             lastDisplayUs, displayPeriodUs, drawUs, output.kind,
                                                             output.outputId})
                                    : m_graphScroll.Advance(samples);
+        m_graphSteps.Observe(output.kind, output.outputId, result.cursor, drawUs, samplePeriodUs, displayPeriodUs,
+                             !useDisplay);
         const uint64_t end = static_cast<uint64_t>(result.cursor) + 1;
         const uint64_t oldest = samples > HISTORY_SIZE ? samples - HISTORY_SIZE : 0;
         count = (std::min)((std::max)(count, 0), HISTORY_SIZE);
@@ -69,14 +72,18 @@ PerformanceMetrics::GraphHistoryFrame PerformanceMetrics::PrepareGraphHistory(in
         m_graphLogStartUs = drawUs;
     if (drawUs > m_graphLogStartUs && drawUs - m_graphLogStartUs >= 10'000'000) {
         const uint64_t published = samples >= m_graphLastSampleCount ? samples - m_graphLastSampleCount : 0;
+        // Per route: draws/holds/jumps/mean |step - elapsed slots|/largest step.
+        char steps[192] = {};
+        m_graphSteps.Format(steps, sizeof(steps));
         HookLogImportant("[OverlayGraph] draws=%llu outputs=%llu samples=%llu samePosition=%llu jumps=%llu "
-                         "resets=%llu samplePeriodUs=%.1f displayPeriodUs=%.1f",
+                         "resets=%llu samplePeriodUs=%.1f displayPeriodUs=%.1f %s",
                          static_cast<unsigned long long>(m_graphDraws), static_cast<unsigned long long>(m_graphOutputs),
                          static_cast<unsigned long long>(published),
                          static_cast<unsigned long long>(m_graphDuplicatePositions),
                          static_cast<unsigned long long>(m_graphJumps),
-                         static_cast<unsigned long long>(m_graphHistoryResets), samplePeriodUs, displayPeriodUs);
+                         static_cast<unsigned long long>(m_graphHistoryResets), samplePeriodUs, displayPeriodUs, steps);
         m_graphDraws = m_graphOutputs = m_graphDuplicatePositions = m_graphJumps = m_graphHistoryResets = 0;
+        m_graphSteps.ResetCounters();
         m_graphLastSampleCount = samples;
         m_graphLogStartUs = drawUs;
     }

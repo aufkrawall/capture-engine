@@ -309,6 +309,14 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   - Crash dump naming/policy, external dump storm suppression/termination thresholds, watchdog dump hygiene, and hook-DLL binary regression strings for crash/FG startup recovery paths.
 - `tests/test_overlay_fg_status_publication.cpp`
   - Visible FG label and multiplier publication behavior.
+- `tests/flow/test_flow_fsr_menu_pixels.cpp`, `tests/flow/graph_motion_oracle.h` (unit: `tests/test_graph_motion_oracle.cpp`)
+  - FG flow pixel oracle: each FidelityFX output read back after its Present (`flow_host_output_probe.cpp`, host
+    executable, directly above DXGI; the nested presenter probe in `sl_dlss_g.cpp` likewise samples after Present).
+    A readback from runtime-image code before Present becomes CE's final-batch anchor, and runtime-image frames
+    inside the Present chain break CE's runtime-Present-site detection: both made CE look broken when it was not.
+    `CE_FLOW_MAGENTA_GRAPH=1` gives the graph a unique color; the oracle matches per-column line profiles between
+    consecutive outputs and fails holds/catch-ups/rewinds (residual > 0.3 px = rescale, not motion). Mutating the
+    cursor to hold every 16th draw fails every judged phase.
 - `tests/test_fps_limiter.cpp`
   - FPS limiter behavior and compatibility policy tests, including explicit Reflex limiter ABI/device/cadence coverage, GTA-safe game-owned Reflex handoff rules, and basic timer cadence coverage that must not depend on helper-process release events.
 - `tests/test_process_ipc.cpp`
