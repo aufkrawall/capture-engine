@@ -85,7 +85,9 @@ struct GameOptions {
     uint32_t fsrPassthroughFramesAfterEnable = 0;
     uint32_t fsrPresentChainOverlayOutputs = 0;
     bool fsrRelayOutputSubmissions = false;  // a foreign queue layer forwards AMD's composition batch
-    bool fsrSeparateCompositionQueue = false;  // composition and native-swapchain creation use different queues
+    // The runtime submits its last presenter-thread batch on a second DIRECT queue that does not own the swapchain's
+    // buffers (GTA V Enhanced: AMD's batch on a queue the real swapchain was not created on).
+    bool fsrSideQueueBatch = false;
     // With fsrRelayOutputSubmissions: stack frames the runtime's Present passes through before the swapchain, the
     // Present-chain overlay submitting at the deepest one (GTA V Enhanced: Social Club, Epic's overlay, Streamline
     // and ReShade wrap the swapchain AMD presents to).

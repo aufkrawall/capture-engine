@@ -247,7 +247,6 @@ void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
 // The frame generation runtime image whose proxy Present CE hooks, and the thread presenting into that proxy (the
 // game thread; 0 before its first prework): what the final-batch route anchors on (dx12_hook_ffx_proxy_present.cpp).
 bool DX12_GetPresentingFFXRuntimeImage(uintptr_t* base, uintptr_t* end);
-void DX12_SetFFXNativeOutputQueue(ID3D12CommandQueue* queue);
 DWORD DX12_GetFFXProxyPresentThreadId();
 
 // Frames of AMD's frame generation swapchain (dx12_hook_ffx_topmost_batch.cpp; policy in

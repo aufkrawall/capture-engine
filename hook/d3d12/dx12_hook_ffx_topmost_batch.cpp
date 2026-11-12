@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_queue_identity.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/sharpen_dxgi_format.h"
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -18,7 +20,16 @@ struct ObservedECLBatch {
     ID3D12CommandQueue* queue = nullptr;
     uint64_t composingFrame = 0;
     bool relayed = false;
-    bool graphicsQueue = false;
+    uintptr_t immediateSite = 0;  // the ECL caller before a relayed runtime site replaced it (diagnostics only)
+};
+
+// The native queue the presented swapchain's buffers belong to (fg_presenter's registration: its create queue, or the
+// one a ResizeBuffers1 bound), per presenter thread. Identity only: the registration owns the queue. Refreshed when
+// the presented swapchain or the registry changes, so the Present path pays one atomic load otherwise.
+struct PresentedOwnerQueue {
+    IDXGISwapChain* swapChain = nullptr;
+    uint64_t registrationEpoch = 0;
+    ID3D12CommandQueue* queue = nullptr;
 };
 
 struct PresenterFrameTrace {
@@ -42,6 +53,7 @@ struct EmbeddedBatchSubmitContext {
 
 thread_local PresenterFrameTrace t_PresenterFrameTrace;
 thread_local EmbeddedBatchSubmitContext* t_EmbeddedBatchSubmitContext = nullptr;
+thread_local PresentedOwnerQueue t_PresentedOwnerQueue;
 
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::recursive_mutex g_TopmostBatchMutex;
@@ -59,8 +71,6 @@ std::atomic<bool> g_TopmostBatchOwnershipGranted{false};
 std::atomic<uint64_t> g_TopmostBatchSubmitCount{0};
 // The route tracks a live FFX presentation (g_TopmostBatchSwapChain set), readable without the mutex.
 std::atomic<bool> g_TopmostBatchRouteTracked{false};
-// Identity only. The swapchain binding owns the queue, and ECL holds a live receiver.
-std::atomic<ID3D12CommandQueue*> g_FFXNativeOutputQueue{nullptr};
 
 // AMD frame generation swapchain frames (policy and the AMD ordering they rely on: ffx_output_frames.h).
 std::atomic<uint64_t> g_FFXProxyFrame{0};
@@ -165,23 +175,62 @@ uintptr_t RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
     uintptr_t runtimeBase = 0, runtimeEnd = 0;
     uintptr_t submitSite = immediateSite;
     bool relayed = false;
-    const bool graphicsQueue = queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
-    if (graphicsQueue && DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd)) {
-        if (!IsInRuntimeImage(immediateSite, runtimeBase, runtimeEnd) && t_FFXForwardFrame == 0) {
-            // The queue proxy can be the immediate caller even for AMD's own submission.
-            // The create-time queue need not be the composition queue (a nested presenter can replace it).
-            // Recover the runtime call site on every candidate queue; the Present-site exclusion below, the
-            // stable queue/site/ordinal signature and inline completion still prove the route before it owns UI.
-            if (const uintptr_t runtimeSite = FindRuntimeReturnAddress(runtimeBase, runtimeEnd)) {
-                submitSite = runtimeSite;
-                relayed = true;
-                t_PresenterFrameTrace.relayedBatchSeen = true;
-            }
+    // The queue proxy can be the immediate caller even for AMD's own submission. Only a batch on the queue the
+    // presented swapchain's buffers belong to can ever carry CE's draw, so only those pay for the stack walk.
+    if (queue && queue == t_PresentedOwnerQueue.queue && t_FFXForwardFrame == 0 &&
+        DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd) &&
+        !IsInRuntimeImage(immediateSite, runtimeBase, runtimeEnd)) {
+        if (const uintptr_t runtimeSite = FindRuntimeReturnAddress(runtimeBase, runtimeEnd)) {
+            submitSite = runtimeSite;
+            relayed = true;
+            t_PresenterFrameTrace.relayedBatchSeen = true;
         }
     }
     t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count++] = {
-        submitSite, queue, g_FFXComposingFrame.Current(), relayed, graphicsQueue};
+        submitSite, queue, g_FFXComposingFrame.Current(), relayed, immediateSite};
     return submitSite;
+}
+
+// "module.dll+0x1234" (base name only) for the rate-limited batch diagnostics: which layer submitted on which queue.
+void DescribeSubmitter(uintptr_t address, char* out, size_t outSize) {
+    HMODULE module = nullptr;
+    char path[MAX_PATH] = {};
+    if (address != 0 &&
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(address), &module) &&
+        module && GetModuleFileNameA(module, path, MAX_PATH) > 0) {
+        const char* baseName = std::strrchr(path, '\\');
+        std::snprintf(out, outSize, "%s+0x%llX", baseName ? baseName + 1 : path,
+                      static_cast<unsigned long long>(address - reinterpret_cast<uintptr_t>(module)));
+        return;
+    }
+    std::snprintf(out, outSize, "%p", reinterpret_cast<void*>(address));
+}
+
+// The native queue that owns `swapChain`'s buffers, or null when CE never saw it created (no GPU work then).
+ID3D12CommandQueue* PresentedSwapchainOwnerQueue(IDXGISwapChain* swapChain) {
+    const uint64_t epoch = ce::fg_presenter::RegistrationEpoch();
+    PresentedOwnerQueue& cached = t_PresentedOwnerQueue;
+    if (cached.swapChain == swapChain && cached.registrationEpoch == epoch) {
+        return cached.queue;
+    }
+    ID3D12CommandQueue* const registered = swapChain ? ce::fg_presenter::OutputQueue(swapChain) : nullptr;
+    // A proxy stack may sit between the registered create argument and the queue whose ECL CE observes.
+    const auto nativeQueue = ce::dx12_queue_identity::AcquireNativeQueue(registered);
+    const PresentedOwnerQueue previous = cached;
+    cached = {swapChain, epoch, nativeQueue.Get()};
+    if (previous.swapChain != swapChain || previous.queue != cached.queue) {
+        static std::atomic<uint32_t> s_ownerLogs{0};
+        if (ce::log_meter::ShouldLogCadence(s_ownerLogs.fetch_add(1, std::memory_order_relaxed) + 1, 20, 300)) {
+            HookLogImportant(
+                "DX12: No-callback FSR presented swapchain %p owns its buffers on queue %p (registered=%p "
+                "tid=0x%04lX)%s",
+                swapChain, cached.queue, registered, static_cast<unsigned long>(GetCurrentThreadId()),
+                cached.queue ? "; only batches on that queue can carry CE's draw"
+                             : "; unknown owner: no batch can carry CE's draw, the UI baseline keeps the overlay");
+        }
+    }
+    return cached.queue;
 }
 
 // The batch whose composing frame names the output: the presenting runtime's own last one. An overlay hooked into the
@@ -274,11 +323,6 @@ void ReplaceRetainedPresentationObjects(IDXGISwapChain* swapChain, ID3D12Command
 
 }  // namespace
 
-void DX12_SetFFXNativeOutputQueue(ID3D12CommandQueue* queue) {
-    const auto nativeQueue = ce::dx12_queue_identity::AcquireNativeQueue(queue);
-    g_FFXNativeOutputQueue.store(nativeQueue.Get(), std::memory_order_release);
-}
-
 bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     ID3D12CommandQueue* queue, UINT commandListCount, ID3D12CommandList* const* commandLists,
     ExecuteCommandListsPtr original, const void* callSite) {
@@ -307,6 +351,19 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
 
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
     if (!g_TopmostBatchSwapChain || !g_TopmostBatchQueue || queue != g_TopmostBatchQueue) {
+        return false;
+    }
+    // The learned route chose this queue as the presented swapchain's own; prove it again for the swapchain the draw
+    // targets right now. Any other queue writing its back buffers removes the device (gtadlssfgtofsrfgcrash).
+    if (t_PresentedOwnerQueue.swapChain != g_TopmostBatchSwapChain || queue != t_PresentedOwnerQueue.queue) {
+        static std::atomic<uint32_t> s_foreignQueueRefusals{0};
+        if (ce::log_meter::ShouldLogCadence(s_foreignQueueRefusals.fetch_add(1, std::memory_order_relaxed) + 1, 10,
+                                            300)) {
+            HookLogImportant(
+                "DX12: No-callback FSR topmost append REFUSED on queue %p: swapchain %p owns its buffers on %p "
+                "(owner known for %p) — CE never writes a back buffer from another queue",
+                queue, g_TopmostBatchSwapChain, t_PresentedOwnerQueue.queue, t_PresentedOwnerQueue.swapChain);
+        }
         return false;
     }
     DXGI_SWAP_CHAIN_DESC desc = {};
@@ -400,6 +457,8 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
 
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible) {
     dx12_hook_g_SharedCaptureD3D12.RefreshEmbeddedCopies();
+    // Before the route lock: a registry change resolves the owner through the queue's proxies (COM calls).
+    ID3D12CommandQueue* const ownerQueue = routeEligible ? PresentedSwapchainOwnerQueue(swapChain) : nullptr;
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
     const bool traceUsable = !t_PresenterFrameTrace.overflow && t_PresenterFrameTrace.count != 0;
     uintptr_t runtimeBase = 0;
@@ -415,7 +474,7 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
             const ObservedECLBatch& batch = t_PresenterFrameTrace.batches[i];
             batches[i] = {batch.callSite, reinterpret_cast<uintptr_t>(batch.queue),
                           runtimeImageKnown && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd),
-                          batch.relayed, batch.graphicsQueue};
+                          batch.relayed, ownerQueue != nullptr && batch.queue == ownerQueue};
             relayedBatches += batch.relayed ? 1 : 0;
         }
         runtimePresentSite = t_PresenterFrameTrace.relayedBatchSeen && runtimeImageKnown
@@ -436,8 +495,8 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
                 ce::log_meter::MixFieldBytes(key, batch.callSite);
                 ce::log_meter::MixFieldBytes(key, batch.queue);
                 ce::log_meter::MixFieldBytes(key, batch.relayed);
-                ce::log_meter::MixFieldBytes(key, batch.graphicsQueue);
             }
+            ce::log_meter::MixFieldBytes(key, ownerQueue);
             static std::atomic<uint32_t> s_unusableTraceChanges{0};
             const auto verdict = s_unusableTraceLog.Observe(key);
             if (verdict && ce::log_meter::ShouldLogCadence(
@@ -446,21 +505,25 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
                 // its relayed batches cannot be told apart from the Present chain's.
                 HookLogImportant(
                     "DX12: No-callback FSR final-batch trace unusable (sc=%p batches=%zu overflow=%d "
-                    "anchor=%d relayed=%zu presentSite=%p runtimeImage=%p createQueue=%p)%s; "
+                    "anchor=%d relayed=%zu presentSite=%p runtimeImage=%p ownerQueue=%p)%s; "
                     "proxy overlay baseline remains active",
                     swapChain, t_PresenterFrameTrace.count, t_PresenterFrameTrace.overflow ? 1 : 0,
                     anchorFound ? 1 : 0, relayedBatches, reinterpret_cast<void*>(runtimePresentSite),
-                    reinterpret_cast<void*>(runtimeBase), g_FFXNativeOutputQueue.load(std::memory_order_acquire),
+                    reinterpret_cast<void*>(runtimeBase), ownerQueue,
                     ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
                 // Keep the actual sites and queues: counts alone cannot distinguish a nested presenter from a
                 // missed queue-proxy return address. Never include the full per-output stack in the log.
                 const size_t reported = std::min(t_PresenterFrameTrace.count, size_t{8});
                 for (size_t i = 0; i < reported; ++i) {
                     const auto& batch = t_PresenterFrameTrace.batches[i];
+                    char submitter[MAX_PATH + 32] = {};
+                    DescribeSubmitter(batch.immediateSite, submitter, sizeof(submitter));
                     HookLogImportant(
-                        "DX12: No-callback FSR batch %zu/%zu site=%p queue=%p graphics=%d relayed=%d runtime=%d",
-                        i + 1, t_PresenterFrameTrace.count, reinterpret_cast<void*>(batch.callSite), batch.queue,
-                        batch.graphicsQueue ? 1 : 0, batch.relayed ? 1 : 0,
+                        "DX12: No-callback FSR batch %zu/%zu site=%p submitter=%s queue=%p owner=%d relayed=%d "
+                        "runtime=%d",
+                        i + 1, t_PresenterFrameTrace.count, reinterpret_cast<void*>(batch.callSite), submitter,
+                        batch.queue, ownerQueue != nullptr && batch.queue == ownerQueue ? 1 : 0,
+                        batch.relayed ? 1 : 0,
                         runtimeImageKnown && IsInRuntimeImage(batch.callSite, runtimeBase, runtimeEnd) ? 1 : 0);
                 }
             }
@@ -483,17 +546,6 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     }
 
     auto* const anchorQueue = reinterpret_cast<ID3D12CommandQueue*>(observed.queueIdentity);
-    static ce::log_meter::ChangeGate s_anchorQueueLog;
-    auto* const createQueue = g_FFXNativeOutputQueue.load(std::memory_order_acquire);
-    static std::atomic<uint32_t> s_anchorQueueChanges{0};
-    const auto queueVerdict = s_anchorQueueLog.Observe(ce::log_meter::FieldKey(swapChain, anchorQueue, createQueue));
-    if (queueVerdict && ce::log_meter::ShouldLogCadence(
-            s_anchorQueueChanges.fetch_add(1, std::memory_order_relaxed) + 1, 10, 300)) {
-        HookLogImportant("DX12: No-callback FSR composition queue=%p createQueue=%p match=%d%s; "
-                         "learning the final-batch route on the observed queue",
-                         anchorQueue, createQueue, anchorQueue == createQueue ? 1 : 0,
-                         ce::log_meter::SuppressedNote(queueVerdict.suppressed).c_str());
-    }
     const size_t batchesAfterAnchor = t_PresenterFrameTrace.count - anchorIndex - 1;
     const bool presentationChanged = ce::dx12_overlay_policy::IsNewTopmostPresentation(
         swapChain != g_TopmostBatchSwapChain, anchorQueue != g_TopmostBatchQueue,

@@ -235,9 +235,9 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 The Witcher 3 with Steam, ReShade and Streamline kept the no-UI-resource backbuffer route under FSR FG: the
 final-batch observer saw two or three submissions per output without an immediate return address in the runtime
 image (display ~83 FPS, graph rebuilt at ~41 FPS). `dx12_hook_ffx_topmost_batch.cpp` recovers the runtime return
-address on each observed queue when a forwarding layer hides the submitter; the composition queue need not equal the
-create-time queue. Submissions with the runtime's physical-Present return address are inside the Present chain and
-cannot anchor it. The last proven direct or relayed runtime batch wins; `anchor=runtime-via-queue-proxy` names a relay.
+address behind a forwarding layer. Only batches on the presented swapchain's own queue (`fg_presenter::OutputQueue`)
+can anchor: another queue writing its back buffer removes the device. Batches at the runtime's physical-Present
+return address are Present-chain ones; the last other direct or relayed (`anchor=runtime-via-queue-proxy`) one wins.
 
 GTA V Enhanced + ReShade after DLSS FG -> FSR FG (`gtafsroverlaystutteryghosty`, 0.1.7505): `final-batch trace
 unusable (... runtimeBatch=0 relayed=1)` for the whole FSR run, overlay in the game's UI texture at the rendered rate
@@ -245,11 +245,11 @@ unusable (... runtimeBatch=0 relayed=1)` for the whole FSR run, overlay in the g
 wrap AMD's real swapchain, so AMD's Present call lay beyond the 20 frames `FindRuntimeReturnAddress` searched, and
 without that site no relayed batch qualified. It walks 16 frames, then up to 112 more. The unusable line prints
 `anchor= relayed=<count> presentSite=` (0: the Present call was not found). The 0.1.7511 retest found that site but still
-had no anchor (4 batches, 3 relayed). Queue-restricted recovery and direct-before-relayed selection were removed;
-unusable traces now report up to 8 sites/queues on changes. `FlowFSR.RelayedCompositionOnAnotherQueueKeepsTheOverlayAtOutputRate`
-and the mixed-batch policy regression cover those blind spots; they were added without running builds/tests at the
-user's request. This session does not identify the unclassified batch's queue, or prove the cause of visible ghosting.
-See [guardrails](frame-generation/guardrails.md#startup-resources-and-relayed-fsr-composition-2026-11-11) for retest criteria.
+had no anchor (4 batches, 3 relayed). 0.1.7513 (`6a56e025`) then recovered relayed batches on every queue and crashed:
+AMD's last batch ran on a second DIRECT queue, CE anchored there, and its first draw removed the device. Anchors are
+now restricted to the swapchain's own queue, so this GTA topology has no anchor and keeps the UI-resource route at the
+rendered rate; unusable traces list up to 8 batches with `submitter=module+offset owner=`. Evidence and the open
+nested-presenter question: [guardrails](frame-generation/guardrails.md#startup-resources-and-relayed-fsr-composition-2026-11-11).
 
 ## PC latency source hierarchy
 

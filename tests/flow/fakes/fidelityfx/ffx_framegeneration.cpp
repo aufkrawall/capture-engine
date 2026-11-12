@@ -90,10 +90,9 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12
 class FrameGenerationProxySwapChain final : public ForwardingSwapChain {
 public:
     FrameGenerationProxySwapChain(IDXGISwapChain4* real, ID3D12CommandQueue* presentQueue,
-                                  ID3D12CommandQueue* compositionQueue, ID3D12CommandQueue* gameQueue,
-                                  UINT proxyBufferCount)
-        : ForwardingSwapChain(real), presentQueue_(presentQueue), compositionQueue_(compositionQueue),
-          gameQueue_(gameQueue), proxyBufferCount_(proxyBufferCount) {
+                                  ID3D12CommandQueue* sideQueue, ID3D12CommandQueue* gameQueue, UINT proxyBufferCount)
+        : ForwardingSwapChain(real), presentQueue_(presentQueue), sideQueue_(sideQueue), gameQueue_(gameQueue),
+          proxyBufferCount_(proxyBufferCount) {
         presentQueue_->GetDevice(IID_PPV_ARGS(&device_));
         device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_));
         device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_));
@@ -112,12 +111,18 @@ public:
         device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, overlayAllocator_.Get(), nullptr,
                                    IID_PPV_ARGS(&overlayList_));
         overlayList_->Close();
+        if (sideQueue_) {
+            device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&sideAllocator_));
+            device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, sideAllocator_.Get(), nullptr,
+                                       IID_PPV_ARGS(&sideList_));
+            sideList_->Close();
+        }
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
         presenter_ = std::thread([this] { PresenterLoop(); });
         Log(kModule, "proxy swapchain %p over real %p "
-                     "(presentQueue=%p compositionQueue=%p gameQueue=%p buffers=%u lifetime=%llu)",
-            this, real_, presentQueue_.Get(), compositionQueue_.Get(), gameQueue_.Get(), proxyBufferCount_,
+                     "(presentQueue=%p sideQueue=%p gameQueue=%p buffers=%u lifetime=%llu)",
+            this, real_, presentQueue_.Get(), sideQueue_.Get(), gameQueue_.Get(), proxyBufferCount_,
             static_cast<unsigned long long>(presenterLifetime_));
     }
 
@@ -403,6 +408,7 @@ private:
         }
         Transition(list_.Get(), source, declared, restingState);
         SubmitList();
+        SubmitSideBatch();
     }
 
     // `scheduled`: an output of the presenter thread (a passthrough frame presents on the game thread).
@@ -453,16 +459,33 @@ private:
 
     void SubmitList() {
         list_->Close();
-        ID3D12CommandList* lists[] = {list_.Get()};
+        Execute(presentQueue_.Get(), list_.Get());
+        WaitForQueue(presentQueue_.Get());
+    }
+
+    // The runtime's last batch before Present, on a second DIRECT queue that never touches the swapchain's buffers
+    // (GTA V Enhanced, gtadlssfgtofsrfgcrash: AMD's last presenter-thread batch ran on a queue the real swapchain was
+    // not created on; CE's draw appended there removed the device). Empty: only its queue and position matter.
+    void SubmitSideBatch() {
+        if (!sideQueue_)
+            return;
+        sideAllocator_->Reset();
+        sideList_->Reset(sideAllocator_.Get(), nullptr);
+        sideList_->Close();
+        Execute(sideQueue_.Get(), sideList_.Get());
+        WaitForQueue(sideQueue_.Get());
+    }
+
+    void Execute(ID3D12CommandQueue* queue, ID3D12CommandList* list) {
         using ExecuteRelayedBatch = void (*)(ID3D12CommandQueue*, ID3D12CommandList*);
         static const auto executeRelayed = reinterpret_cast<ExecuteRelayedBatch>(
             GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_ExecuteRelayedBatch"));
-        if (relayOutputSubmissions_ && executeRelayed)
-            executeRelayed(compositionQueue_.Get(), lists[0]);
-        else
-            compositionQueue_->ExecuteCommandLists(1, lists);
-        // Fence completion serializes the fake's composition with Present even when the queues differ.
-        WaitForQueue(compositionQueue_.Get());
+        if (relayOutputSubmissions_ && executeRelayed) {
+            executeRelayed(queue, list);
+        } else {
+            ID3D12CommandList* lists[] = {list};
+            queue->ExecuteCommandLists(1, lists);
+        }
     }
 
     void WaitForQueue(ID3D12CommandQueue* queue) {
@@ -475,7 +498,9 @@ private:
     }
 
     ComPtr<ID3D12CommandQueue> presentQueue_;
-    ComPtr<ID3D12CommandQueue> compositionQueue_;
+    ComPtr<ID3D12CommandQueue> sideQueue_;  // null unless the scenario asks for the runtime's side batch
+    ComPtr<ID3D12CommandAllocator> sideAllocator_;
+    ComPtr<ID3D12GraphicsCommandList> sideList_;
     ComPtr<ID3D12CommandQueue> gameQueue_;
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12CommandAllocator> allocator_;
@@ -594,16 +619,16 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
         presentThrough = real4;
         submitThrough = swapchainContext->presentQueue;
     }
-    ComPtr<ID3D12CommandQueue> compositionQueue = submitThrough;
-    if (ScenarioCount("CE_FLOW_FFX_SEPARATE_COMPOSITION_QUEUE") != 0) {
-        if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(compositionQueue.ReleaseAndGetAddressOf())))) {
+    ComPtr<ID3D12CommandQueue> sideQueue;
+    if (ScenarioCount("CE_FLOW_FFX_SIDE_QUEUE_BATCH") != 0) {
+        if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&sideQueue)))) {
             delete swapchainContext;
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
-        compositionQueue->SetName(L"FakeFFX_CompositionQueue");
+        sideQueue->SetName(L"FakeFFX_SideQueue");
     }
     swapchainContext->proxy = new FrameGenerationProxySwapChain(presentThrough.Get(), submitThrough.Get(),
-                                                                compositionQueue.Get(), desc.gameQueue,
+                                                                sideQueue.Get(), desc.gameQueue,
                                                                 desc.desc->BufferCount);
     swapchainContext->proxy->AddRef();
     *desc.swapchain = swapchainContext->proxy;

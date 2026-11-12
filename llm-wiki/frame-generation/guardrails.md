@@ -9,20 +9,28 @@
   The old extra submission prepared a different adapter from the descriptor-free renderer that actually drew.
   The existing queue/allocator guards still own ordering and reuse; wall-clock time proves neither.
 - FSR at 21:34:08: the deeper search found AMD's Present site but no anchor (4 batches, 3 relayed), and the UI
-  baseline stayed at rendered-frame rate. Recover relayed runtime sites on every observed queue, not just the
-  captured create queue; choose the last proven direct/relayed batch in chronological order. Do not accept a
-  Present-chain submission merely because the runtime is somewhere above it. Same-batch append, two matching
-  signatures, inline completion, presenter-thread proof and per-frame baseline retirement remain mandatory.
-  Only DIRECT queues can anchor CE's graphics list; later runtime compute/copy submissions are excluded by policy.
-- Coverage: `FlowPresentChainOverlays.ColdStartupResourcesNeedNoExtraWallClockSettle`,
-  `FlowFSR.RelayedCompositionOnAnotherQueueKeepsTheOverlayAtOutputRate`, and the mixed-batch case in
-  `tests/test_ffx_topmost_batch_policy.cpp`. **Not run:** the user explicitly requested no builds/tests.
-- Hardware retest: first cold overlay should no longer log a standalone startup prime or 100 ms post-prime wait;
-  FSR should reach a stable final-batch signature and ownership grant. If it remains unusable, the change-gated
-  diagnostic prints up to eight sites/queues plus the create queue. The old counts do not identify the missing
-  batch's queue, so this is a source correction with hardware confirmation pending, not proof of ghosting's cause.
-  The same session also held a DLSS-G unload without a forwarded line after the old native chain died; its nested
-  Streamline presentation needs separate attribution if FSR still has no runtime anchor.
+  baseline stayed at rendered-frame rate. `6a56e025` then recovered relayed runtime sites on every DIRECT queue,
+  untested; 0.1.7513 crashed on it (`gtadlssfgtofsrfgcrash`, DLSS FG -> FSR FG, ReShade 6.8 as `dxgi.dll`).
+- Crash evidence: the presenter thread's trace (CE's thread-local batches, read from the freeze dump) was AMD's
+  execute+signal helper (`amd_fidelityfx_dx12!ffxQuery+0x1e0fd`, a generic ECL call site) relayed by ReShade's queue
+  proxy on native queue `...198D0`, then three Present-chain batches at AMD's Present site (`+0x209c1`) on `...1A640`,
+  the queue `sl.dlss_g.dll` passed to the native `CreateSwapChainForHwnd`. CE anchored on AMD's batch; four
+  marker-only probes passed, and the first draw onto the real back buffer returned `0x887A0005` on that very Present
+  (GTA: `ERR_GFX_STATE`, then its own int3). D3D12 removes the device when a queue other than the swapchain's writes
+  its back buffers (debug layer id 907; also `routing_policy.h` `ShouldUseDedicatedDX12OverlayQueue`).
+- Invariant: a final-batch anchor must run on the queue that owns the presented swapchain's buffers
+  (`fg_presenter::OutputQueue`, natively resolved, cached per presenter thread by registration epoch). Relay
+  recovery walks only that queue's submissions; the append re-checks the owner before every draw and refuses
+  otherwise. Unknown owner = no anchor. The `graphicsQueue` filter and `g_FFXNativeOutputQueue` are gone.
+- Consequence for GTA + ReShade + Streamline: no AMD-site batch exists on the owner queue (AMD's output reaches the
+  back buffer only through a submission inside its Present call), so the route stays on the UI baseline at the
+  rendered rate. Open: which Present-chain layer writes AMD's output there (likely the nested `sl.dlss_g` presenter);
+  the unusable-trace lines now print `submitter=module+offset owner=` per batch to decide a nested-presenter anchor.
+- Coverage: `FlowFSR.A{Relayed,Direct}RuntimeBatchOnAnotherQueueNeverCarriesTheOverlay` (fake runtime's empty
+  side batch on a second DIRECT queue after its composition) failed before the fix with id 907 and
+  `Present failed (hr=0x887A0005)` and pass after; `FFXTopmostBatchPolicyTest.RuntimeWorkOnAQueueThatDoesNotOwn*`.
+  The removed `...OnAnotherQueue...AtOutputRate` scenario copied into the real back buffer from a non-owner queue,
+  a topology the D3D12 runtime itself forbids.
 
 ## Protected FidelityFX startup
 

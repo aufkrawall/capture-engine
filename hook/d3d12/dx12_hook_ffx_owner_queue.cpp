@@ -235,7 +235,6 @@ bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swa
 }
 
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason) {
-    DX12_SetFFXNativeOutputQueue(nullptr);
     DX12_ClearNoCallbackFSRTopmostBatch(reason ? reason : "native FSR owner queue unregistered");
     struct ReleasedBinding {
         void* proxy = nullptr;

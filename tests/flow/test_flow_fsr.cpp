@@ -128,15 +128,26 @@ TEST(FlowFSR, RelayedCompositionUnderADeepPresentChainKeepsTheOverlayAtOutputRat
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 
-// A nested presenter or queue layer can use a different native queue from the factory's creation queue. The
-// relayed runtime composition must still establish the anchor; Present-chain submissions must never become it.
-TEST(FlowFSR, RelayedCompositionOnAnotherQueueKeepsTheOverlayAtOutputRate) {
+// GTA V Enhanced + ReShade, DLSS FG -> FSR FG (gtadlssfgtofsrfgcrash, 0.1.7513): AMD's last presenter-thread batch,
+// relayed by ReShade's queue proxy, ran on a DIRECT queue the real swapchain was not created on. CE anchored there and
+// its first draw onto the back buffer removed the device (ERR_GFX_STATE). The anchor stays on the composition on the
+// swapchain's own queue; the debug layer reports any back-buffer write from another queue (id 907).
+TEST(FlowFSR, ARelayedRuntimeBatchOnAnotherQueueNeverCarriesTheOverlay) {
     FlowGame game(CurrentTestName());
     GameOptions options = FidelityFXGameOptions(FSRUiResource::kFullSize, FSRUiBuffering::kSwapchainCopy);
     options.fsrRelayOutputSubmissions = true;
-    options.fsrSeparateCompositionQueue = true;
+    options.fsrSideQueueBatch = true;
     options.fsrPresentChainDepth = 40;
     options.fsrPresentChainOverlayOutputs = 120;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// The same side batch submitted by the runtime image itself: a direct runtime batch on another queue is no anchor
+// either.
+TEST(FlowFSR, ADirectRuntimeBatchOnAnotherQueueNeverCarriesTheOverlay) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
+    options.fsrSideQueueBatch = true;
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 

@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-11-12 - GTA DLSS FG -> FSR FG crash: CE drew the back buffer from a queue that did not own it
+
+- `gtadlssfgtofsrfgcrash` (0.1.7513, ReShade 6.8): `6a56e025`'s every-queue relay recovery anchored the final-batch
+  route on AMD's batch on a second DIRECT queue; the first draw onto the real back buffer removed the device in the same
+  Present (`ERR_GFX_STATE`). The freeze dump's thread-local trace proved the queues and sites.
+- Fix: anchors only on the presented swapchain's own queue (`fg_presenter::OutputQueue`), re-checked before each
+  append. New flow scenarios fail before (id 907, `0x887A0005`) and pass after; all 24 `FlowFSR` scenarios pass.
+  GTA + ReShade keeps the UI baseline at the rendered rate; the new per-batch `submitter=` diagnostic is the next
+  evidence. Details: [FG guardrails](../frame-generation/guardrails.md#startup-resources-and-relayed-fsr-composition-2026-11-11).
 ### 2026-11-11 - GTA late overlay and remaining FSR graph cadence: source changes, no build/tests requested
 
 - `gtaoverlaylatefsrgraphstuttery` (0.1.7511) shows a 100 ms resource-prime pause before the first cold overlay.

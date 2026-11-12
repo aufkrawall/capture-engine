@@ -158,18 +158,18 @@ TEST(FFXTopmostBatchPolicyTest, RelayedCompositionOutranksSubmissionsInsidePrese
     EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(batches + 2, 1, true, presentSite)));
 }
 
-TEST(FFXTopmostBatchPolicyTest, LaterRelayedCompositionOutranksAnEarlierDirectBatchOnAnotherQueue) {
+TEST(FFXTopmostBatchPolicyTest, LaterRelayedCompositionOutranksAnEarlierDirectBatchOnTheSwapchainsQueue) {
     constexpr uintptr_t presentSite = 0x2000;
     const PresenterBatch batches[] = {
         {0x1000, 0xA0, true, false},
-        {0x1800, 0xB0, true, true},
-        {0x1800, 0xB0, true, true},
+        {0x1800, 0xA0, true, true},
+        {0x1800, 0xA0, true, true},
         {presentSite, 0xA0, true, true},
     };
     size_t index = 0;
     const auto anchor = ChooseTopmostAnchorBatch(batches, 4, true, presentSite, &index);
     EXPECT_EQ(anchor.callSite, 0x1800u);
-    EXPECT_EQ(anchor.queueIdentity, 0xB0u);
+    EXPECT_EQ(anchor.queueIdentity, 0xA0u);
     EXPECT_EQ(anchor.ordinal, 2u);
     EXPECT_EQ(index, 2u);
     EXPECT_TRUE(SameFinalECLBatchSignature(anchor, ChooseTopmostAnchorBatch(batches, 3, true, presentSite)));
@@ -177,16 +177,34 @@ TEST(FFXTopmostBatchPolicyTest, LaterRelayedCompositionOutranksAnEarlierDirectBa
     EXPECT_EQ(ChooseTopmostAnchorBatch(batches, 4, true).callSite, 0x1000u);
 }
 
-TEST(FFXTopmostBatchPolicyTest, LaterComputeOrCopyWorkCannotOwnAGraphicsOverlayBatch) {
-    const PresenterBatch batches[] = {
+// GTA V Enhanced + ReShade, DLSS FG -> FSR FG (gtadlssfgtofsrfgcrash, 0.1.7513): the presenter thread's trace was
+// AMD's batch relayed by ReShade's queue proxy on a second DIRECT queue, then three Present-chain submissions on the
+// queue the real swapchain was created with. CE anchored on AMD's batch and its first draw onto the back buffer from
+// that queue removed the device (DXGI_ERROR_DEVICE_REMOVED, ERR_GFX_STATE). No batch of that Present may anchor.
+TEST(FFXTopmostBatchPolicyTest, RuntimeWorkOnAQueueThatDoesNotOwnTheBackBuffersNeverAnchors) {
+    constexpr uintptr_t presentSite = 0x1D51;
+    const PresenterBatch gta[] = {
+        {0xF48D, 0xB0, true, true, /*ownsBackBuffers=*/false},
+        {presentSite, 0xA0, true, true, true},
+        {presentSite, 0xA0, true, true, true},
+        {presentSite, 0xA0, true, true, true},
+    };
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(gta, 4, true, presentSite)));
+    // Direct runtime work, compute or copy work after the composition on another queue cannot move the anchor
+    // off the swapchain's queue either.
+    const PresenterBatch later[] = {
         {0x1000, 0xA0, true, false, true},
         {0x1800, 0xB0, true, false, false},
         {0x2000, 0xC0, true, true, false},
     };
-    const auto anchor = ChooseTopmostAnchorBatch(batches, 3, true, 0x3000);
+    const auto anchor = ChooseTopmostAnchorBatch(later, 3, true, 0x3000);
     EXPECT_EQ(anchor.callSite, 0x1000u);
     EXPECT_EQ(anchor.queueIdentity, 0xA0u);
-    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(batches + 1, 2, true, 0x3000)));
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(later + 1, 2, true, 0x3000)));
+    // Without a runtime image the last batch stands in, still only one on the swapchain's queue.
+    const auto last = ChooseTopmostAnchorBatch(later, 3, /*runtimeImageKnown=*/false);
+    EXPECT_EQ(last.callSite, 0x1000u);
+    EXPECT_EQ(last.queueIdentity, 0xA0u);
 }
 
 TEST(FFXTopmostBatchPolicyTest, AppCallbackTopmostRouteStartsWithNonVisibleProbe) {

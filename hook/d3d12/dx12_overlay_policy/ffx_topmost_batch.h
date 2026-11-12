@@ -52,18 +52,22 @@ struct PresenterBatch {
     uintptr_t queueIdentity = 0;
     bool fromPresentingRuntime = false;
     bool relayed = false;  // callSite is the return address in the runtime behind a queue proxy
-    bool graphicsQueue = true;  // CE's draw cannot join a compute/copy command queue
+    // The batch runs on the queue the presented swapchain's buffers belong to (its create or ResizeBuffers1 queue).
+    // CE's draw writes those buffers, and D3D12 removes the device when any other queue writes them: GTA V Enhanced
+    // with ReShade (gtadlssfgtofsrfgcrash) died on CE's first draw inside AMD's batch on a second DIRECT queue.
+    bool ownsBackBuffers = true;
 };
 
 // The batch the route appends CE's overlay to on the next Presents: the last one the presenting runtime image itself
-// submitted, which composes every output. Overlays hooked into the Present chain (Steam, OptiScaler's own UI, a
-// Present-time effect) submit after it and only while they have something to draw: appending to the last batch of
-// all lost the overlay on the output where such a layer stopped (Talos, session 20261024_015207: Steam's and
-// OptiScaler's start-up messages, 7 outputs). Those layers now draw above CE while they draw. A Present without a
-// runtime batch has no anchor. When a queue proxy obscures the submitter, use the runtime's return address on the
-// observed submission queue, which need not be the create-time queue. Direct and proven relayed submissions share
-// the same chronological order. An overlay submitting inside the Present chain has the runtime's Present return
-// address on its stack, so it cannot establish an anchor.
+// submitted on the swapchain's own queue, which composes every output. Overlays hooked into the Present chain (Steam,
+// OptiScaler's own UI, a Present-time effect) submit after it and only while they have something to draw: appending
+// to the last batch of all lost the overlay on the output where such a layer stopped (Talos, session 20261024_015207:
+// Steam's and OptiScaler's start-up messages, 7 outputs). Those layers now draw above CE while they draw. A Present
+// without a runtime batch on the swapchain's queue has no anchor; runtime work on any other queue (compute, copy, a
+// second DIRECT queue) never writes the back buffers and can never carry CE's draw. When a queue proxy obscures the
+// submitter, use the runtime's return address. Direct and proven relayed submissions share the same chronological
+// order. An overlay submitting inside the Present chain has the runtime's Present return address on its stack, so it
+// cannot establish an anchor.
 inline FinalECLBatchSignature ChooseTopmostAnchorBatch(const PresenterBatch* batches, size_t count,
                                                        bool runtimeImageKnown, uintptr_t runtimePresentSite = 0,
                                                        size_t* anchorIndex = nullptr) {
@@ -72,7 +76,7 @@ inline FinalECLBatchSignature ChooseTopmostAnchorBatch(const PresenterBatch* bat
     }
     size_t anchor = count;
     for (size_t i = count; i-- > 0;) {
-        if (!batches[i].graphicsQueue)
+        if (!batches[i].ownsBackBuffers)
             continue;
         if (!runtimeImageKnown ||
             (batches[i].fromPresentingRuntime &&
