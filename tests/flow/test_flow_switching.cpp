@@ -116,7 +116,7 @@ TEST(FlowSwitch, FFXBufferedUiKeepsScheduledPixelsThroughReShade) {
     CheckFFXBufferedUiKeepsTheScheduledFramePixels(true);
 }
 
-TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferBeforePresent) {
+TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferItPresented) {
     FlowGame game(CurrentTestName());
     GameOptions options;
     options.streamline = true;

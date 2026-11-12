@@ -441,8 +441,9 @@ public:
     [[clang::noinline, clang::disable_tail_calls]]
     HRESULT STDMETHODCALLTYPE Present(UINT syncInterval, UINT flags) override {
         CopyIntoRealBackBuffer(flags);
-        SampleOutput(flags);
+        const PendingSample sample = PrepareSample(flags);
         const HRESULT hr = real_->Present(syncInterval, flags);
+        SampleOutput(sample, hr);
         Advance(flags);
         return hr;
     }
@@ -450,8 +451,9 @@ public:
     HRESULT STDMETHODCALLTYPE Present1(UINT syncInterval, UINT flags,
                                        const DXGI_PRESENT_PARAMETERS* parameters) override {
         CopyIntoRealBackBuffer(flags);
-        SampleOutput(flags);
+        const PendingSample sample = PrepareSample(flags);
         const HRESULT hr = real_->Present1(syncInterval, flags, parameters);
+        SampleOutput(sample, hr);
         Advance(flags);
         return hr;
     }
@@ -490,14 +492,24 @@ public:
     }
 
 private:
-    void SampleOutput(UINT flags) {
-        const UINT index = real_->GetCurrentBackBufferIndex();
+    // The buffer and frame are those of the Present; the readback follows it. A copy submitted from this image before
+    // Present would itself become the last batch before Present, which is the one CE appends its overlay to.
+    struct PendingSample {
+        bool valid = false;
+        UINT index = 0;
+        uint64_t frame = 0;
+    };
+    PendingSample PrepareSample(UINT flags) {
         using PendingFrame = uint64_t (*)();
         static const auto pendingFrame = reinterpret_cast<PendingFrame>(
             GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_PendingRuntimeOutputFrame"));
-        if (!(flags & DXGI_PRESENT_TEST) && index < realBuffers_.size())
-            g_nestedOutputProbe.Sample(device_.Get(), ownQueue_.Get(), realBuffers_[index].Get(), index,
-                                       pendingFrame ? pendingFrame() : 0);
+        const UINT index = real_->GetCurrentBackBufferIndex();
+        return {!(flags & DXGI_PRESENT_TEST) && index < realBuffers_.size(), index, pendingFrame ? pendingFrame() : 0};
+    }
+    void SampleOutput(const PendingSample& sample, HRESULT presented) {
+        if (sample.valid && SUCCEEDED(presented))
+            g_nestedOutputProbe.Sample(device_.Get(), ownQueue_.Get(), realBuffers_[sample.index].Get(), sample.index,
+                                       sample.frame);
     }
 
     void CreateBuffers() {
@@ -721,6 +733,12 @@ void FlowSetNestedHistoryPoint(UINT x, UINT y) { g_nestedOutputProbe.SetHistoryP
 uint64_t FlowReadNestedHistory(uint64_t ordinal, uint64_t* frame, uint32_t* pixel) {
     return g_nestedOutputProbe.ReadHistory(ordinal, frame, pixel);
 }
+void FlowSetNestedHistoryRegion(UINT left, UINT top, UINT right, UINT bottom) {
+    g_nestedOutputProbe.SetHistoryRegion(left, top, right, bottom);
+}
+uint64_t FlowReadNestedObservation(uint64_t ordinal, OutputPanelObservation* out) {
+    return g_nestedOutputProbe.ReadObservation(ordinal, out);
+}
 uint64_t FlowLastOutputDifferentPixels() {
     return g_lastOutputDifferentPixels.load(std::memory_order_acquire);
 }
@@ -768,6 +786,10 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&FlowSetNestedHistoryPoint);
     if (std::strcmp(name, "flowReadNestedHistory") == 0)
         return reinterpret_cast<void*>(&FlowReadNestedHistory);
+    if (std::strcmp(name, "flowSetNestedHistoryRegion") == 0)
+        return reinterpret_cast<void*>(&FlowSetNestedHistoryRegion);
+    if (std::strcmp(name, "flowReadNestedObservation") == 0)
+        return reinterpret_cast<void*>(&FlowReadNestedObservation);
     if (std::strcmp(name, "flowPresentNextBatchOnTitleThread") == 0)
         return reinterpret_cast<void*>(&FlowPresentNextBatchOnTitleThread);
     return nullptr;

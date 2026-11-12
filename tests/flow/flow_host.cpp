@@ -169,6 +169,10 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     AppConfig hostConfig;
     LoadConfig(configPath, hostConfig);
     hostConfig.graphics.postProcessDisplayGamma = "srgb";
+    // Pixel scenarios give the frame-time graph a color nothing else in the panel has (output_pixel_probe.h).
+    char graphColor[8] = {};
+    if (GetEnvironmentVariableA("CE_FLOW_MAGENTA_GRAPH", graphColor, sizeof(graphColor)) != 0 && graphColor[0] == '1')
+        hostConfig.overlay.frametimeColor = 0xFFFF00FF;
     if (earlyLoaderProbe) {
         hostConfig.graphics.streamlineDllPath = earlyLoaderProbe->overrideDirectory;
         if (earlyLoaderProbe->disableNgxOta)
@@ -178,6 +182,7 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     if (!init(configPath.c_str(), hostMemory_, earlyLoaderProbe))
         Fail("CEFlow_Init", E_FAIL);
     clockOrigin_ = clockMicroseconds_();
+    nextFrameStartMicroseconds_ = clockOrigin_;
 }
 
 void FlowGame::EnableTraceLogging() {
@@ -235,6 +240,11 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     fsrTestSolidUi_ = options.fsrTestSolidUi;
     fsrTestPremultipliedUi_ = options.fsrTestPremultipliedUi;
     fsrTestAnimatedUi_ = options.fsrTestAnimatedUi;
+    fsrTestHudWindow_ = options.fsrTestHudWindow;
+    SetRuntimeOutputProbing(options.probeRuntimeOutput);
+    frameIntervalSpikePeriod_ = options.frameIntervalSpikePeriod;
+    frameIntervalSpikeDuration_ = options.frameIntervalSpikeDuration;
+    frameIntervalSpikeMicroseconds_ = options.frameIntervalSpikeMicroseconds;
     xefgFromSwapchain_ = options.xefgFromSwapchain;
     fsrWrappedGameQueue_ = options.fsrWrappedGameQueue;
     fsrToolRuntimeCopy_ = options.fsrToolRuntimeCopy;
@@ -492,11 +502,17 @@ bool FlowGame::SetBackBufferFormat(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE col
 bool FlowGame::RenderFrame(PresentMethod method) {
     if (!error_.empty() || !swapchain_)
         return false;
-    // Frame k starts at clockOrigin_ + k intervals; a presenter's generated frames took part of the last one.
-    const int64_t frameStart = clockOrigin_ + static_cast<int64_t>(frame_ + 1) * kFrameIntervalMicroseconds;
+    // Each frame starts one interval after the previous (a configured spike interval gives the graph a landmark); a
+    // presenter's generated frames took part of the last one.
+    int64_t interval = kFrameIntervalMicroseconds;
+    if (frameIntervalSpikePeriod_ > 0 &&
+        static_cast<uint32_t>(frame_) % frameIntervalSpikePeriod_ < frameIntervalSpikeDuration_) {
+        interval = frameIntervalSpikeMicroseconds_;
+    }
+    nextFrameStartMicroseconds_ += interval;
     const int64_t now = clockMicroseconds_();
-    if (frameStart > now)
-        advanceClock_(frameStart - now);
+    if (nextFrameStartMicroseconds_ > now)
+        advanceClock_(nextFrameStartMicroseconds_ - now);
     NoteD3D12DebugFrame();
     PumpWindowMessages();
     const UINT index = swapchain_->GetCurrentBackBufferIndex();

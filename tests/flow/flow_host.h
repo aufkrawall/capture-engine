@@ -21,6 +21,16 @@ namespace ce::flow {
 
 using Microsoft::WRL::ComPtr;
 
+namespace fake {
+class OutputPixelProbe;
+}
+
+// The pixels of the fake FidelityFX runtime's outputs after everything above DXGI drew (flow_host_output_probe.cpp);
+// GameOptions::probeRuntimeOutput puts the probe under the runtime's real swapchain.
+fake::OutputPixelProbe& RuntimeOutputProbe();
+void SetRuntimeOutputProbing(bool enabled);
+ComPtr<IDXGISwapChain4> WrapRuntimeOutputProbe(IDXGISwapChain4* real, ID3D12CommandQueue* queue);
+
 enum class SwapchainKind {
     kNative,      // the system DXGI factory's swapchain
     kStreamline,  // Streamline's proxy (DLSS frame generation runs on it, on or off)
@@ -77,6 +87,11 @@ struct GameOptions {
     bool fsrTestSolidUi = false;  // initialize the HUD with a half-alpha red test color
     bool fsrTestPremultipliedUi = false;
     bool fsrTestAnimatedUi = false;  // alternate the HUD red channel on every game frame
+    bool fsrTestHudWindow = false;   // clear HUD transparent every frame and draw a small HUD rect outside the panel
+    bool probeRuntimeOutput = false;  // read each FidelityFX runtime output back after Present (RuntimeOutputProbe)
+    uint32_t frameIntervalSpikePeriod = 0;  // inject a virtual-clock frame-time spike every N frames (0 = uniform)
+    uint32_t frameIntervalSpikeDuration = 2;
+    int64_t frameIntervalSpikeMicroseconds = 22000;
     bool fsrWrappedGameQueue = false;  // the descriptor queue has two native-interface proxy layers
     // kFidelityFX: the game's FidelityFX image is loaded but unused; frame generation runs on a second image of the
     // same name from a tool's folder, its exports read from its own export table so that none of CE's
@@ -356,6 +371,11 @@ private:
     bool fsrTestSolidUi_ = false;
     bool fsrTestPremultipliedUi_ = false;
     bool fsrTestAnimatedUi_ = false;
+    bool fsrTestHudWindow_ = false;
+    uint32_t frameIntervalSpikePeriod_ = 0;
+    uint32_t frameIntervalSpikeDuration_ = 2;
+    int64_t frameIntervalSpikeMicroseconds_ = 22000;
+    int64_t nextFrameStartMicroseconds_ = 0;
     bool xefgFromSwapchain_ = false;
     bool fsrWrappedGameQueue_ = false;
     bool fsrToolRuntimeCopy_ = false;

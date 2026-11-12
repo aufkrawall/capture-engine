@@ -70,7 +70,8 @@ extern "C" __declspec(dllexport) void CEFlowGame_WrapRuntimePresentation(IDXGISw
                                                                         ID3D12CommandQueue* nativeQueue,
                                                                         IDXGISwapChain4** presentThrough,
                                                                         ID3D12CommandQueue** submitThrough) {
-    *presentThrough = WrapInPresentChain(real, nativeQueue).Detach();
+    const ComPtr<IDXGISwapChain4> probed = ce::flow::WrapRuntimeOutputProbe(real, nativeQueue);
+    *presentThrough = WrapInPresentChain(probed.Get(), nativeQueue).Detach();
     if (g_wrapQueue) {
         *submitThrough = g_wrapQueue(nativeQueue);
     } else {
