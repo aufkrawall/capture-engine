@@ -20,6 +20,8 @@
 #include <thread>
 #include <vector>
 
+#include "tests/flow/fakes/streamline/nested_output_probe.h"
+
 #include "sl.h"
 #include "sl_dlss_g.h"
 #include "tests/flow/fakes/fake_clock.h"
@@ -49,6 +51,7 @@ std::atomic<int64_t> g_constantOutputIntervalUs{0};
 std::atomic<bool> g_nextPresentOnTitleThread{false};
 // Opt-in readback in the WARP flow test; the production path never runs this fake.
 std::atomic<bool> g_samplePhysicalOutput{false};
+NestedOutputProbe g_nestedOutputProbe;
 std::atomic<uint64_t> g_lastOutputDifferentPixels{0};
 std::atomic<IDXGISwapChain*> g_testNativeChain{nullptr};
 std::atomic<ID3D12CommandQueue*> g_testPresentQueue{nullptr};
@@ -438,6 +441,7 @@ public:
     [[clang::noinline, clang::disable_tail_calls]]
     HRESULT STDMETHODCALLTYPE Present(UINT syncInterval, UINT flags) override {
         CopyIntoRealBackBuffer(flags);
+        SampleOutput(flags);
         const HRESULT hr = real_->Present(syncInterval, flags);
         Advance(flags);
         return hr;
@@ -446,6 +450,7 @@ public:
     HRESULT STDMETHODCALLTYPE Present1(UINT syncInterval, UINT flags,
                                        const DXGI_PRESENT_PARAMETERS* parameters) override {
         CopyIntoRealBackBuffer(flags);
+        SampleOutput(flags);
         const HRESULT hr = real_->Present1(syncInterval, flags, parameters);
         Advance(flags);
         return hr;
@@ -485,6 +490,12 @@ public:
     }
 
 private:
+    void SampleOutput(UINT flags) {
+        const UINT index = real_->GetCurrentBackBufferIndex();
+        if (!(flags & DXGI_PRESENT_TEST) && index < realBuffers_.size())
+            g_nestedOutputProbe.Sample(device_.Get(), ownQueue_.Get(), realBuffers_[index].Get(), index);
+    }
+
     void CreateBuffers() {
         DXGI_SWAP_CHAIN_DESC1 desc{};
         real_->GetDesc1(&desc);
@@ -696,6 +707,12 @@ void FlowNativeBinding(IDXGISwapChain** chain, ID3D12CommandQueue** queue) {
 void FlowSamplePhysicalOutput(bool enabled) {
     g_samplePhysicalOutput.store(enabled, std::memory_order_release);
 }
+void FlowSampleNestedOutput(bool enabled) {
+    g_nestedOutputProbe.Enable(enabled);
+}
+uint64_t FlowReadNestedOutput(UINT x, UINT y, uint32_t* pixel, UINT* index) {
+    return g_nestedOutputProbe.Read(x, y, pixel, index);
+}
 uint64_t FlowLastOutputDifferentPixels() {
     return g_lastOutputDifferentPixels.load(std::memory_order_acquire);
 }
@@ -735,6 +752,10 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&FlowSamplePhysicalOutput);
     if (std::strcmp(name, "flowLastOutputDifferentPixels") == 0)
         return reinterpret_cast<void*>(&FlowLastOutputDifferentPixels);
+    if (std::strcmp(name, "flowSampleNestedOutput") == 0)
+        return reinterpret_cast<void*>(&FlowSampleNestedOutput);
+    if (std::strcmp(name, "flowReadNestedOutput") == 0)
+        return reinterpret_cast<void*>(&FlowReadNestedOutput);
     if (std::strcmp(name, "flowPresentNextBatchOnTitleThread") == 0)
         return reinterpret_cast<void*>(&FlowPresentNextBatchOnTitleThread);
     return nullptr;

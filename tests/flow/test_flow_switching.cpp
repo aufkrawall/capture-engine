@@ -9,6 +9,51 @@ namespace {
 
 using namespace ce::flow;
 
+TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferBeforePresent) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    options.fsrNestedPresenter = true;
+    options.fsrUi = FSRUiResource::kFullSizeWithSuspendedPlaceholder;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+    ASSERT_NE(plugin, nullptr);
+    const auto lookup = reinterpret_cast<void* (*)(const char*)>(GetProcAddress(plugin, "slGetPluginFunction"));
+    ASSERT_NE(lookup, nullptr);
+    const auto enable = reinterpret_cast<void (*)(bool)>(lookup("flowSampleNestedOutput"));
+    const auto read = reinterpret_cast<uint64_t (*)(UINT, UINT, uint32_t*, UINT*)>(lookup("flowReadNestedOutput"));
+    ASSERT_NE(enable, nullptr);
+    ASSERT_NE(read, nullptr);
+    enable(true);
+    ASSERT_TRUE(game.RenderFrames(1)) << game.Error();
+    uint32_t first = 0, second = 0;
+    UINT firstIndex = 0, secondIndex = 0;
+    const uint64_t firstSerial = read(500, 300, &first, &firstIndex);
+    ASSERT_GT(firstSerial, 0u);
+    ASSERT_TRUE(game.RenderFrames(8, FlowGame::PresentMethod::kPresent1)) << game.Error();
+    const uint64_t secondSerial = read(500, 300, &second, &secondIndex);
+    EXPECT_GT(secondSerial, firstSerial);
+    EXPECT_NE(second, first);  // The game's green scene component changes every frame.
+    EXPECT_LT(firstIndex, 7u);
+    EXPECT_LT(secondIndex, 7u);
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(30)) << game.Error();
+    ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
+    uint32_t activePixel = 0;
+    UINT activeIndex = 0;
+    const uint64_t activeSerial = read(500, 300, &activePixel, &activeIndex);
+    EXPECT_GT(activeSerial, secondSerial);
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(4)) << game.Error();
+    uint32_t suspendedPixel = 0;
+    UINT suspendedIndex = 0;
+    EXPECT_GT(read(500, 300, &suspendedPixel, &suspendedIndex), activeSerial);
+    enable(false);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // 0.1.6951, dx12_fg_switch_test (session 20261003_070202, 07:05:29-07:05:42): after an FSR phase, DLSS-G on,
 // off (explicit slDLSSGSetOptions, make-before-break keep-alive) and on again 1.5 s later lost the overlay for
 // 1549 presents / 6.5 s: "PostSL SKIP - FG transition cooldown active (60 frames left)" the whole time. Here the

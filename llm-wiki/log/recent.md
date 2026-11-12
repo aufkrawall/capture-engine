@@ -11,6 +11,11 @@
   is disabled and restore the full-size UI on enable; this is scenario setup, not a pixel or cadence oracle.
 - Root cause and real GTA/Talos visual acceptance remain open. A final-output pixel observer and realistic retained
   UI composition are needed before choosing a rendering or animation-clock correction.
+- The WARP nested-presenter fake now offers opt-in, bounded readback of its native back buffer after the nested
+  copy and before downstream Present; it reports the buffer index and sample serial, not display feedback. A test
+  observes samples across enable/suspend and checks changing scene pixels before enable; freezing the first sampled
+  image makes that pixel assertion fail. The probe retains only the latest image, precedes any downstream Present
+  work, and does not yet establish overlay freshness or alpha.
 
 ### 2026-11-12 - Overlay graph judder in GTA's FSR-suspended menu, second cause
 
