@@ -30,6 +30,9 @@
   successful submit; active FG cancels it and keeps its own PostSL proof. Retained startup callbacks no longer
   count as physical outputs. The real-hook regression covers two replacements, including observed same-address reuse, stale tokens,
   resize and output pixels; it failed before and passes after. Details: [FG guardrails](../frame-generation/guardrails.md#disabled-streamline-replacement-after-fsr-2026-11-12).
+- Gate regression (0.1.7517): promotion cleared `streamlineStartupHandoffPending`, the only handoff evidence of
+  the safe post-FSR bootstrap predicate, so a GetState-only DLSS-G enable on the admitted chain was suppressed for
+  good (published 0/x1). A submitted admission now counts as that evidence; scenario fails before, passes after.
 - Hardware retest pending. The saved pacing trace ends before the suspended-FSR intervals; animation timing
   and output freshness during those intervals remain separate, unproven questions.
 

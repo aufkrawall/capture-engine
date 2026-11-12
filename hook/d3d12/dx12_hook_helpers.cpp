@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
+#include "hook/fg/fg_presenter.h"
 
 #include "common/platform/ansi_path.h"
 
@@ -418,8 +419,11 @@ const bool hasRealD3D12SubmitPath = dx12_hook_g_RealD3D12ECL.load(std::memory_or
 const bool hasSwapchainQueueSubmitPath = hasTrackedSwapchainQueueSubmitPath || hasRealD3D12SubmitPath;
 const bool commandQueueMatchesSwapchainQueue =
     commandQueue != nullptr && swapchainQueue != nullptr && commandQueue == swapchainQueue;
+// An admitted disabled Streamline chain retired the pending handoff flag by proving its own submission; that proof
+// stands for the same handoff, so a later GetState-only DLSS-G enable on the chain is not blocked indefinitely.
 const bool streamlineHandoffOrActive = DXGIShared::IsStreamlineStartupHandoffPending() ||
-                                       DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                                       DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+                                       ce::fg_presenter::HasSubmittedStreamlineNormalRender();
 const bool runtimeOwnedSwapchainBootstrapSafe =
     ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(
         dx12_hook_g_HadFSRFGPhase, hasRuntimeOwnedSwapchainQueue, streamlineHandoffOrActive, hasSwapchainQueueSubmitPath);

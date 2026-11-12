@@ -6,6 +6,8 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "common/logging/log_meter.h"
 #include "hook/fg/fg_detection.h"
@@ -214,7 +216,14 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
         }
         if (presenter != Presenter::kApplication) {
             lifetime = state.nextLifetime++;
-            state.swapchains[swapchain] = {presenter, window, queue, owner, lifetime, creator};
+            Record record{};
+            record.presenter = presenter;
+            record.window = window;
+            record.queue = queue;
+            record.owner = owner;
+            record.lifetime = lifetime;
+            record.creator = creator;
+            state.swapchains[swapchain] = std::move(record);
         }
         PublishCountLocked(state);
     }
@@ -295,6 +304,28 @@ uint64_t StreamlineNormalRenderToken(IDXGISwapChain* swapchain, bool requireSubm
         (requireSubmitted && !it->second.normalRenderSubmitted))
         return 0;
     return it->second.normalRenderToken;
+}
+
+bool HasSubmittedStreamlineNormalRender() {
+    if (!g_normalRenderArmed.load(std::memory_order_acquire))
+        return false;
+    std::vector<std::pair<IDXGISwapChain*, uint64_t>> submitted;
+    {
+        State& state = Registry();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (const auto& [swapchain, record] : state.swapchains) {
+            if (record.normalRenderSubmitted && record.normalRenderQueue &&
+                record.normalRenderQueue.Get() == record.queue)
+                submitted.emplace_back(swapchain, record.normalRenderWitness);
+        }
+    }
+    // The witness is consulted outside the registry lock, in the same order StreamlineNormalRenderToken uses.
+    for (const auto& [swapchain, generation] : submitted) {
+        const auto witness = ce::swapchain_lifetime_witness::Describe(swapchain);
+        if (witness.state == ce::swapchain_lifetime_witness::ChainState::kAlive && witness.generation == generation)
+            return true;
+    }
+    return false;
 }
 
 bool PromoteStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, uint64_t token,

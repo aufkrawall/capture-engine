@@ -214,6 +214,9 @@ using NormalRenderPromotion = bool (*)();
 bool ArmStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
                               NormalRenderPromotion mayArm);
 uint64_t StreamlineNormalRenderToken(IDXGISwapChain* swapchain, bool requireSubmitted);
+// A live Streamline chain whose admission has a real submission. Promotion retires the startup-handoff flag, so
+// this is the lasting evidence of that handoff until FG activation retires it with Streamline FG running.
+bool HasSubmittedStreamlineNormalRender();
 bool PromoteStreamlineNormalRender(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, uint64_t token,
                                   NormalRenderPromotion commitTransition);
 void InvalidateStreamlineNormalRender(const char* reason);

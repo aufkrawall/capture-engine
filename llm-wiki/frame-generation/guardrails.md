@@ -706,6 +706,9 @@ cancellation serialize in the registry. The successful disabled route clears the
 claiming PostSL confirmation. Retained startup servicing is not a physical Present for coverage accounting.
 `FlowSwitch.DisabledStreamlineReplacementOnNewQueueKeepsEveryOutput` checks two replacements, including observed same-address reuse,
 stale tokens, resize, actual output pixels and the D3D12 debug layer. Hardware validation remains pending.
+Clearing the handoff flag also removed `HookHasSafePostFSRBootstrapPathImpl`'s handoff evidence, so a later
+GetState-only DLSS-G enable on the admitted chain stayed suppressed (`FlowFGPresenterOwnership.GetStateOnly...`);
+`fg_presenter::HasSubmittedStreamlineNormalRender()` now stands for that handoff until FG activation retires it.
 
 ### First Streamline passthrough after FSR teardown (2026-11-09)
 
