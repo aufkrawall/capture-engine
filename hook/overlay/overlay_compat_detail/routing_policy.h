@@ -734,12 +734,17 @@ inline bool ShouldUseDedicatedDX12OverlayQueue(bool actualFGActive, bool process
     return actualFGActive;
 }
 
+// A loaded startup-blocking overlay (Social Club / Epic) pauses the DX12 overlay only for evidence: while its own
+// startup window is visible (and briefly after), or during the warm-up while a frame-generation runtime owns the live
+// swapchain, whose queue ownership can still churn before FG starts (the GTA ERR_GFX_STATE handoffs). The game's own
+// swapchain is drawn on its own queue from its first Present: with only the module loaded, the warm-up made CE's
+// overlay appear ~640 ms after ReShade's (GTA V Enhanced, gtadlssfgtofsrfgcrash).
 inline bool ShouldSuppressDX12OverlayForStartup(bool startupOverlayLoaded, bool actualFGActive,
-                                                bool auxiliaryWindowPresent, ULONGLONG msSinceOverlayDetected,
-                                                ULONGLONG overlayWarmupMs, ULONGLONG msSinceAuxiliaryWindowSeen,
-                                                ULONGLONG quietPeriodMs) {
+                                                bool runtimeOwnsLiveSwapchain, bool auxiliaryWindowPresent,
+                                                ULONGLONG msSinceOverlayDetected, ULONGLONG overlayWarmupMs,
+                                                ULONGLONG msSinceAuxiliaryWindowSeen, ULONGLONG quietPeriodMs) {
     return startupOverlayLoaded && !actualFGActive &&
-           (msSinceOverlayDetected < overlayWarmupMs || auxiliaryWindowPresent ||
+           ((runtimeOwnsLiveSwapchain && msSinceOverlayDetected < overlayWarmupMs) || auxiliaryWindowPresent ||
             msSinceAuxiliaryWindowSeen < quietPeriodMs);
 }
 

@@ -70,6 +70,25 @@ TEST(FlowPresentChainOverlays, ColdStartupResourcesNeedNoExtraWallClockSettle) {
     ExpectNoDebugLayerErrors();
 }
 
+// GTA V Enhanced with ReShade (gtadlssfgtofsrfgcrash, 0.1.7513): ReShade drew from the first Present, CE about 640 ms
+// later, because Epic's overlay module armed a 500 ms startup warm-up plus a resume settle and staged initialization,
+// although the game's own swapchain was drawn on its own queue. That swapchain has nothing to wait for: the overlay
+// starts as early as with ReShade alone. Here that is the second Present: ReShade's queue proxy hides the game's first
+// submissions, and a zero-count Present outside Streamline is not processed (GTA runs in Streamline's no-FG mode,
+// where its first Present drew). Before the fix the first 90 Presents went without the overlay.
+TEST(FlowPresentChainOverlays, AStartupOverlayModuleDoesNotDelayTheFirstDrawOnTheGamesSwapchain) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.presentChainOverlays = {{OverlayStandIn::kRockstar, 0}, {OverlayStandIn::kEpic, 0},
+                                    {OverlayStandIn::kReShade, 0}};
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(2)) << game.Error();
+    EXPECT_EQ(game.Coverage().draws, 1u) << "the overlay waited past ReShade's start; logs: " << game.LogDirectory();
+    ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+    ExpectEveryPresentCoveredOnce(game, 1);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowPresentChainOverlays, HDR10GameUnderReShadeAndEpicLeavesEveryPresentCoveredOnce) {
     FlowGame game(CurrentTestName());
     GameOptions options;

@@ -114,12 +114,30 @@ if (activeWindow) {
 
 const ULONGLONG msSinceOverlayDetected = now - s_firstOverlayDetectedMs;
 const ULONGLONG msSinceLastVisible = s_lastVisibleMs == 0 ? dx12_hook_kStartupOverlayQuietPeriodMs : (now - s_lastVisibleMs);
+const bool runtimeOwnsLiveSwapchain = dx12_hook_g_FGRuntimeOwnsSwapchain;
 const bool suppress = ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(
-    true, actualFGActive, s_auxiliaryWindowVisible, msSinceOverlayDetected, dx12_hook_kStartupOverlayWarmupMs,
-    msSinceLastVisible, dx12_hook_kStartupOverlayQuietPeriodMs);
+    true, actualFGActive, runtimeOwnsLiveSwapchain, s_auxiliaryWindowVisible, msSinceOverlayDetected,
+    dx12_hook_kStartupOverlayWarmupMs, msSinceLastVisible, dx12_hook_kStartupOverlayQuietPeriodMs);
+{
+    // One line per edge: whether the module's warm-up holds the overlay, and why not.
+    static int s_lastWarmupDecision = -1;
+    const int warmupDecision = !runtimeOwnsLiveSwapchain ? 0 : msSinceOverlayDetected < dx12_hook_kStartupOverlayWarmupMs ? 1 : 2;
+    if (warmupDecision != s_lastWarmupDecision) {
+        s_lastWarmupDecision = warmupDecision;
+        HookLogImportant(
+            "DX12: Startup overlay module %s: %s (runtimeOwns=%d auxWindow=%d sinceDetectedMs=%llu suppress=%d)",
+            blockingOverlayModule,
+            warmupDecision == 0 ? "no warm-up, the game's own swapchain draws from its first Present"
+            : warmupDecision == 1 ? "warm-up holds the overlay while a runtime owns the live swapchain"
+                                  : "warm-up over",
+            runtimeOwnsLiveSwapchain ? 1 : 0, s_auxiliaryWindowVisible ? 1 : 0, msSinceOverlayDetected,
+            suppress ? 1 : 0);
+    }
+}
 if (remainingMs && suppress) {
-    ULONGLONG warmupRemaining =
-        msSinceOverlayDetected < dx12_hook_kStartupOverlayWarmupMs ? (dx12_hook_kStartupOverlayWarmupMs - msSinceOverlayDetected) : 0;
+    ULONGLONG warmupRemaining = runtimeOwnsLiveSwapchain && msSinceOverlayDetected < dx12_hook_kStartupOverlayWarmupMs
+                                    ? (dx12_hook_kStartupOverlayWarmupMs - msSinceOverlayDetected)
+                                    : 0;
     ULONGLONG quietRemaining = !s_auxiliaryWindowVisible && msSinceLastVisible < dx12_hook_kStartupOverlayQuietPeriodMs
                                    ? (dx12_hook_kStartupOverlayQuietPeriodMs - msSinceLastVisible)
                                    : 0;

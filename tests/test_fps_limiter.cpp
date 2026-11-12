@@ -682,12 +682,24 @@ TEST(OverlayCompatTest, NullAndInvalidFFXModuleInputsStayRejected) {
 }
 
 TEST(OverlayCompatTest, StartupOverlaySuppressionTracksVisibleWindowAndCooldown) {
-    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 0, 5000, 5000, 5000));
-    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, true, 6000, 5000, 0, 5000));
-    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 1000, 5000));
-    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 5000, 5000));
-    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, true, false, 0, 5000, 0, 5000));
-    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(false, false, false, 0, 5000, 0, 5000));
+    using ce::overlay_compat::ShouldSuppressDX12OverlayForStartup;
+    // While a runtime owns the live swapchain: warm-up, visible startup window and its cool-down.
+    EXPECT_TRUE(ShouldSuppressDX12OverlayForStartup(true, false, true, false, 0, 5000, 5000, 5000));
+    EXPECT_TRUE(ShouldSuppressDX12OverlayForStartup(true, false, true, true, 6000, 5000, 0, 5000));
+    EXPECT_TRUE(ShouldSuppressDX12OverlayForStartup(true, false, true, false, 6000, 5000, 1000, 5000));
+    EXPECT_FALSE(ShouldSuppressDX12OverlayForStartup(true, false, true, false, 6000, 5000, 5000, 5000));
+    EXPECT_FALSE(ShouldSuppressDX12OverlayForStartup(true, true, true, false, 0, 5000, 0, 5000));
+    EXPECT_FALSE(ShouldSuppressDX12OverlayForStartup(false, false, true, false, 0, 5000, 0, 5000));
+    // The game's own swapchain: only a visible startup window and its cool-down pause the overlay.
+    EXPECT_TRUE(ShouldSuppressDX12OverlayForStartup(true, false, false, true, 0, 5000, 0, 5000));
+    EXPECT_TRUE(ShouldSuppressDX12OverlayForStartup(true, false, false, false, 6000, 5000, 1000, 5000));
+}
+
+// GTA V Enhanced (gtadlssfgtofsrfgcrash): Epic's overlay module alone held the overlay for the 500 ms warm-up on the
+// game's own swapchain, so it appeared ~640 ms after ReShade's.
+TEST(OverlayCompatTest, ALoadedStartupOverlayModuleAloneDoesNotDelayTheGamesOwnSwapchain) {
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, /*runtimeOwnsLiveSwapchain=*/false,
+                                                                         false, 0, 500, 200, 200));
 }
 
 TEST(OverlayCompatTest, ProcessNameNoLongerDrivesStartupInitGrace) {
