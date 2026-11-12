@@ -17,17 +17,6 @@ GameOptions FidelityFXGameOptions(FSRUiResource ui, FSRUiBuffering buffering) {
     return options;
 }
 
-// CE's own account of the overlay submission on this thread (CEFlow_DescribeD3D12OverlaySubmission).
-std::string DescribeOverlaySubmission() {
-    using Describe = int (*)(char*, int);
-    const auto describe = reinterpret_cast<Describe>(
-        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_DescribeD3D12OverlaySubmission"));
-    char text[512] = {};
-    if (!describe || describe(text, static_cast<int>(sizeof(text))) <= 0)
-        return "CEFlow_DescribeD3D12OverlaySubmission unavailable";
-    return text;
-}
-
 enum class FinalBatchRoute {
     kAnyOwner,       // UI baseline or final-batch route: either draws each output once
     kOwnsTheOutputs  // the proven final-batch route draws every output after AMD composed it
@@ -41,11 +30,8 @@ void ToggleFSR(FlowGame& game, bool presentCallback, const GameOptions& options,
         ASSERT_TRUE(game.SetFSRFrameGeneration(true, presentCallback)) << game.Error();
         ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
         ExpectPublished(game, 2, 2, "FSR FG on");
-        if (finalBatch == FinalBatchRoute::kOwnsTheOutputs) {
-            const std::string state = DescribeOverlaySubmission();
-            EXPECT_NE(state.find("granted=1"), std::string::npos)
-                << "cycle " << cycle << ": " << state << "; logs: " << game.LogDirectory();
-        }
+        if (finalBatch == FinalBatchRoute::kOwnsTheOutputs)
+            ExpectFinalBatchRouteOwnsTheOutputs(game, cycle == 0 ? "first FSR FG cycle" : "second FSR FG cycle");
         ASSERT_TRUE(game.SetFSRFrameGeneration(false, presentCallback)) << game.Error();
         ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
         ExpectPublished(game, 0, 1, "FSR FG off");
@@ -148,6 +134,30 @@ TEST(FlowFSR, ADirectRuntimeBatchOnAnotherQueueNeverCarriesTheOverlay) {
     FlowGame game(CurrentTestName());
     GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
     options.fsrSideQueueBatch = true;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// GTA V Enhanced + ReShade after DLSS FG -> FSR FG (session 20261112_013802): AMD creates its swapchain through
+// Streamline, whose sl.dlss_g.dll creates the native one on a queue of its own and presents it from inside AMD's Present.
+// AMD composes into the plugin's buffers on AMD's queue; the plugin copies its image into the back buffer on the
+// swapchain's queue through ReShade's queue object, then ReShade draws its effects. Every batch on that queue lay inside
+// AMD's Present call, so the final-batch route never armed and the overlay stayed in the UI resource at the rendered
+// rate (a juddering graph). The plugin's own copy is the anchor; ReShade's and DXGI's work below it never is.
+TEST(FlowFSR, ANestedPresenterUnderReShadeKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kPlaceholder, FSRUiBuffering::kSwapchainCopy);
+    options.streamline = true;
+    options.fsrNestedPresenter = true;
+    options.presentChainOverlays = {{OverlayStandIn::kReShade, 0}};
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// The same nested presenter submitting its copy on the native queue itself, with no queue proxy or overlay around it.
+TEST(FlowFSR, ANestedPresenterSubmittingDirectlyKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy);
+    options.streamline = true;
+    options.fsrNestedPresenter = true;
     ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 

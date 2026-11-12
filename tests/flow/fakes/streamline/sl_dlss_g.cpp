@@ -326,6 +326,208 @@ private:
     HRESULT jobResult_ = S_OK;
 };
 
+// DLSS-G off, presenting for another runtime: GTA V Enhanced creates FidelityFX's frame generation swapchain through
+// Streamline, so AMD presents to this plugin's proxy (session 20261112_013802). The plugin created the native swapchain
+// on a queue of its own and hands AMD its own buffers; inside AMD's Present call, on AMD's thread, it copies AMD's image
+// into the native back buffer on that queue - through ReShade's queue object where ReShade wraps it - and presents
+// through the layers below it. AMD's own submissions never touch the native buffers.
+class NestedPresenterSwapChain final : public ForwardingSwapChain {
+public:
+    NestedPresenterSwapChain(IDXGISwapChain4* presentThrough, ID3D12CommandQueue* ownQueue,
+                             ID3D12CommandQueue* submitThrough, UINT proxyBufferCount)
+        : ForwardingSwapChain(presentThrough), ownQueue_(ownQueue), submitThrough_(submitThrough),
+          proxyBufferCount_(proxyBufferCount) {
+        ownQueue_->GetDevice(IID_PPV_ARGS(&device_));
+        device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_));
+        device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_));
+        list_->Close();
+        device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
+        fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        CreateBuffers();
+        Log(kModule, "nested presenter %p over %p (proxy buffers=%u ownQueue=%p submitThrough=%p)", this, real_,
+            proxyBufferCount_, ownQueue_.Get(), submitThrough_.Get());
+    }
+    ~NestedPresenterSwapChain() override {
+        WaitForOwnQueue();
+        CloseHandle(fenceEvent_);
+        Log(kModule, "nested presenter %p destroyed", this);
+    }
+
+    [[clang::noinline, clang::disable_tail_calls]]
+    HRESULT STDMETHODCALLTYPE Present(UINT syncInterval, UINT flags) override {
+        CopyIntoRealBackBuffer(flags);
+        const HRESULT hr = real_->Present(syncInterval, flags);
+        Advance(flags);
+        return hr;
+    }
+    [[clang::noinline, clang::disable_tail_calls]]
+    HRESULT STDMETHODCALLTYPE Present1(UINT syncInterval, UINT flags,
+                                       const DXGI_PRESENT_PARAMETERS* parameters) override {
+        CopyIntoRealBackBuffer(flags);
+        const HRESULT hr = real_->Present1(syncInterval, flags, parameters);
+        Advance(flags);
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE GetBuffer(UINT index, REFIID riid, void** surface) override {
+        if (index >= proxyBuffers_.size())
+            return DXGI_ERROR_INVALID_CALL;
+        return proxyBuffers_[index]->QueryInterface(riid, surface);
+    }
+    UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() override { return proxyIndex_; }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* desc) override {
+        const HRESULT hr = real_->GetDesc(desc);
+        if (SUCCEEDED(hr))
+            desc->BufferCount = proxyBufferCount_;
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* desc) override {
+        const HRESULT hr = real_->GetDesc1(desc);
+        if (SUCCEEDED(hr))
+            desc->BufferCount = proxyBufferCount_;
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT count, UINT width, UINT height, DXGI_FORMAT format,
+                                            UINT flags) override {
+        WaitForOwnQueue();
+        proxyBuffers_.clear();
+        realBuffers_.clear();
+        if (count != 0)
+            proxyBufferCount_ = count;
+        const HRESULT hr = real_->ResizeBuffers(proxyBufferCount_ + kExtraRealBuffers, width, height, format, flags);
+        CreateBuffers();
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags,
+                                             const UINT*, IUnknown* const*) override {
+        return ResizeBuffers(count, width, height, format, flags);
+    }
+
+private:
+    void CreateBuffers() {
+        DXGI_SWAP_CHAIN_DESC1 desc{};
+        real_->GetDesc1(&desc);
+        for (UINT i = 0; i < desc.BufferCount; ++i) {
+            ComPtr<ID3D12Resource> buffer;
+            real_->GetBuffer(i, IID_PPV_ARGS(&buffer));
+            realBuffers_.push_back(buffer);
+        }
+        D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                                   D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
+        D3D12_RESOURCE_DESC texture{};
+        texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texture.Width = desc.Width;
+        texture.Height = desc.Height;
+        texture.DepthOrArraySize = 1;
+        texture.MipLevels = 1;
+        texture.Format = desc.Format;
+        texture.SampleDesc.Count = 1;
+        texture.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        for (UINT i = 0; i < proxyBufferCount_; ++i) {
+            ComPtr<ID3D12Resource> buffer;
+            device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture, D3D12_RESOURCE_STATE_PRESENT,
+                                             nullptr, IID_PPV_ARGS(&buffer));
+            proxyBuffers_.push_back(buffer);
+        }
+        proxyIndex_ = 0;
+    }
+
+    [[clang::noinline]] void CopyIntoRealBackBuffer(UINT flags) {
+        const UINT realIndex = real_->GetCurrentBackBufferIndex();
+        if ((flags & DXGI_PRESENT_TEST) || realIndex >= realBuffers_.size() || proxyIndex_ >= proxyBuffers_.size())
+            return;
+        allocator_->Reset();
+        list_->Reset(allocator_.Get(), nullptr);
+        D3D12_RESOURCE_BARRIER barriers[2] = {};
+        barriers[0].Type = barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[0].Transition.pResource = proxyBuffers_[proxyIndex_].Get();
+        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barriers[1].Transition.pResource = realBuffers_[realIndex].Get();
+        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        barriers[0].Transition.Subresource = barriers[1].Transition.Subresource =
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list_->ResourceBarrier(2, barriers);
+        list_->CopyResource(realBuffers_[realIndex].Get(), proxyBuffers_[proxyIndex_].Get());
+        for (auto& barrier : barriers)
+            std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+        list_->ResourceBarrier(2, barriers);
+        list_->Close();
+        ID3D12CommandList* lists[] = {list_.Get()};
+        submitThrough_->ExecuteCommandLists(1, lists);
+        WaitForOwnQueue();
+    }
+
+    void Advance(UINT flags) {
+        if (!(flags & DXGI_PRESENT_TEST))
+            proxyIndex_ = (proxyIndex_ + 1) % proxyBufferCount_;
+    }
+
+    void WaitForOwnQueue() {
+        ownQueue_->Signal(fence_.Get(), ++fenceValue_);
+        if (fence_->GetCompletedValue() < fenceValue_) {
+            fence_->SetEventOnCompletion(fenceValue_, fenceEvent_);
+            WaitForSingleObject(fenceEvent_, INFINITE);
+        }
+    }
+
+    ComPtr<ID3D12CommandQueue> ownQueue_;
+    ComPtr<ID3D12CommandQueue> submitThrough_;
+    ComPtr<ID3D12Device> device_;
+    ComPtr<ID3D12CommandAllocator> allocator_;
+    ComPtr<ID3D12GraphicsCommandList> list_;
+    ComPtr<ID3D12Fence> fence_;
+    HANDLE fenceEvent_ = nullptr;
+    UINT64 fenceValue_ = 0;
+    std::vector<ComPtr<ID3D12Resource>> realBuffers_;
+    std::vector<ComPtr<ID3D12Resource>> proxyBuffers_;
+    UINT proxyBufferCount_;
+    UINT proxyIndex_ = 0;
+};
+
+// The plugin's create for another runtime's swapchain (NestedPresenterSwapChain): the native swapchain on a present
+// queue of the plugin's own, wrapped in the scenario's Present-chain overlays (flow_host_present_chain.cpp).
+HRESULT CreateNestedSwapChainForHwnd(IDXGIFactory2* factory, ID3D12CommandQueue* runtimeQueue, HWND window,
+                                     const DXGI_SWAP_CHAIN_DESC1* desc,
+                                     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
+                                     IDXGISwapChain4** swapchain) {
+    ComPtr<ID3D12Device> device;
+    if (!factory || !runtimeQueue || !desc || !swapchain || FAILED(runtimeQueue->GetDevice(IID_PPV_ARGS(&device))))
+        return E_INVALIDARG;
+    D3D12_COMMAND_QUEUE_DESC queueDesc{};
+    ComPtr<ID3D12CommandQueue> ownQueue;
+    if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&ownQueue))))
+        return E_FAIL;
+    ownQueue->SetName(L"FakeDLSSG_NestedPresentQueue");
+    DXGI_SWAP_CHAIN_DESC1 realDesc = *desc;
+    realDesc.BufferCount = desc->BufferCount + kExtraRealBuffers;
+    ComPtr<IDXGISwapChain1> real;
+    const HRESULT hr = factory->CreateSwapChainForHwnd(ownQueue.Get(), window, &realDesc, fullscreenDesc, nullptr, &real);
+    Log(kModule, "nested presenter's native swapchain hr=0x%08lX sc=%p queue=%p", static_cast<unsigned long>(hr),
+        real.Get(), ownQueue.Get());
+    if (FAILED(hr))
+        return hr;
+    ComPtr<IDXGISwapChain4> real4;
+    real.As(&real4);
+    using WrapPresentation = void (*)(IDXGISwapChain4*, ID3D12CommandQueue*, IDXGISwapChain4**, ID3D12CommandQueue**);
+    const auto wrap = reinterpret_cast<WrapPresentation>(
+        GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_WrapRuntimePresentation"));
+    ComPtr<IDXGISwapChain4> presentThrough = real4;
+    ComPtr<ID3D12CommandQueue> submitThrough = ownQueue;
+    if (wrap) {
+        IDXGISwapChain4* wrappedSwapchain = nullptr;
+        ID3D12CommandQueue* wrappedQueue = nullptr;
+        wrap(real4.Get(), ownQueue.Get(), &wrappedSwapchain, &wrappedQueue);
+        if (!wrappedSwapchain || !wrappedQueue)
+            return E_FAIL;
+        presentThrough.Attach(wrappedSwapchain);
+        submitThrough.Attach(wrappedQueue);
+    }
+    *swapchain = new NestedPresenterSwapChain(presentThrough.Get(), ownQueue.Get(), submitThrough.Get(),
+                                              desc->BufferCount);
+    return S_OK;
+}
+
 sl::Result DLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options) {
     std::lock_guard<std::mutex> lock(g_optionsMutex);
     Log(kModule, "slDLSSGSetOptions viewport=%u mode=%u frames=%u (was %u)", static_cast<uint32_t>(viewport),
@@ -423,6 +625,8 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&SwapchainDestroyed);
     if (std::strcmp(name, "flowCreateSwapChainForHwnd") == 0)
         return reinterpret_cast<void*>(&CreateProxySwapChainForHwnd);
+    if (std::strcmp(name, "flowCreateNestedSwapChainForHwnd") == 0)
+        return reinterpret_cast<void*>(&CreateNestedSwapChainForHwnd);
     if (std::strcmp(name, "flowCurrentMode") == 0)
         return reinterpret_cast<void*>(&FlowCurrentMode);
     if (std::strcmp(name, "flowCreateNativeBelowRuntime") == 0)

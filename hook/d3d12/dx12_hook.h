@@ -222,7 +222,10 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
 bool DX12_IsNativeFSRFGSuspendedDisablePending();
 // No-app-callback FSR topmost transport: learns the final ECL batch immediately preceding the runtime's real
 // Present and appends CE to that same batch on stable frames. This is generic across Steam/RTSS/ReShade/etc.
-void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
+// `presentOriginatorFrame`: this Present's originator (PresentOrigin::originatorFrame), which names a presenter nested
+// between the runtime and the native swapchain.
+void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible,
+                                             const void* presentOriginatorFrame);
 bool DX12_IsNoCallbackFSRTopmostBatchActive();
 bool DX12_IsNoCallbackFSRFinalOutputCaptureAvailable();
 // Whether AMD is composing a frame whose overlay the final-batch route owns (it stays eligible for that frame).

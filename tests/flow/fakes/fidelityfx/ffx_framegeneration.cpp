@@ -421,6 +421,7 @@ private:
         const HRESULT hr = presentThroughOverlay && (overlayList || relayOutputSubmissions_)
                                ? presentThroughOverlay(real_, syncInterval, flags, presentQueue_.Get(), overlayList)
                                : real_->Present(syncInterval, flags);
+        NoteRuntimeOutputPresented();
         if (overlayList)
             WaitForQueue(presentQueue_.Get());
         CountPhysicalPresent();
@@ -587,24 +588,60 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
     desc.dxgiFactory->QueryInterface(IID_PPV_ARGS(&factory));
     DXGI_SWAP_CHAIN_DESC1 realDesc = *desc.desc;
     realDesc.BufferCount = desc.desc->BufferCount + kExtraRealBuffers;
+    ComPtr<IDXGISwapChain4> presentThrough;
+    ComPtr<ID3D12CommandQueue> submitThrough;
+    using WrapPresentation = void (*)(IDXGISwapChain4*, ID3D12CommandQueue*, IDXGISwapChain4**, ID3D12CommandQueue**);
+    const auto wrap = reinterpret_cast<WrapPresentation>(
+        GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_WrapRuntimePresentation"));
+    // GTA V Enhanced creates this swapchain through Streamline: sl.dlss_g.dll creates the native one, presents it from
+    // inside this runtime's Present and hands the runtime its own buffers, so the scenario's overlays sit below it
+    // (fakes/streamline/sl_dlss_g.cpp NestedPresenterSwapChain). ReShade still wraps the runtime's queue.
+    if (ScenarioCount("CE_FLOW_FFX_NESTED_PRESENTER") != 0) {
+        using GetPluginFunction = void* (*)(const char*);
+        using CreateNested = HRESULT (*)(IDXGIFactory2*, ID3D12CommandQueue*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+                                         const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGISwapChain4**);
+        const HMODULE dlssg = GetModuleHandleW(L"sl.dlss_g.dll");
+        const auto getFunction =
+            dlssg ? reinterpret_cast<GetPluginFunction>(GetProcAddress(dlssg, "slGetPluginFunction")) : nullptr;
+        const auto create =
+            getFunction ? reinterpret_cast<CreateNested>(getFunction("flowCreateNestedSwapChainForHwnd")) : nullptr;
+        IDXGISwapChain4* nested = nullptr;
+        const HRESULT hr = create ? create(factory.Get(), swapchainContext->presentQueue.Get(), desc.hwnd,
+                                           &realDesc, desc.fullscreenDesc, &nested)
+                                  : E_NOINTERFACE;
+        Log(kModule, "ffxCreateContext(FG swapchain for HWND) nested presenter's swapchain hr=0x%08lX sc=%p",
+            static_cast<unsigned long>(hr), nested);
+        using WrapQueue = ID3D12CommandQueue* (*)(ID3D12CommandQueue*);
+        const auto wrapQueue =
+            reinterpret_cast<WrapQueue>(GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_WrapRuntimeQueue"));
+        presentThrough.Attach(nested);
+        if (wrapQueue)
+            submitThrough.Attach(wrapQueue(swapchainContext->presentQueue.Get()));
+        else
+            submitThrough = swapchainContext->presentQueue;
+        if (FAILED(hr) || !presentThrough || !submitThrough) {
+            delete swapchainContext;
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
+    }
     ComPtr<IDXGISwapChain1> real;
-    const HRESULT hr = factory->CreateSwapChainForHwnd(swapchainContext->presentQueue.Get(), desc.hwnd, &realDesc,
-                                                       desc.fullscreenDesc, nullptr, &real);
-    Log(kModule, "ffxCreateContext(FG swapchain for HWND) real swapchain hr=0x%08lX sc=%p",
-        static_cast<unsigned long>(hr), real.Get());
+    const HRESULT hr = presentThrough ? S_OK
+                                      : factory->CreateSwapChainForHwnd(swapchainContext->presentQueue.Get(), desc.hwnd,
+                                                                        &realDesc, desc.fullscreenDesc, nullptr, &real);
+    if (!presentThrough)
+        Log(kModule, "ffxCreateContext(FG swapchain for HWND) real swapchain hr=0x%08lX sc=%p",
+            static_cast<unsigned long>(hr), real.Get());
     if (FAILED(hr)) {
         delete swapchainContext;
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
     ComPtr<IDXGISwapChain4> real4;
-    real.As(&real4);
+    if (real)
+        real.As(&real4);
     // The scenario's Present-chain overlays wrap the swapchain the runtime presents to and, ReShade, the queue it
     // submits to, as they wrap AMD's in GTA V Enhanced (flow_host_present_chain.cpp); without them both stay the runtime's.
-    ComPtr<IDXGISwapChain4> presentThrough;
-    ComPtr<ID3D12CommandQueue> submitThrough;
-    using WrapPresentation = void (*)(IDXGISwapChain4*, ID3D12CommandQueue*, IDXGISwapChain4**, ID3D12CommandQueue**);
-    if (const auto wrap = reinterpret_cast<WrapPresentation>(
-            GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_WrapRuntimePresentation"))) {
+    // A nested presenter's swapchain came wrapped below it already.
+    if (!presentThrough && wrap) {
         IDXGISwapChain4* wrappedSwapchain = nullptr;
         ID3D12CommandQueue* wrappedQueue = nullptr;
         wrap(real4.Get(), swapchainContext->presentQueue.Get(), &wrappedSwapchain, &wrappedQueue);
@@ -615,7 +652,7 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
             delete swapchainContext;
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
-    } else {
+    } else if (!presentThrough) {
         presentThrough = real4;
         submitThrough = swapchainContext->presentQueue;
     }

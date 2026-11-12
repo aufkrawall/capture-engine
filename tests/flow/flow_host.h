@@ -88,6 +88,11 @@ struct GameOptions {
     // The runtime submits its last presenter-thread batch on a second DIRECT queue that does not own the swapchain's
     // buffers (GTA V Enhanced: AMD's batch on a queue the real swapchain was not created on).
     bool fsrSideQueueBatch = false;
+    // With streamline: the runtime creates its swapchain through Streamline, whose DLSS-G plugin (off) creates the native
+    // one on a queue of its own, hands the runtime its own buffers and copies the runtime's image into the native back
+    // buffer inside the runtime's Present call (GTA V Enhanced after DLSS FG -> FSR FG, session 20261112_013802). The
+    // scenario's Present-chain overlays wrap the native swapchain below the plugin.
+    bool fsrNestedPresenter = false;
     // With fsrRelayOutputSubmissions: stack frames the runtime's Present passes through before the swapchain, the
     // Present-chain overlay submitting at the deepest one (GTA V Enhanced: Social Club, Epic's overlay, Streamline
     // and ReShade wrap the swapchain AMD presents to).

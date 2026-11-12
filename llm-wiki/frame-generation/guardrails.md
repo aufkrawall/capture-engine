@@ -1,5 +1,36 @@
 # Frame Generation Switching
 
+## Nested presenter under FSR FG (2026-11-12)
+
+- GTA session `20261112_013802` (0.1.7514, ReShade 6.8, DLSS FG -> FSR FG): no crash, overlay still at the rendered
+  rate. The trace: AMD's batch on its own queue (`owner=0`), then three owner-queue batches all relayed to AMD's
+  Present site, i.e. inside AMD's Present call. `cdb` with Microsoft symbols named the submitters: ReShade's
+  queue-proxy `ExecuteCommandLists` forwarder (`dxgi.dll+0x1123E7`, `call [rax+50h]`) relaying a caller between AMD
+  and ReShade, ReShade's own flush (`+0x120C88`), and the system `dxgi!CD3D12Device::CloseAndSubmitCommandList+0xa6`
+  inside the native Present (after CE's hook point, so it heads the next trace). Both the Present originator and the
+  native create's caller were `sl.dlss_g.dll`.
+- Topology: AMD's "real" swapchain is Streamline's DLSS-G proxy (DLSS-G off). AMD composes into the proxy's buffers on
+  its own queue; `sl.dlss_g` copies each output into the native back buffer on the native swapchain's queue inside
+  AMD's Present, then ReShade applies its effects. AMD cannot be writing the native buffers from its queue: the same
+  write from that queue removed the device for CE (`gtadlssfgtofsrfgcrash`).
+- Rule: the nested presenter is the Present originator's module (`PresentOrigin::originatorFrame`) when it created the
+  native swapchain (`fg_presenter::Binding::creator`) and is not the runtime (`IsNestedSwapchainPresenter`); an overlay
+  wrapping the swapchain created nothing. Its own submissions on the owner queue anchor; a batch whose nearest
+  presenter-image frame is the nested presenter's Present site (ReShade, DXGI below it) never does
+  (`ChooseTopmostAnchorBatch(..., nestedPresentSite)`, `NearestPresenterFrame`). Per presenter thread:
+  `dx12_hook_ffx_presentation.cpp`. Present-chain layers below it draw above CE, as with the UI baseline before.
+- Attribution: a batch inside the runtime's Present call (nested, or relayed at the runtime's Present site) keeps the
+  composing frame of the last batch outside that call; the game's next Present may have advanced it meanwhile.
+- Diagnostics: `owns its buffers on queue ... originator=<module+off> creator=<module>` ("its creator presents it from
+  inside the runtime's Present"), `anchor=nested-presenter`, unusable lines with `nested= nestedPresentSite=` and per
+  batch `site=<module+off> ... nested=`; `[FG PRESENTER] ... creator=`.
+- Coverage: `FlowFSR.ANestedPresenter{UnderReShade,SubmittingDirectly}KeepsTheOverlayAtOutputRate` and
+  `FlowSwitch.GTAStyleDLSSToFSRSwitchThroughStreamlinesPresenterKeepsTheOverlayAtOutputRate` (fake `sl.dlss_g`
+  `NestedPresenterSwapChain`) end `granted=0` without the nested recognition and pass with it. The harness judges
+  each runtime output after its Present returned (`CEFlow_NoteRuntimeOutputPresented`): the copy carrying CE's draw
+  runs inside it. Unit: `FFXTopmostBatchPolicyTest.ANestedPresenter*`, `TheNearestPresenterFrame*`,
+  `OnlyTheSwapchainsCreator*`. Open: GTA hardware run.
+
 ## Startup resources and relayed FSR composition (2026-11-11)
 
 - GTA session `gtaoverlaylatefsrgraphstuttery`, 0.1.7511: cold backend/sync was ready at 21:32:33.914,
@@ -23,9 +54,8 @@
   recovery walks only that queue's submissions; the append re-checks the owner before every draw and refuses
   otherwise. Unknown owner = no anchor. The `graphicsQueue` filter and `g_FFXNativeOutputQueue` are gone.
 - Consequence for GTA + ReShade + Streamline: no AMD-site batch exists on the owner queue (AMD's output reaches the
-  back buffer only through a submission inside its Present call), so the route stays on the UI baseline at the
-  rendered rate. Open: which Present-chain layer writes AMD's output there (likely the nested `sl.dlss_g` presenter);
-  the unusable-trace lines now print `submitter=module+offset owner=` per batch to decide a nested-presenter anchor.
+  back buffer only through a submission inside its Present call), so the route stayed on the UI baseline at the
+  rendered rate. Resolved: [nested presenter](#nested-presenter-under-fsr-fg-2026-11-12).
 - Coverage: `FlowFSR.A{Relayed,Direct}RuntimeBatchOnAnotherQueueNeverCarriesTheOverlay` (fake runtime's empty
   side batch on a second DIRECT queue after its composition) failed before the fix with id 907 and
   `Present failed (hr=0x887A0005)` and pass after; `FFXTopmostBatchPolicyTest.RuntimeWorkOnAQueueThatDoesNotOwn*`.

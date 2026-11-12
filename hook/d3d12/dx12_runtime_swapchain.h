@@ -14,10 +14,12 @@ struct IUnknown;
 // An FFX runtime's own create (`ffxModulePath`, from the create stack) registers the FFX swapchain and names
 // the runtime image FFXHook must observe (FFXHook::NoteFrameGenerationSwapchainCreator). The DLSS-G plugin's own
 // create (`dlssgPluginCreator`) registers DLSS-G's chain, which ends a competing runtime's hold on presentation.
+// `creatorAddress`: the create's originator frame, which names the module that created the native swapchain.
 bool DX12_NoteFrameGenerationRuntimeSwapchainCreate(const char* context, IDXGISwapChain* swapchain, IUnknown* device,
                                                     HWND window, bool xefgModuleOnCreateStack,
                                                     const char* ffxModulePath = nullptr,
-                                                    bool dlssgPluginCreator = false);
+                                                    bool dlssgPluginCreator = false,
+                                                    const void* creatorAddress = nullptr);
 
 // The application swapchain a runtime is about to take over: xefgSwapChainD3D12InitFromSwapChain releases it,
 // requires that release to be the last reference, and creates its own swapchain for the window. CE drops every

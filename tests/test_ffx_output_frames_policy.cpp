@@ -160,13 +160,19 @@ TEST(FFXOutputFramesSourceTest, ProxyPresentBracketsAMDPresentAndRecordsTheFrame
 TEST(FFXOutputFramesSourceTest, OutputsTakeTheFrameAtTheirFinalBatch) {
     const std::string topmost = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
     ASSERT_FALSE(topmost.empty());
-    // AMD's first submission inside its Present advances the composing frame before that batch is recorded.
+    // AMD's first submission inside its Present advances the composing frame before that batch is recorded. A batch
+    // inside the runtime's Present call (a nested presenter's, a Present-chain layer's) keeps the frame of the last
+    // composition outside it: the game's next Present may have advanced the composing frame meanwhile.
     const size_t record = topmost.find("uintptr_t RecordECLBatch(");
     const size_t advance = topmost.find("AdvanceFFXComposingFrame(t_FFXForwardFrame", record);
-    const size_t store = topmost.find("submitSite, queue, g_FFXComposingFrame.Current(), relayed", record);
+    const size_t read = topmost.find("uint64_t composingFrame = g_FFXComposingFrame.Current();", record);
+    const size_t inherit = topmost.find("composingFrame = t_PresenterFrameTrace.lastCompositionFrame;", read);
+    const size_t store = topmost.find("submitSite, queue, composingFrame, relayed", record);
     ASSERT_NE(record, std::string::npos);
     ASSERT_NE(store, std::string::npos);
-    EXPECT_LT(advance, store);
+    EXPECT_LT(advance, read);
+    EXPECT_LT(read, inherit);
+    EXPECT_LT(inherit, store);
     // The draw decision and the presented output both read the final batch's frame.
     const size_t append = topmost.find("bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(");
     const size_t appendedBatch =
@@ -175,7 +181,7 @@ TEST(FFXOutputFramesSourceTest, OutputsTakeTheFrameAtTheirFinalBatch) {
     ASSERT_NE(draw, std::string::npos);
     EXPECT_LT(appendedBatch, draw);
     const size_t observe = topmost.find("void DX12_ObserveNoCallbackFSRTopmostPresent(");
-    const size_t anchor = topmost.find("&anchorIndex);", observe);
+    const size_t anchor = topmost.find("&anchorIndex,", observe);
     const size_t stash = topmost.find("OutputAttributionForBatch(anchorIndex, &t_PresentedOutput)", anchor);
     const size_t reset = topmost.find("ResetPresenterFrameTrace();", stash);
     ASSERT_NE(reset, std::string::npos);

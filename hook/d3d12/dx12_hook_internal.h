@@ -231,7 +231,8 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
 bool DX12_PrewarmFFXPresentCallbackOverlayAdapter(IDXGISwapChain* presentedSwapChain,
                                                    ID3D12CommandQueue* presentationQueue);
 
-void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
+void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible,
+                                             const void* presentOriginatorFrame);
 // One line for a D3D12 validation message raised on this thread: CE's submission in progress, CE's queue and
 // the topmost route's learned target. Lock-free; returns the snprintf length.
 int DX12_DescribeOverlaySubmissionForValidationMessage(char* out, size_t size);
@@ -265,10 +266,12 @@ struct DX12FFXOutputAttribution {
     ce::dx12_overlay_policy::FFXFrameOwnerRecord record;
     bool topmostDrawn = false;
 };
-// The output this thread is composing (its batches so far).
-bool DX12_PeekFFXOutputAttribution(DX12FFXOutputAttribution* out);
 // The output this thread just presented, as DX12_ObserveNoCallbackFSRTopmostPresent left it; consumed once.
 bool DX12_TakeFFXOutputAttribution(DX12FFXOutputAttribution* out);
+#ifdef CE_FLOW_TEST
+// The same output for the FG flow harness, consumed once by it: judged after the Present that showed it returned.
+bool DX12_TakeFFXOutputAttributionForValidation(DX12FFXOutputAttribution* out);
+#endif
 
 bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags, ce::ffx_api::Resource* ceSubstitute, DX12FFXUiOverlayTargetPreparation* preparation);
 

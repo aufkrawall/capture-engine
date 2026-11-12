@@ -17,6 +17,7 @@ struct Record {
     ID3D12CommandQueue* queue = nullptr;  // identity only; the presenter owns the queue
     uintptr_t owner = 0;
     uint64_t lifetime = 0;
+    HMODULE creator = nullptr;  // identity only
 };
 
 struct OpenScope {
@@ -155,9 +156,15 @@ Presenter OpenRuntimeCreateScopeFor(HWND window) {
 
 Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12CommandQueue* queue,
                                bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator,
-                               bool dlssgPluginCreator) {
+                               bool dlssgPluginCreator, const void* creatorAddress) {
     if (!swapchain) {
         return Presenter::kApplication;
+    }
+    HMODULE creator = nullptr;
+    if (creatorAddress &&
+        !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(creatorAddress), &creator)) {
+        creator = nullptr;
     }
     State& state = Registry();
     Presenter presenter = Presenter::kApplication;
@@ -189,7 +196,7 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
         }
         if (presenter != Presenter::kApplication) {
             lifetime = state.nextLifetime++;
-            state.swapchains[swapchain] = {presenter, window, queue, owner, lifetime};
+            state.swapchains[swapchain] = {presenter, window, queue, owner, lifetime, creator};
         }
         PublishCountLocked(state);
     }
@@ -206,9 +213,10 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
     }
     if (presenter != Presenter::kApplication || retired != 0) {
         HookLogImportant(
-            "[FG PRESENTER] %s: swapchain %p for HWND=%p is presented by %s (queue=%p evidence=%s lifetime=%llu "
-            "owner=%p retiredForWindow=%zu)",
+            "[FG PRESENTER] %s: swapchain %p for HWND=%p is presented by %s (queue=%p creator=%p evidence=%s "
+            "lifetime=%llu owner=%p retiredForWindow=%zu)",
             context ? context : "create", swapchain, window, PresenterName(presenter), queue,
+            static_cast<void*>(creator),
             scopeMatches                ? "runtime-create-scope"
             : xefgModuleOnCreateStack ? "module-on-create-stack"
             : ffxRuntimeCreator       ? "ffx-runtime-creator"
@@ -226,8 +234,9 @@ Binding BindingFor(IDXGISwapChain* swapchain) {
     State& state = Registry();
     std::lock_guard<std::mutex> lock(state.mutex);
     const auto it = state.swapchains.find(swapchain);
-    return it == state.swapchains.end() ? Binding{}
-                                        : Binding{it->second.presenter, it->second.lifetime, it->second.queue};
+    return it == state.swapchains.end()
+               ? Binding{}
+               : Binding{it->second.presenter, it->second.lifetime, it->second.queue, it->second.creator};
 }
 
 Binding CompetingPresenterHoldingPresentation() {

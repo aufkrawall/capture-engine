@@ -182,6 +182,7 @@ void WalkPresentOriginator(PresentOrigin* out, bool moduleSetObservable, uint64_
             char path[MAX_PATH] = {};
             TryGetModulePathFromCodeAddress(stackFrames[i], path, sizeof(path));
             SetOriginator(out, path, frame.originator);
+            out->originatorFrame = stackFrames[i];
             return;
         }
         if (frameCount < kBatchFrames) {
@@ -255,6 +256,7 @@ void ClassifyPresentCallerOrigin(const void* callerAddress, PresentOrigin* out) 
     }
     SetOriginator(out, callerPath,
                   ce::present_originator::ClassifyOriginatorModule(callerPath, IsStreamlineModuleHandle(callerModule)));
+    out->originatorFrame = callerAddress;
 }
 
 const PresentCallerVerdict& ClassifyPresentCaller(const void* callerAddress) {

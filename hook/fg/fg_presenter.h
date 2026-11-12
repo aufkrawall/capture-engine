@@ -174,9 +174,10 @@ Presenter OpenRuntimeCreateScopeFor(HWND window);
 // A swapchain create returned `swapchain` for `window` on `queue` (the D3D12 create "device"). Attributes it
 // (ResolveCreatedSwapchainPresenter) and registers a runtime-owned one; any other swapchain registered for the
 // same window is gone (DXGI allows one flip swapchain per window) and is retired. Returns the presenter.
+// `creatorAddress`: the create's originator frame on CE's create stack (the code that called the native create).
 Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12CommandQueue* queue,
                                bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator = false,
-                               bool dlssgPluginCreator = false);
+                               bool dlssgPluginCreator = false, const void* creatorAddress = nullptr);
 
 // The queues a ResizeBuffers1 bound the swapchain's buffers to: the presenter's output queue from now on.
 void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, const char* context);
@@ -195,11 +196,15 @@ ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain);  // raw identity; nu
 // where pointer identity cannot tell.
 uint64_t OutputPresenterLifetime(IDXGISwapChain* swapchain);
 
-// The registration a swapchain is presented under: its presenter, lifetime number and create queue (identity only).
+// The registration a swapchain is presented under: its presenter, lifetime number, create queue (identity only) and
+// the module that called the native create. That module can differ from the presenter's: GTA V Enhanced creates
+// FidelityFX's chain through Streamline, whose sl.dlss_g.dll creates the native swapchain and presents it from inside
+// AMD's Present (session 20261112_013802).
 struct Binding {
     Presenter presenter = Presenter::kApplication;
     uint64_t lifetime = 0;
     ID3D12CommandQueue* queue = nullptr;
+    HMODULE creator = nullptr;  // identity only, null when the create stack named no module
 };
 Binding BindingFor(IDXGISwapChain* swapchain);
 // The competing presenter that holds presentation (DoesCompetingPresenterHoldPresentation), or kApplication.

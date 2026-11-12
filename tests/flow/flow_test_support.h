@@ -92,4 +92,22 @@ inline void ExpectPublished(const FlowGame& game, int type, int multiplier, cons
     EXPECT_EQ(published.multiplier, multiplier) << where << "; logs: " << game.LogDirectory();
 }
 
+// CE's own account of the overlay submission on this thread (CEFlow_DescribeD3D12OverlaySubmission).
+inline std::string DescribeOverlaySubmission() {
+    using Describe = int (*)(char*, int);
+    const auto describe = reinterpret_cast<Describe>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_DescribeD3D12OverlaySubmission"));
+    char text[512] = {};
+    if (!describe || describe(text, static_cast<int>(sizeof(text))) <= 0)
+        return "CEFlow_DescribeD3D12OverlaySubmission unavailable";
+    return text;
+}
+
+// No-callback FSR FG: the proven final-batch route draws every output after the runtime composed it (not AMD's UI
+// resource at the rendered rate).
+inline void ExpectFinalBatchRouteOwnsTheOutputs(const FlowGame& game, const char* where) {
+    const std::string state = DescribeOverlaySubmission();
+    EXPECT_NE(state.find("granted=1"), std::string::npos) << where << ": " << state << "; logs: " << game.LogDirectory();
+}
+
 }  // namespace ce::flow

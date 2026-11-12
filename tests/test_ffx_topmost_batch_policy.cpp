@@ -207,6 +207,69 @@ TEST(FFXTopmostBatchPolicyTest, RuntimeWorkOnAQueueThatDoesNotOwnTheBackBuffersN
     EXPECT_EQ(last.queueIdentity, 0xA0u);
 }
 
+// GTA V Enhanced + ReShade after DLSS FG -> FSR FG (session 20261112_013802): sl.dlss_g.dll created the native
+// swapchain and presents it from inside AMD's Present. The trace between two Presents: DXGI's own work inside the
+// previous native Present, AMD's composition into the plugin's buffers on AMD's queue, the plugin's copy into the back
+// buffer (relayed by ReShade's queue object), ReShade's effects. The plugin's copy anchors; the layers below it, whose
+// nearest plugin frame is its Present site, never do - nor does anything without the plugin's Present site known.
+TEST(FFXTopmostBatchPolicyTest, ANestedPresentersOwnCompositionAnchorsAndTheLayersBelowItNever) {
+    constexpr uintptr_t runtimePresentSite = 0x1D51;
+    constexpr uintptr_t nestedPresentSite = 0x9100;
+    constexpr uintptr_t nestedCopy = 0x9420;
+    PresenterBatch gta[] = {
+        {nestedPresentSite, 0xA0, false, true, true},
+        {0xF48D, 0xB0, false, false, /*ownsBackBuffers=*/false},
+        {nestedCopy, 0xA0, false, true, true},
+        {nestedPresentSite, 0xA0, false, true, true},
+    };
+    for (PresenterBatch& batch : gta)
+        batch.fromNestedPresenter = batch.queueIdentity == 0xA0;
+    size_t index = 0;
+    const auto anchor = ChooseTopmostAnchorBatch(gta, 4, true, runtimePresentSite, &index, nestedPresentSite);
+    EXPECT_EQ(anchor.callSite, nestedCopy);
+    EXPECT_EQ(anchor.queueIdentity, 0xA0u);
+    EXPECT_EQ(anchor.ordinal, 1u);
+    EXPECT_EQ(index, 2u);
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(gta, 4, true, runtimePresentSite)));
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(
+        ChooseTopmostAnchorBatch(gta, 2, true, runtimePresentSite, nullptr, nestedPresentSite)));
+    // The same copy on a queue that does not own the back buffers is no anchor either.
+    gta[2].ownsBackBuffers = false;
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(
+        ChooseTopmostAnchorBatch(gta, 4, true, runtimePresentSite, nullptr, nestedPresentSite)));
+}
+
+// Whose code a submission came from: the nearest frame inside either presenting image, past queue proxies and the
+// layers between. A Present-chain layer's stack finds the image's Present site.
+TEST(FFXTopmostBatchPolicyTest, TheNearestPresenterFrameNamesTheSubmittingImage) {
+    using ce::dx12_overlay_policy::NearestPresenterFrame;
+    using ce::dx12_overlay_policy::PresenterImage;
+    using ce::dx12_overlay_policy::PresenterImages;
+    const PresenterImages images{0x10000, 0x20000, 0x50000, 0x60000};
+    const uintptr_t relayedCopy[] = {0x7000, 0x8000, 0x51234, 0x10500};
+    const auto copy = NearestPresenterFrame(relayedCopy, 4, images);
+    EXPECT_EQ(copy.image, PresenterImage::kNested);
+    EXPECT_EQ(copy.address, 0x51234u);
+    const uintptr_t runtimeBatch[] = {0x7000, 0x10800, 0x51234};
+    EXPECT_EQ(NearestPresenterFrame(runtimeBatch, 3, images).image, PresenterImage::kRuntime);
+    const uintptr_t foreign[] = {0x7000, 0x8000};
+    EXPECT_EQ(NearestPresenterFrame(foreign, 2, images).image, PresenterImage::kNone);
+    const PresenterImages runtimeOnly{0x10000, 0x20000};
+    EXPECT_EQ(NearestPresenterFrame(relayedCopy, 4, runtimeOnly).address, 0x10500u);
+    EXPECT_EQ(NearestPresenterFrame(nullptr, 4, images).image, PresenterImage::kNone);
+}
+
+// The Present's originator is a nested presenter only when it created the native swapchain and is not the runtime:
+// an overlay wrapping the swapchain (ReShade, Steam) created nothing, and the runtime presenting its own swapchain is
+// the ordinary case.
+TEST(FFXTopmostBatchPolicyTest, OnlyTheSwapchainsCreatorPresentingBelowTheRuntimeIsANestedPresenter) {
+    using ce::dx12_overlay_policy::IsNestedSwapchainPresenter;
+    EXPECT_TRUE(IsNestedSwapchainPresenter(0x50000, 0x50000, /*originatorInRuntimeImage=*/false));
+    EXPECT_FALSE(IsNestedSwapchainPresenter(0x70000, 0x50000, false));
+    EXPECT_FALSE(IsNestedSwapchainPresenter(0x10000, 0x10000, /*originatorInRuntimeImage=*/true));
+    EXPECT_FALSE(IsNestedSwapchainPresenter(0, 0, false));
+}
+
 TEST(FFXTopmostBatchPolicyTest, AppCallbackTopmostRouteStartsWithNonVisibleProbe) {
     EXPECT_FALSE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/false));
     EXPECT_TRUE(ShouldRenderAppCallbackTopmostOverlay(/*routeArmed=*/true));

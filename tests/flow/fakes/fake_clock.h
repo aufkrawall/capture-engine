@@ -51,6 +51,18 @@ inline void NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime, uin
         note(presenter, lifetime, frame);
 }
 
+// The output NoteRuntimeOutputFrame named was presented: the flow entry judges it against CE's account of that Present
+// now, after any layer inside the Present (a nested presenter's copy that carries CE's draw) submitted.
+inline void NoteRuntimeOutputPresented() {
+    using Note = void (*)();
+    static const Note note = [] {
+        HMODULE hook = GetModuleHandleA("capture_hook_x64.dll");
+        return hook ? reinterpret_cast<Note>(GetProcAddress(hook, "CEFlow_NoteRuntimeOutputPresented")) : nullptr;
+    }();
+    if (note)
+        note();
+}
+
 // A scenario's count the game sets for the fake runtimes (GameOptions), 0 when unset.
 inline uint32_t ScenarioCount(const char* variable) {
     char value[32] = {};

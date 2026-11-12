@@ -765,6 +765,8 @@ struct PresentCallContext {
     bool callerFromFFXFrameGenerationModule = false;
     // The originator is XeFG's libxess_fg.dll (present_origin.h).
     bool callerFromXeFGModule = false;
+    // PresentOrigin::originatorFrame: the originator's call into the layer below it (null when unresolved).
+    const void* presentOriginatorFrame = nullptr;
     bool recentLargePresentGap = false;
     bool startupTopLevelPresentAlreadyConsumed = false;
     bool postSLStartupActivationPending = false;

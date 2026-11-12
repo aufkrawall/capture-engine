@@ -23,6 +23,8 @@ struct PresentOrigin {
     // Resolved from the frames above a foreign chain; otherwise it is the immediate caller.
     bool walked = false;
     char module[MAX_PATH] = {};  // the originator's path, empty when unresolved
+    // The originator's return address: its call into the layer below (a wrapped swapchain's Present), or null.
+    const void* originatorFrame = nullptr;
     // Base names of the modules walked up to and including the originator (consecutive repeats folded).
     uint8_t moduleCount = 0;
     char modules[kMaxModules][kModuleNameLength] = {};

@@ -108,6 +108,46 @@ TEST(FlowSwitch, GTAStyleSwitchesUnderReShadeAndLauncherOverlaysKeepTheOverlay) 
                                          {OverlayStandIn::kReShade, 0}});
 }
 
+// GTA V Enhanced + ReShade, DLSS FG -> FSR FG (session 20261112_013802): the FidelityFX swapchain is created through
+// Streamline, whose DLSS-G plugin creates the native one and presents it from inside AMD's Present, copying AMD's image
+// into the back buffer. The overlay stayed on AMD's UI resource at the rendered rate after the switch (a juddering
+// frame time graph); the final-batch route must own the outputs in every FSR phase, before and after DLSS FG.
+TEST(FlowSwitch, GTAStyleDLSSToFSRSwitchThroughStreamlinesPresenterKeepsTheOverlayAtOutputRate) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    options.fsrUi = FSRUiResource::kPlaceholder;
+    options.fsrNestedPresenter = true;
+    options.presentChainOverlays = {{OverlayStandIn::kReShade, 0}};
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ExpectPublished(game, 2, 2, "FSR FG on");
+    ExpectFinalBatchRouteOwnsTheOutputs(game, "FSR FG on");
+
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ExpectPublished(game, 1, 2, "FSR FG -> DLSS FG");
+
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.UnloadDLSSG()) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kFidelityFX)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ExpectPublished(game, 2, 2, "DLSS FG -> FSR FG");
+    ExpectFinalBatchRouteOwnsTheOutputs(game, "DLSS FG -> FSR FG");
+
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kNative)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ExpectPublished(game, 0, 1, "FSR FG -> all off");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowSwitch, FirstStreamlinePassthroughOutputDrawsAfterRapidFSRSwitches) {
     FlowGame game(CurrentTestName());
     GameOptions options;

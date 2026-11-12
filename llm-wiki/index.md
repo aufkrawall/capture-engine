@@ -72,12 +72,12 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `overlay-rendering.md` | 98 | startup prime removal (2026-11-11, hardware pending); FSR final-batch anchors only on the swapchain's own queue (2026-11-12, after the GTA crash); the four overlay layouts and the panel module, fonts and atlas sizes (2026-11-05, hardware pending), graph, DX12 uploads, PC latency, sensors (LHM), delayed-sample retention (2026-10-13), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09); uncounted Presents capturable without a generator (2026-10-19); PC latency epochs follow the generator, not its factor (2026-10-25) |
+| `overlay-rendering.md` | 98 | startup prime removal (2026-11-11, hardware pending); FSR final-batch anchors only on the swapchain's own queue (2026-11-12, after the GTA crash), on a nested presenter's own copy there (2026-11-12, hardware pending); the four overlay layouts and the panel module, fonts and atlas sizes (2026-11-05, hardware pending), graph, DX12 uploads, PC latency, sensors (LHM), delayed-sample retention (2026-10-13), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09); uncounted Presents capturable without a generator (2026-10-19); PC latency epochs follow the generator, not its factor (2026-10-25) |
 | `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception incl. x86 (2026-10-17), FSR topmost ordering |
 | `dxgi-late-overlay-injection.md` | 8 | native entry reservation (x86 since 2026-10-17), late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology, where the overlay goes, its status evidence, and how the FPS limiter paces it (2026-11-06) |
 | `overlay-fg-status.md` | 26 | visible FG status publication across DX11/DX12/Vulkan; NGX Neural Rendering is not FG (2026-10-28) |
-| `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX), Streamline startup and teardown evidence (2026-11-10); search, do not read whole |
+| `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX), Streamline startup and teardown evidence (2026-11-10), nested presenter under FSR FG (2026-11-12); search, do not read whole |
 | `frame-generation/case-studies.md` | 202 | FG incident case studies with evidence |
 | `frame-generation/dlss-driver-settings.md` | 15 | DLSS-G DRS keys (`dlss_fg_*`), indicator decoding |
 | `frame-generation/streamline-generation-bridge.md` | 30 | `streamline_upgrade`: measured Streamline 1.x ABI, 1.x->2.x bridge |

@@ -382,7 +382,8 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 // to AMD's UI-resource composition. No known-overlay allowlist is involved.
                 {
                     CostScope topmostStage(CostStage::kFsrTopmost);
-                    DX12_ObserveNoCallbackFSRTopmostPresent(pSwapChain, topmostSameBatchEligible);
+                    DX12_ObserveNoCallbackFSRTopmostPresent(pSwapChain, topmostSameBatchEligible,
+                                                            ctx.presentOriginatorFrame);
                 }
                 // bundleOverlayActivelyFiring is hardwired false: the fenced composite is driven ONLY from the
                 // kSkipBundleCovers arm below, and while AMD owns the swapchain the route selects kSkipBundleCovers

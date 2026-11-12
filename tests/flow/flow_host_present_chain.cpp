@@ -79,6 +79,15 @@ extern "C" __declspec(dllexport) void CEFlowGame_WrapRuntimePresentation(IDXGISw
     }
 }
 
+// A runtime queue as ReShade hands it out (its own object when ReShade is loaded): the queue of a runtime whose
+// swapchain another presenter wraps (GameOptions::fsrNestedPresenter). Returns a new reference.
+extern "C" __declspec(dllexport) ID3D12CommandQueue* CEFlowGame_WrapRuntimeQueue(ID3D12CommandQueue* nativeQueue) {
+    if (g_wrapQueue)
+        return g_wrapQueue(nativeQueue);
+    nativeQueue->AddRef();
+    return nativeQueue;
+}
+
 namespace ce::flow {
 
 bool FlowGame::LoadPresentChainOverlays(const std::vector<PresentChainOverlay>& overlays) {

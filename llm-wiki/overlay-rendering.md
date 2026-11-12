@@ -247,9 +247,9 @@ without that site no relayed batch qualified. It walks 16 frames, then up to 112
 `anchor= relayed=<count> presentSite=` (0: the Present call was not found). The 0.1.7511 retest found that site but still
 had no anchor (4 batches, 3 relayed). 0.1.7513 (`6a56e025`) then recovered relayed batches on every queue and crashed:
 AMD's last batch ran on a second DIRECT queue, CE anchored there, and its first draw removed the device. Anchors are
-now restricted to the swapchain's own queue, so this GTA topology has no anchor and keeps the UI-resource route at the
-rendered rate; unusable traces list up to 8 batches with `submitter=module+offset owner=`. Evidence and the open
-nested-presenter question: [guardrails](frame-generation/guardrails.md#startup-resources-and-relayed-fsr-composition-2026-11-11).
+restricted to the swapchain's own queue. There the only writer is Streamline's `sl.dlss_g` (it created the native
+swapchain and presents it inside AMD's Present): its copy anchors as a nested presenter (`anchor=nested-presenter`),
+layers below it never. Details: [guardrails](frame-generation/guardrails.md#nested-presenter-under-fsr-fg-2026-11-12).
 
 ## PC latency source hierarchy
 

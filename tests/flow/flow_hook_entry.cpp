@@ -248,15 +248,41 @@ struct OutputFrameCheck {
     uint64_t ownerViolations = 0;
 } g_OutputFrames;
 
+// The output a runtime announced on this thread (CEFlow_NoteRuntimeOutputFrame), judged once its Present returned.
+struct PendingRuntimeOutput {
+    const void* presenter = nullptr;
+    uint64_t lifetime = 0;
+    uint64_t frame = 0;
+    bool composingFrameOwnedByTopmost = false;
+    bool valid = false;
+};
+thread_local PendingRuntimeOutput t_PendingRuntimeOutput;
+
 }  // namespace
 
+// Before the runtime presents the output: the game frame it shows, and whether AMD composes a frame only the final-batch
+// route draws. CE's account of the output is complete only when the Present returns (a nested presenter's batch inside
+// it carries CE's draw), so the judgment waits for CEFlow_NoteRuntimeOutputPresented.
 extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime,
                                                                        uint64_t frame) {
+    DX12FFXOutputAttribution stale;
+    DX12_TakeFFXOutputAttributionForValidation(&stale);
+    t_PendingRuntimeOutput = {presenter, lifetime, frame, DX12_IsFFXComposingFrameOwnedByTopmost(), true};
+}
+
+extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputPresented() {
+    const PendingRuntimeOutput pending = t_PendingRuntimeOutput;
+    t_PendingRuntimeOutput.valid = false;
+    if (!pending.valid)
+        return;
+    const void* const presenter = pending.presenter;
+    const uint64_t lifetime = pending.lifetime;
+    const uint64_t frame = pending.frame;
     DX12FFXOutputAttribution output;
-    if (!DX12_PeekFFXOutputAttribution(&output)) {
+    if (!DX12_TakeFFXOutputAttributionForValidation(&output)) {
         // Composed without passing CE's no-callback route at all - while AMD composes a frame only that route
         // draws (its UI baseline is retired), so the output shows no overlay.
-        if (DX12_IsFFXComposingFrameOwnedByTopmost()) {
+        if (pending.composingFrameOwnedByTopmost) {
             std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
             ++g_OutputFrames.checks;
             ++g_OutputFrames.ownerViolations;

@@ -283,6 +283,7 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     ctx.callerFromFFXFrameGenerationModule = originatorFromFFXFrameGeneration || caller.ffxFrameGenerationModule;
     NotePresentOrigin(pSwapChain, false, origin);
     ctx.callerFromXeFGModule = origin.fromXeFG;
+    ctx.presentOriginatorFrame = origin.originatorFrame;
     ctx.recentLargePresentGap = HasRecentLargePresentGap(500);
     ctx.startupTopLevelPresentAlreadyConsumed = g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     ctx.postSLStartupActivationPending = g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
