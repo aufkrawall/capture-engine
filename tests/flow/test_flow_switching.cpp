@@ -9,6 +9,54 @@ namespace {
 
 using namespace ce::flow;
 
+void CheckFFXUiComposition(bool premultiplied) {
+    SetEnvironmentVariableA("CE_FLOW_FFX_COMPOSE_UI", "1");
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    options.fsrNestedPresenter = true;
+    options.fsrUi = FSRUiResource::kFullSize;
+    options.fsrUiBuffering = FSRUiBuffering::kSingleTexture;
+    options.fsrTestSolidUi = true;
+    options.fsrTestPremultipliedUi = premultiplied;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+    ASSERT_NE(plugin, nullptr);
+    const auto lookup = reinterpret_cast<void* (*)(const char*)>(GetProcAddress(plugin, "slGetPluginFunction"));
+    ASSERT_NE(lookup, nullptr);
+    const auto enable = reinterpret_cast<void (*)(bool)>(lookup("flowSampleNestedOutput"));
+    const auto read = reinterpret_cast<uint64_t (*)(UINT, UINT, uint32_t*, UINT*)>(lookup("flowReadNestedOutput"));
+    ASSERT_NE(enable, nullptr);
+    ASSERT_NE(read, nullptr);
+    enable(true);
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    for (int frame = 0; frame < 40; ++frame) {
+        ASSERT_TRUE(game.RenderFrames(1)) << game.Error();
+        ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
+    }
+    uint32_t pixel = 0;
+    UINT index = 0;
+    ASSERT_GT(read(500, 300, &pixel, &index), 0u);
+    EXPECT_GE(pixel & 255u, 125u);
+    EXPECT_LE(pixel & 255u, 155u);
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(4)) << game.Error();
+    ASSERT_GT(read(500, 300, &pixel, &index), 0u);
+    EXPECT_GE(pixel & 255u, 125u);
+    EXPECT_LE(pixel & 255u, 155u);
+    enable(false);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowSwitch, FFXStraightAlphaUiComposesDuringAndAfterGeneration) {
+    CheckFFXUiComposition(false);
+}
+
+TEST(FlowSwitch, FFXPremultipliedUiComposesDuringAndAfterGeneration) {
+    CheckFFXUiComposition(true);
+}
+
 TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferBeforePresent) {
     FlowGame game(CurrentTestName());
     GameOptions options;

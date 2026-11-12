@@ -42,6 +42,7 @@ struct FidelityFXGame {
     ComPtr<ID3D12Resource> suspendedUi;
     bool emptyUi = false;  // FSRUiResource::kEmpty: registers no resource every frame
     FSRUiBuffering uiBuffering = FSRUiBuffering::kSwapchainCopy;
+    bool premultipliedUi = false;
 };
 
 namespace {
@@ -149,6 +150,8 @@ void RegisterUiResource(FidelityFXGame& ffx) {
     ui.flags = ffx.uiBuffering == FSRUiBuffering::kSwapchainCopy
                    ? FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING
                    : 0;
+    if (ffx.premultipliedUi)
+        ui.flags |= FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA;
     ffx.configure(&ffx.swapchainContext, &ui.header);
 }
 
@@ -259,6 +262,7 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
         return Fail("ffxCreateContext(frame generation)", E_FAIL);
     ffx.enabled = false;
     ffx.uiBuffering = fsrUiBuffering_;
+    ffx.premultipliedUi = fsrTestPremultipliedUi_;
     ffx.emptyUi = fsrUi_ == FSRUiResource::kEmpty;
     if (fsrUi_ != FSRUiResource::kNone && !ffx.emptyUi && !ffx.ui[0]) {
         const bool placeholder = fsrUi_ == FSRUiResource::kPlaceholder;
@@ -275,6 +279,28 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
                                              D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
                                              D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    if (fsrTestSolidUi_ && ffx.ui[0]) {
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heapDesc.NumDescriptors = 1;
+        ComPtr<ID3D12DescriptorHeap> heap;
+        if (FAILED(device_->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap))) ||
+            FAILED(allocator_->Reset()) || FAILED(list_->Reset(allocator_.Get(), nullptr)))
+            return Fail("initializing the FSR test UI", E_FAIL);
+        const auto view = heap->GetCPUDescriptorHandleForHeapStart();
+        device_->CreateRenderTargetView(ffx.ui[0].Get(), nullptr, view);
+        constexpr auto readState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Transition(list_.Get(), ffx.ui[0].Get(), readState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        const float color[] = {ffx.premultipliedUi ? 0.5f : 1.0f, 0.0f, 0.0f, 0.5f};
+        list_->ClearRenderTargetView(view, color, 0, nullptr);
+        Transition(list_.Get(), ffx.ui[0].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, readState);
+        if (FAILED(list_->Close()))
+            return Fail("closing the FSR test UI list", E_FAIL);
+        ID3D12CommandList* lists[] = {list_.Get()};
+        queue_->ExecuteCommandLists(1, lists);
+        WaitForGpu();
     }
     return true;
 }

@@ -74,6 +74,8 @@ struct GameOptions {
     SwapchainKind swapchain = SwapchainKind::kNative;
     FSRUiResource fsrUi = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
+    bool fsrTestSolidUi = false;  // initialize the HUD with a half-alpha red test color
+    bool fsrTestPremultipliedUi = false;
     bool fsrWrappedGameQueue = false;  // the descriptor queue has two native-interface proxy layers
     // kFidelityFX: the game's FidelityFX image is loaded but unused; frame generation runs on a second image of the
     // same name from a tool's folder, its exports read from its own export table so that none of CE's
@@ -350,6 +352,8 @@ private:
     SwapchainKind kind_ = SwapchainKind::kNative;
     FSRUiResource fsrUi_ = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
+    bool fsrTestSolidUi_ = false;
+    bool fsrTestPremultipliedUi_ = false;
     bool xefgFromSwapchain_ = false;
     bool fsrWrappedGameQueue_ = false;
     bool fsrToolRuntimeCopy_ = false;

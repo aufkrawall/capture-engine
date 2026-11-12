@@ -16,6 +16,11 @@
   observes samples across enable/suspend and checks changing scene pixels before enable; freezing the first sampled
   image makes that pixel assertion fail. The probe retains only the latest image, precedes any downstream Present
   work, and does not yet establish overlay freshness or alpha.
+- The FFX fake can opt into GPU UI blending with straight or premultiplied alpha, including when FG is disabled;
+  frame configurations pin the registered resource until their outputs finish. Two WARP cases check a half-alpha
+  HUD pixel on a retained single texture; forcing straight blending for premultiplied input or blending twice fails
+  both phases.
+  The fake refuses the opt-in compositor for internally double-buffered UI until snapshot copying is implemented.
 
 ### 2026-11-12 - Overlay graph judder in GTA's FSR-suspended menu, second cause
 

@@ -6,9 +6,8 @@
 // thread inside Present) and then the real one - while the game already runs its next frame (the pipelining and
 // its deterministic stand-in for AMD's pacing: FrameGenerationProxySwapChain). Composition goes through the
 // game's presentCallback when one is configured, otherwise the provider copies itself (CE's "no-callback" FSR
-// routes); a registered UI resource is passed to the callback but not blended by the provider (scenarios judge
-// CE's own coverage ledger, not pixels; each output's game frame goes to CE's flow entry, which checks the frame
-// CE attributed it to).
+// routes). The opt-in UI compositor blends a registered resource on no-callback outputs; without that option the
+// fake only copies the scene. Each output's game frame goes to CE's flow entry for attribution checks.
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -25,6 +24,7 @@
 #include "tests/flow/fakes/fake_clock.h"
 #include "tests/flow/fakes/fake_dxgi_forwarders.h"
 #include "tests/flow/fakes/fake_runtime_log.h"
+#include "tests/flow/fakes/fidelityfx/ffx_ui_compositor.h"
 
 #include <ffx_api.h>
 #include <dx12/ffx_api_dx12.h>
@@ -53,6 +53,8 @@ struct FrameGenerationConfig {
     FfxApiFrameGenerationDispatchFunc frameGenerationCallback = nullptr;
     void* frameGenerationCallbackUserContext = nullptr;
     FfxApiResource ui{};
+    uint32_t uiFlags = 0;
+    ComPtr<ID3D12Resource> uiOwner;
 };
 
 std::mutex g_configMutex;
@@ -121,6 +123,13 @@ public:
         }
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
+        if (composeUi_) {
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            real_->GetDesc1(&desc);
+            uiComposerReady_ = uiComposer_.Initialize(device_.Get(), desc.Format);
+            if (!uiComposerReady_)
+                Log(kModule, "UI compositor initialization failed");
+        }
         presenter_ = std::thread([this] { PresenterLoop(); });
         Log(kModule, "proxy swapchain %p over real %p "
                      "(presentQueue=%p sideQueue=%p gameQueue=%p buffers=%u lifetime=%llu)",
@@ -193,6 +202,13 @@ public:
         Log(kModule, "proxy %p ResizeBuffers(%u, %ux%u) -> real hr=0x%08lX", this, count, width, height,
             static_cast<unsigned long>(hr));
         CreateBuffers();
+        if (SUCCEEDED(hr) && composeUi_) {
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            real_->GetDesc1(&desc);
+            uiComposerReady_ = uiComposer_.Initialize(device_.Get(), desc.Format);
+            if (!uiComposerReady_)
+                return E_FAIL;
+        }
         return hr;
     }
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags,
@@ -266,6 +282,17 @@ private:
         {
             std::lock_guard<std::mutex> lock(g_configMutex);
             config = g_config;
+        }
+        if (composeUi_ && !uiComposerReady_)
+            return E_FAIL;
+        if (composeUi_ && config.ui.resource &&
+            (config.uiFlags & FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING)) {
+            Log(kModule, "UI compositor has no internally buffered UI snapshot");
+            return E_NOTIMPL;
+        }
+        if (composeUi_ && config.ui.resource && !FFXUiCompositor::Supports(config.ui.state)) {
+            Log(kModule, "UI compositor cannot use resource state 0x%X", config.ui.state);
+            return E_FAIL;
         }
         const uint64_t frame = ++framesPresented_;
         {
@@ -405,7 +432,13 @@ private:
             Transition(list_.Get(), source, declared, D3D12_RESOURCE_STATE_COPY_SOURCE);
             Transition(list_.Get(), output, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
             list_->CopyResource(output, source);
-            Transition(list_.Get(), output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+            auto* ui = static_cast<ID3D12Resource*>(config.ui.resource);
+            if (composeUi_ && ui) {
+                uiComposer_.Record(list_.Get(), ui, output, config.ui.state,
+                    (config.uiFlags & FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA) != 0);
+            } else {
+                Transition(list_.Get(), output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+            }
             Transition(list_.Get(), source, D3D12_RESOURCE_STATE_COPY_SOURCE, declared);
         }
         Transition(list_.Get(), source, declared, restingState);
@@ -517,6 +550,9 @@ private:
     ComPtr<ID3D12GraphicsCommandList> overlayList_;
     std::atomic<uint32_t> overlayOutputsLeft_{0};  // set on the game thread, counted down on the presenter thread
     const bool relayOutputSubmissions_ = ScenarioCount("CE_FLOW_FFX_RELAY_OUTPUT_SUBMISSIONS") != 0;
+    const bool composeUi_ = ScenarioCount("CE_FLOW_FFX_COMPOSE_UI") != 0;
+    FFXUiCompositor uiComposer_;
+    bool uiComposerReady_ = false;
     uint32_t passthroughFramesLeft_ = 0;           // the game thread's
     bool wasGenerating_ = false;                   // the game thread's
     ComPtr<ID3D12Fence> fence_;
@@ -682,106 +718,4 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
 }  // namespace
 }  // namespace ce::flow::fake
 
-using namespace ce::flow::fake;
-
-extern "C" __declspec(dllexport) uint64_t CEFlow_FFXUiRegistrations(bool enabled) {
-    std::lock_guard<std::mutex> lock(g_configMutex);
-    return enabled ? g_uiRegistrationsEnabled : g_uiRegistrationsDisabled;
-}
-
-extern "C" FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc,
-                                                          const ffxAllocationCallbacks*) {
-    if (!context || !desc)
-        return FFX_API_RETURN_ERROR_PARAMETER;
-    if (const auto* forHwnd = FindHeader(desc, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12))
-        return CreateSwapchainContext(
-            context, *reinterpret_cast<const ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*>(forHwnd));
-    if (FindHeader(desc, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION)) {
-        *context = new FrameGenerationContext();
-        Log(kModule, "ffxCreateContext(frame generation) -> %p", *context);
-        return FFX_API_RETURN_OK;
-    }
-    return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
-}
-
-extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks*) {
-    if (!context || !*context)
-        return FFX_API_RETURN_ERROR_PARAMETER;
-    auto* base = static_cast<Context*>(*context);
-    Log(kModule, "ffxDestroyContext(%p kind=%u)", base, static_cast<uint32_t>(base->kind));
-    if (base->kind == ContextKind::kSwapchain) {
-        std::lock_guard<std::mutex> lock(g_contextMutex);
-        if (g_swapchainContext == base)
-            g_swapchainContext = nullptr;
-    } else {
-        std::lock_guard<std::mutex> lock(g_configMutex);
-        // Destroying an effect context stops generation, and any callback associated with the
-        // destroyed effect context must not be invoked on subsequent presents.
-        g_config.enabled = false;
-        g_config.frameGenerationCallback = nullptr;
-        g_config.frameGenerationCallbackUserContext = nullptr;
-        g_config.presentCallback = nullptr;
-        g_config.presentCallbackUserContext = nullptr;
-    }
-    delete base;
-    *context = nullptr;
-    return FFX_API_RETURN_OK;
-}
-
-extern "C" FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc) {
-    if (!context || !*context || !desc)
-        return FFX_API_RETURN_ERROR_PARAMETER;
-    if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION) {
-        const auto& configure = *reinterpret_cast<const ffxConfigureDescFrameGeneration*>(desc);
-        if (configure.frameID == UINT64_MAX)
-            return FFX_API_RETURN_ERROR_PARAMETER;
-        std::lock_guard<std::mutex> lock(g_configMutex);
-        if (configure.frameGenerationEnabled != g_config.enabled ||
-            configure.presentCallback != g_config.presentCallback)
-            Log(kModule, "ffxConfigure(frame generation) enabled=%d presentCallback=%p (was enabled=%d) frameID=%llu",
-                configure.frameGenerationEnabled ? 1 : 0, reinterpret_cast<void*>(configure.presentCallback),
-                g_config.enabled ? 1 : 0, static_cast<unsigned long long>(configure.frameID));
-        g_config.enabled = configure.frameGenerationEnabled;
-        g_config.presentCallback = configure.presentCallback;
-        g_config.presentCallbackUserContext = configure.presentCallbackUserContext;
-        g_config.frameGenerationCallback = configure.frameGenerationCallback;
-        g_config.frameGenerationCallbackUserContext = configure.frameGenerationCallbackUserContext;
-        return FFX_API_RETURN_OK;
-    }
-    if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12) {
-        const auto& ui = *reinterpret_cast<const ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*>(desc);
-        std::lock_guard<std::mutex> lock(g_configMutex);
-        ++(g_config.enabled ? g_uiRegistrationsEnabled : g_uiRegistrationsDisabled);
-        if (ui.uiResource.resource != g_config.ui.resource)
-            Log(kModule, "ffxConfigure(register UI resource) %p (%ux%u state=0x%X) was %p", ui.uiResource.resource,
-                ui.uiResource.description.width, ui.uiResource.description.height, ui.uiResource.state,
-                g_config.ui.resource);
-        g_config.ui = ui.uiResource;
-        return FFX_API_RETURN_OK;
-    }
-    return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
-}
-
-extern "C" FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext*, ffxQueryDescHeader*) {
-    return FFX_API_RETURN_OK;
-}
-
-extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
-    if (!context || !*context || !desc)
-        return FFX_API_RETURN_ERROR_PARAMETER;
-    if (desc->type == FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION) {
-        std::lock_guard<std::mutex> lock(g_contextMutex);
-        if (!g_swapchainContext || !g_swapchainContext->proxy)
-            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
-        return g_swapchainContext->proxy->RecordGeneration(
-            *reinterpret_cast<const ffxDispatchDescFrameGeneration*>(desc));
-    }
-    if (desc->type == FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WAIT_FOR_PRESENTS_DX12) {
-        auto* base = static_cast<Context*>(*context);
-        if (base->kind != ContextKind::kSwapchain)
-            return FFX_API_RETURN_ERROR_PARAMETER;
-        static_cast<SwapchainContext*>(base)->proxy->WaitForPresents();
-    }
-    // PREPARE(_V2) and the rest need no work here.
-    return FFX_API_RETURN_OK;
-}
+#include "tests/flow/fakes/fidelityfx/ffx_framegeneration_exports.inl"
