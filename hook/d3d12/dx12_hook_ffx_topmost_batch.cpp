@@ -13,14 +13,18 @@ namespace {
 constexpr size_t kMaxObservedECLBatches = 128;
 constexpr size_t kCombinedECLBatchCapacity = 129;
 
+// Unpadded (40 bytes on x64): the per-thread trace holds 128 of them, and the hook DLL's thread-local template has a
+// hard ceiling (16 KiB; a 48-byte entry took it to 17184 bytes).
 struct ObservedECLBatch {
     uintptr_t callSite = 0;
     ID3D12CommandQueue* queue = nullptr;
     uint64_t composingFrame = 0;
-    bool relayed = false;
     uintptr_t immediateSite = 0;  // the ECL caller before a relayed runtime site replaced it (diagnostics only)
+    bool relayed = false;
     bool fromNestedPresenter = false;  // callSite is in the nested presenter's image (DX12FFXPresentation)
 };
+static_assert(sizeof(ObservedECLBatch) <= 3 * sizeof(uintptr_t) + 2 * sizeof(uint64_t),
+              "the presenter trace counts against the TLS template ceiling");
 
 struct PresenterFrameTrace {
     std::array<ObservedECLBatch, kMaxObservedECLBatches> batches = {};
@@ -174,7 +178,7 @@ uintptr_t RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
         composingFrame = t_PresenterFrameTrace.lastCompositionFrame;
     }
     t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count++] = {
-        submitSite, queue, composingFrame, relayed, immediateSite, fromNested};
+        submitSite, queue, composingFrame, immediateSite, relayed, fromNested};
     return submitSite;
 }
 

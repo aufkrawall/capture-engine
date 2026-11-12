@@ -167,7 +167,7 @@ TEST(FFXOutputFramesSourceTest, OutputsTakeTheFrameAtTheirFinalBatch) {
     const size_t advance = topmost.find("AdvanceFFXComposingFrame(t_FFXForwardFrame", record);
     const size_t read = topmost.find("uint64_t composingFrame = g_FFXComposingFrame.Current();", record);
     const size_t inherit = topmost.find("composingFrame = t_PresenterFrameTrace.lastCompositionFrame;", read);
-    const size_t store = topmost.find("submitSite, queue, composingFrame, relayed", record);
+    const size_t store = topmost.find("submitSite, queue, composingFrame, immediateSite, relayed", record);
     ASSERT_NE(record, std::string::npos);
     ASSERT_NE(store, std::string::npos);
     EXPECT_LT(advance, read);
