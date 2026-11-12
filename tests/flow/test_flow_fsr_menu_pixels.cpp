@@ -31,6 +31,7 @@ void UsePixelOracleGeometry(GameOptions& options) {
     options.height = kPixelFrameHeight;
     options.overlayDpiScale = 1.5f;
     options.overlayFontSize = 0.0f;
+    options.fullPostProcess = true;  // the scene and HUD thresholds are those of the corrected image
 }
 
 struct PixelOracleReader {

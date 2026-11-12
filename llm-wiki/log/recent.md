@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-11-12 - FG flow suite 805 s -> 264 s: CE's per-pixel WARP work, not WARP or the debug layer
+### 2026-11-12 - FG flow suite 805 s -> 111-143 s: CE's per-pixel WARP work, not WARP or the debug layer
 
 - Measured per scenario (`GetProcessTimes`, flow-host phase timers): WARP floor 0.17 ms/frame, debug layer + DRED
   ~2%; the rest was CE's display-gamma pass (~68%) and overlay/copies, all proportional to pixels. The 150%-DPI hero
@@ -10,7 +10,10 @@
 - Traps found: shrinking only the frame reflowed the panel (available width); the pixel probe scans fixed rows and
   reads the ReShade stand-in's magenta corner as graph, so `FlowFSRMenuPixels` keeps its 640x360/150% geometry;
   screenshot and nested-output scenarios had hard-coded 640x360 sizes and points.
-- Not done (coverage trade-offs, user decision): display gamma on fewer scenarios; shorter 300/600-frame phases.
+- Then (user go): the post-process pass shades a 16x16 corner in flow builds (routing/accounting unchanged), the
+  whole target under `--verify` and in capture/menu-pixel scenarios: 111-143 s default, 258 s full-frame.
+  Running gamma scenarios only occasionally was rejected: the pass shares the overlay route's verdict, so most
+  FG changes can break it, and late detection makes attribution hard. Not done: shorter 300/600-frame phases.
 
 ### 2026-11-12 - FSR menu transition: final-output pixel oracle, one real gap fixed
 

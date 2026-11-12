@@ -156,12 +156,14 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     setOverlayDpiScale_ =
         reinterpret_cast<CEFlow_SetOverlayDpiScale_t>(GetProcAddress(hook_, "CEFlow_SetOverlayDpiScale"));
+    setPostProcessShadedExtent_ = reinterpret_cast<CEFlow_SetPostProcessShadedExtent_t>(
+        GetProcAddress(hook_, "CEFlow_SetPostProcessShadedExtent"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !getPostProcess_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
         !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_ ||
         !releasePresentVTableHooks_ || !installPresentVTableHooks_ || !probeDescFreeTargetFormats_ ||
-        !setOverlayDpiScale_) {
+        !setOverlayDpiScale_ || !setPostProcessShadedExtent_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -176,6 +178,10 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     // panel, whatever the PC's monitor scale, keeps its default layout inside the small default frame (kFrameWidth).
     hostConfig.overlay.fontSize = kOverlayFontSize;
     setOverlayDpiScale_(kOverlayDpiScale);
+    char fullPostProcess[8] = {};
+    fullPostProcessRun_ =
+        GetEnvironmentVariableA(kCEFlowFullPostProcessVariable, fullPostProcess, sizeof(fullPostProcess)) != 0 &&
+        fullPostProcess[0] == '1';
     // Pixel scenarios give the frame-time graph a color nothing else in the panel has (output_pixel_probe.h).
     char graphColor[8] = {};
     if (GetEnvironmentVariableA("CE_FLOW_MAGENTA_GRAPH", graphColor, sizeof(graphColor)) != 0 && graphColor[0] == '1')
@@ -188,6 +194,8 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     UpdateSharedMemoryFromConfig(hostMemory_, hostConfig);
     if (!init(configPath.c_str(), hostMemory_, earlyLoaderProbe))
         Fail("CEFlow_Init", E_FAIL);
+    // After the hook's log exists: the scenario's log names the post-process extent it ran with.
+    setPostProcessShadedExtent_(fullPostProcessRun_ ? 0 : kPostProcessShadedExtent);
     clockOrigin_ = clockMicroseconds_();
     nextFrameStartMicroseconds_ = clockOrigin_;
 }
@@ -254,6 +262,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     frameIntervalSpikeMicroseconds_ = options.frameIntervalSpikeMicroseconds;
     xefgFromSwapchain_ = options.xefgFromSwapchain;
     setOverlayDpiScale_(options.overlayDpiScale);
+    setPostProcessShadedExtent_(fullPostProcessRun_ || options.fullPostProcess ? 0 : kPostProcessShadedExtent);
     hostMemory_->BeginWriteOverlayConfig();
     hostMemory_->overlayConfig.fontSize = options.overlayFontSize;
     hostMemory_->EndWriteOverlayConfig();

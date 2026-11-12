@@ -648,6 +648,7 @@ def main():
             release_jobs_callback=release_sanitizer_reserved_jobs,
             # verify_flag also covers --verify-runtime and a resumed verification, which sys.argv does not show.
             rerun_flow_tests=verify_flag or FLOW_TEST_RERUN_FLAG in sys.argv,
+            full_flow_post_process=verify_flag,
         )
     record_verification_step(
         "build",

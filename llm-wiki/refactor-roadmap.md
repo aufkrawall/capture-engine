@@ -112,7 +112,9 @@ out of `unit_tests.exe` (`tests/test_stubs.cpp`). Design (2026-10-03):
   `ExpectPanelsFitTheDefaultFrame` (in `ExpectEveryPresentCoveredOnce`) fails on any `[Overlay] Panel:` line in the
   default frame wider than `available` or outside it. `FlowFSRMenuPixels` keeps 640x360 at 150% with the default
   font: its graph oracle needs ~2.7 px per output, and its panel must clear the ReShade stand-in's 16x16 magenta
-  corner, which the probe would count as graph. Pixel coordinates in scenarios follow the frame size.
+  corner, which the probe would count as graph. Pixel coordinates in scenarios follow the frame size. CE's
+  post-process pass shades a 16x16 corner (`kPostProcessShadedExtent`): the scenarios judge its routing and
+  accounting only; capture-reader and menu-pixel scenarios (`fullPostProcess`) and `--verify` shade it all.
 - Native cold-start scenarios (`test_flow_present_chain_overlays.cpp`) render until the first accounted draw,
   bounded to 300 virtual-clock frames, and report the measured pre-initialization presents. Only that prefix may
   be excluded from the tally equality; every later physical present must be accounted and covered exactly once.

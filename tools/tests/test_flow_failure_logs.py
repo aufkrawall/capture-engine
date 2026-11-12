@@ -75,6 +75,16 @@ class FlowFailureLogsTest(unittest.TestCase):
 class FlowScenarioProcessTest(unittest.TestCase):
     """A scenario process returns its exit code and output, and on Windows runs on a desktop of its own."""
 
+    def test_a_scenario_gets_the_environment_it_is_given(self) -> None:
+        probe = "import os; print(os.environ.get('CE_FLOW_SELF_TEST_MARK', '-'))"
+        with tempfile.TemporaryDirectory() as directory:
+            code, output = build.run_flow_scenario_process(
+                [sys.executable, "-c", probe], directory, 120,
+                environment=dict(os.environ, CE_FLOW_SELF_TEST_MARK="full"))
+            self.assertEqual((code, output.strip()), (0, "full"), output)
+            code, output = build.run_flow_scenario_process([sys.executable, "-c", probe], directory, 120)
+        self.assertEqual((code, output.strip()), (0, "-"), "without an environment it is the runner's")
+
     def test_exit_code_and_both_output_streams_come_back(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             code, output = build.run_flow_scenario_process(
@@ -196,6 +206,23 @@ class FlowPassCacheTest(unittest.TestCase):
         self.assertEqual(self.run_flow("k1", gtest_filter="Unit*", listed=()), (True, True),
                          "a filter that names no scenario is no failure")
         self.assertEqual(self.run_flow("k1", gtest_filter="Unit*", listed=None), (False, True))
+
+    def test_only_a_full_post_process_run_shades_every_pixel(self) -> None:
+        # --verify runs the post-process pass over the whole frame; every other run lets it shade a small square.
+        for full in (False, True):
+            with self.subTest(full=full), patch.object(build, "flow_test_input_key", return_value="k1"), \
+                    patch.object(build, "list_flow_tests", return_value=["Flow.A", "Flow.B"]), \
+                    patch.object(build, "run_flow_scenario_process", return_value=(0, "")) as scenario:
+                self.assertTrue(build.run_flow_tests({}, str(self.flow_exe), None, True, full))
+                environments = [call.args[4] if len(call.args) > 4 else call.kwargs.get("environment")
+                                for call in scenario.call_args_list]
+                self.assertEqual(len(environments), 2)
+                for environment in environments:
+                    if full:
+                        self.assertEqual(environment[build.FLOW_TEST_FULL_POST_PROCESS_VARIABLE], "1")
+                        self.assertEqual(environment.get("PATH"), os.environ.get("PATH"))
+                    else:
+                        self.assertIsNone(environment)
 
     def test_a_listing_that_exits_non_zero_lists_nothing(self) -> None:
         # The interpreter refuses the unknown --gtest_list_tests option with exit code 2, as a crashing executable

@@ -437,8 +437,13 @@ Default quality mode currently:
   the frame. Now 256x160 with the panel at 100% and the 8 px font (~203x143): 42.6 CPU-s on all processors, 22.5 on
   one (gamma still ~70%). Suite 805 s -> 264 s wall (2,108 s scenario time, 8 pinned at a time, background load
   from another agent present). In a quiet 8-way run per-scenario time is ~1.1x its time alone; the longest scenario
-  (~56 s, `FlowXeFG.MultiFrameGeneration...`) bounds any wall time. Further cuts trade coverage: gamma on fewer
-  scenarios, or shorter phases (300/600-frame phases outlast CE windows of 1-4 s; not audited).
+  (~56 s, `FlowXeFG.MultiFrameGeneration...`) bounds any wall time. Then the post-process pass: the scenarios check
+  its route and accounting, never its pixels, so flow builds cap its scissor to a 16x16 corner
+  (`CEFlow_SetPostProcessShadedExtent` in `sharpen_d3d12.cpp`, `kPostProcessShadedExtent`; copy, barriers,
+  pipeline, constants and draw unchanged). `GameOptions::fullPostProcess` (capture-reader and menu-pixel scenarios)
+  and `--verify` (`full_flow_post_process` -> `CE_FLOW_FULL_POST_PROCESS=1` in the scenario environment) shade the
+  whole target; FlowBaseline checks the logged extent. Suite: 111-143 s default, 258 s full-frame. Further cuts
+  would shorten 300/600-frame phases, which outlast CE windows of 1-4 s (not audited).
   Each scenario's hook log is
   `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log` and `d3d12_debug.log`: the game
   runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). A failed scenario's log

@@ -22,6 +22,14 @@ static_assert(kRootConstantCount == 16, "Root constant count must match ShaderCo
 constexpr UINT kRootParamConstants = 0;
 constexpr UINT kRootParamSourceTable = 1;
 
+#ifdef CE_FLOW_TEST
+// The FG flow harness checks where and when this pass runs (route, queue, frame accounting, the debug layer's checks
+// of every call), never the pixels it writes, and WARP shades every pixel on the CPU: over a whole frame the pass was
+// most of a scenario's time. The harness may cap the shaded square to this many pixels per side (0 = the whole
+// target); the copy, barriers, pipeline, constants and draw stay those of the product.
+std::atomic<uint32_t> g_FlowShadedExtent{0};
+#endif
+
 D3D12_RESOURCE_BARRIER MakeTransition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
                                       D3D12_RESOURCE_STATES after) {
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -505,6 +513,12 @@ void D3D12Pass::RecordCommands(ID3D12GraphicsCommandList* list, ID3D12Resource* 
     viewport.Height = static_cast<float>(height);
     viewport.MaxDepth = 1.0f;
     D3D12_RECT scissor = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+#ifdef CE_FLOW_TEST
+    if (const uint32_t extent = g_FlowShadedExtent.load(std::memory_order_relaxed); extent != 0) {
+        scissor.right = (std::min)(scissor.right, static_cast<LONG>(extent));
+        scissor.bottom = (std::min)(scissor.bottom, static_cast<LONG>(extent));
+    }
+#endif
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
 
@@ -592,3 +606,10 @@ void D3D12Pass::Abandon() {
 }
 
 }  // namespace ce::sharpen
+
+#ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) void CEFlow_SetPostProcessShadedExtent(uint32_t pixels) {
+    ce::sharpen::g_FlowShadedExtent.store(pixels, std::memory_order_relaxed);
+    HookLogImportant("Sharpen: flow harness shades %ux%u pixels of each post-process target (0: all)", pixels, pixels);
+}
+#endif

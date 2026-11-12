@@ -159,6 +159,9 @@ struct CEFlowPublishedFG {
 // interval of its game in microseconds (the fake runtimes space generated frames inside it).
 constexpr const char* kCEFlowLogDirectoryVariable = "CE_FLOW_LOG_DIR";
 constexpr const char* kCEFlowFrameIntervalVariable = "CE_FLOW_FRAME_INTERVAL_US";
+// Set by the runner for --verify: every scenario's post-process pass shades its whole target (GameOptions::
+// fullPostProcess for all), so the pass's full-frame work runs before every release.
+constexpr const char* kCEFlowFullPostProcessVariable = "CE_FLOW_FULL_POST_PROCESS";
 
 // `hostMemory` is the inject host's shared memory, published by the test game as CaptureEngine publishes it
 // (UpdateSharedMemoryFromConfig); CE uses it as a connected host's.
@@ -173,6 +176,7 @@ using CEFlow_Init_t = bool (*)(const char* configPath, SharedMemoryLayout* hostM
 using CEFlow_PumpHookThread_t = void (*)();
 using CEFlow_SetForegroundWindow_t = void (*)(HWND window);
 using CEFlow_SetOverlayDpiScale_t = void (*)(float scale);
+using CEFlow_SetPostProcessShadedExtent_t = void (*)(uint32_t pixels);
 using CEFlow_GetOverlayCoverage_t = void (*)(CEFlowOverlayCoverage* out);
 using CEFlow_GetPublishedFG_t = void (*)(CEFlowPublishedFG* out);
 using CEFlow_GetPostProcess_t = void (*)(CEFlowPostProcess* out);

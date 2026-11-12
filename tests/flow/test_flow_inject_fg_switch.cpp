@@ -13,6 +13,7 @@ using namespace ce::flow;
 void SwitchRecording(bool includeOverlay, bool callback) {
     FlowGame game(CurrentTestName());
     GameOptions options;
+    options.fullPostProcess = true;  // the capture reader judges every recorded pixel (flow_capture_reader.h)
     options.streamline = true;
     options.swapchain = SwapchainKind::kStreamline;
     options.fsrUi = callback ? FSRUiResource::kNone : FSRUiResource::kPlaceholder;
@@ -99,6 +100,7 @@ TEST(FlowInjectFGSwitch, CallbackFSRKeepsRecording) { SwitchRecording(true, true
 TEST(FlowInjectFGSwitch, CapturePressurePreservesRuntimeBatchAndOverlay) {
     FlowGame game(CurrentTestName());
     GameOptions options;
+    options.fullPostProcess = true;  // the capture reader judges every recorded pixel (flow_capture_reader.h)
     options.swapchain = SwapchainKind::kFidelityFX;
     options.fsrUi = FSRUiResource::kPlaceholder;
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
@@ -136,6 +138,7 @@ TEST(FlowInjectFGSwitch, CapturePressurePreservesRuntimeBatchAndOverlay) {
 TEST(FlowInjectFGSwitch, HiddenOverlayKeepsPostProcessedRecording) {
     FlowGame game(CurrentTestName());
     GameOptions options;
+    options.fullPostProcess = true;  // the capture reader judges every recorded pixel (flow_capture_reader.h)
     options.swapchain = SwapchainKind::kFidelityFX;
     options.fsrUi = FSRUiResource::kPlaceholder;
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();

@@ -86,6 +86,10 @@ inline constexpr UINT kFrameHeight = 160;
 // The overlay's default display scale and font: CE's smallest panel, the same on every PC whatever its monitor's scale.
 inline constexpr float kOverlayDpiScale = 1.0f;
 inline constexpr float kOverlayFontSize = static_cast<float>(ce::overlay_font::kMinBasePixelSize);
+// The square of each target CE's post-process pass (display gamma, the harness enables it) shades, per side. The
+// scenarios check where and when the pass runs, not its pixels, and it was ~70% of a scenario's CPU at the full frame
+// (2026-11-12). Every command of the pass stays as in the product (CEFlow_SetPostProcessShadedExtent).
+inline constexpr uint32_t kPostProcessShadedExtent = 16;
 
 struct GameOptions {
     // Initialize Streamline like a DLSS-G game: slInit before the device, the device from the interposer and
@@ -144,6 +148,10 @@ struct GameOptions {
     // larger in a larger frame (FlowFSRMenuPixels: the graph then moves ~2.7 px per output, not ~1).
     float overlayDpiScale = kOverlayDpiScale;
     float overlayFontSize = kOverlayFontSize;
+    // The post-process pass shades the whole target, as in the product, instead of kPostProcessShadedExtent: for
+    // scenarios that read pixels of the game's image after CE's pass. --verify runs every scenario so
+    // (kCEFlowFullPostProcessVariable).
+    bool fullPostProcess = false;
 };
 
 struct StreamlineGame;  // flow_host_streamline.cpp
@@ -373,6 +381,8 @@ private:
     CEFlow_ProbeDescFreeTargetFormats_t probeDescFreeTargetFormats_ = nullptr;
     CEFlow_TryConfirmPostSLEpoch_t tryConfirmPostSLEpoch_ = nullptr;
     CEFlow_SetOverlayDpiScale_t setOverlayDpiScale_ = nullptr;
+    CEFlow_SetPostProcessShadedExtent_t setPostProcessShadedExtent_ = nullptr;
+    bool fullPostProcessRun_ = false;  // kCEFlowFullPostProcessVariable
     CEFlow_AdvanceClock_t advanceClock_ = nullptr;
     CEFlow_ClockMicroseconds_t clockMicroseconds_ = nullptr;
     int64_t clockOrigin_ = 0;

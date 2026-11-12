@@ -45,6 +45,7 @@ void ExpectEvenlySpaced(const CaptureReader& reader, size_t first, int outputsPe
 void RecordXeFG(bool includeOverlay) {
     FlowGame game(CurrentTestName());
     GameOptions options;
+    options.fullPostProcess = true;  // the capture reader judges every recorded pixel (flow_capture_reader.h)
     options.swapchain = SwapchainKind::kXeFG;
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();

@@ -70,6 +70,10 @@ FLOW_TEST_SLOWEST_REPORTED = 8
 # The input key of the last unfiltered run that passed: the same inputs cannot change the result.
 FLOW_TEST_PASS_FILE = os.path.join(FLOW_TEST_OUTPUT_DIR, "passed_inputs.json")
 FLOW_TEST_RERUN_FLAG = "--rerun-flow-tests"
+# The scenarios check where and when CE's post-process pass runs, so by default it shades a 16-pixel square of each
+# target (tests/flow/flow_host.h kPostProcessShadedExtent); with this variable set it shades every pixel, as in the
+# product. --verify sets it, so the full-frame pass runs before every release.
+FLOW_TEST_FULL_POST_PROCESS_VARIABLE = "CE_FLOW_FULL_POST_PROCESS"
 # The Windows side of every scenario: the WARP device and the D3D12 runtime and debug layer it validates with.
 FLOW_TEST_SYSTEM_MODULES = ("d3d10warp.dll", "D3D12Core.dll", "d3d12SDKLayers.dll", "d3d12.dll", "dxgi.dll")
 
@@ -398,6 +402,13 @@ if IS_WINDOWS:
     _flow_kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
     _flow_kernel32.ResumeThread.restype = wintypes.DWORD
     _FLOW_CREATE_SUSPENDED = 0x00000004
+    _FLOW_CREATE_UNICODE_ENVIRONMENT = 0x00000400
+
+    def _flow_environment_block(environment: Mapping[str, str]):
+        """A CreateProcessW environment block: NAME=value strings sorted case-insensitively, each null-terminated,
+        and one more null at the end (create_unicode_buffer adds it)."""
+        entries = sorted(environment.items(), key=lambda item: item[0].upper())
+        return ctypes.create_unicode_buffer("".join(f"{name}={value}\0" for name, value in entries))
 
     def _flow_window_station_name() -> str:
         name = ctypes.create_unicode_buffer(256)
@@ -420,8 +431,8 @@ if IS_WINDOWS:
         stream.seek(0)
         return stream.read().decode("utf-8", "replace").replace("\r\n", "\n")
 
-    def _flow_run_on_desktop(command: List[str], cwd: str, timeout: float,
-                             affinity: Optional[int] = None) -> Tuple[int, str]:
+    def _flow_run_on_desktop(command: List[str], cwd: str, timeout: float, affinity: Optional[int] = None,
+                             environment: Optional[Mapping[str, str]] = None) -> Tuple[int, str]:
         desktop, desktop_path = _flow_create_desktop()
         try:
             with contextlib.ExitStack() as files:
@@ -436,15 +447,18 @@ if IS_WINDOWS:
                 startup.hStdInput, startup.hStdOutput, startup.hStdError = handles
                 info = _FlowProcessInformation()
                 command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+                environment_block = _flow_environment_block(environment) if environment is not None else None
+                creation_flags = ((_FLOW_CREATE_SUSPENDED if affinity else 0)
+                                  | (_FLOW_CREATE_UNICODE_ENVIRONMENT if environment_block is not None else 0))
                 with _flow_spawn_lock:
                     for handle in handles:
                         os.set_handle_inheritable(handle, True)
                     try:
                         # Pinned before its first instruction runs: WARP sizes its workers from the processors the
                         # process may use when the device is created.
-                        created = _flow_kernel32.CreateProcessW(None, command_line, None, None, True,
-                                                                _FLOW_CREATE_SUSPENDED if affinity else 0, None, cwd,
-                                                                ctypes.byref(startup), ctypes.byref(info))
+                        created = _flow_kernel32.CreateProcessW(None, command_line, None, None, True, creation_flags,
+                                                                environment_block, cwd, ctypes.byref(startup),
+                                                                ctypes.byref(info))
                         error = ctypes.get_last_error()
                     finally:
                         for handle in handles:
@@ -480,15 +494,15 @@ if IS_WINDOWS:
         return ctypes.c_int32(exit_code.value).value, output
 
 
-def run_flow_scenario_process(command: List[str], cwd: str, timeout: float,
-                              affinity: Optional[int] = None) -> Tuple[int, str]:
-    """Runs one scenario process on its own desktop, on the logical processors of `affinity` (a mask; None: any);
-    returns its exit code (-1 after a timeout) and its output."""
+def run_flow_scenario_process(command: List[str], cwd: str, timeout: float, affinity: Optional[int] = None,
+                              environment: Optional[Mapping[str, str]] = None) -> Tuple[int, str]:
+    """Runs one scenario process on its own desktop, on the logical processors of `affinity` (a mask; None: any),
+    with `environment` (None: the runner's); returns its exit code (-1 after a timeout) and its output."""
     if IS_WINDOWS:
-        return _flow_run_on_desktop(command, cwd, timeout, affinity)
+        return _flow_run_on_desktop(command, cwd, timeout, affinity, environment)
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                timeout=timeout, cwd=cwd)
+                                timeout=timeout, cwd=cwd, env=environment)
     except subprocess.TimeoutExpired as expired:
         partial = expired.stdout.decode("utf-8", "replace") if isinstance(expired.stdout, bytes) else ""
         return -1, f"timed out after {timeout} s\n{partial}"
@@ -602,10 +616,12 @@ def withdraw_flow_tests_passed() -> None:
     log("FG flow pass record withdrawn after the failure: the next unfiltered gate runs the scenarios")
 
 
-def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = None, rerun: bool = False) -> bool:
+def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = None, rerun: bool = False,
+                   full_post_process: bool = False) -> bool:
     """Runs every flow scenario in its own process; returns False on any failure. An unfiltered run whose inputs
     match the last passing one is skipped unless `rerun` (--verify, --rerun-flow-tests) asks for it: the same binaries
-    on the same system give the same result. A filtered run is asked for by name and always runs."""
+    on the same system give the same result. A filtered run is asked for by name and always runs. `full_post_process`
+    (--verify) has CE's post-process pass shade every pixel (FLOW_TEST_FULL_POST_PROCESS_VARIABLE)."""
     if not flow_exe or not os.path.exists(flow_exe):
         return True
     key = flow_test_input_key()
@@ -632,7 +648,11 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
     cores = flow_core_affinity_masks()
     workers = min(len(cores) or FLOW_TEST_PARALLEL_PROCESSES, len(tests))
     placement = "one core each" if cores else "unpinned"
-    log(f"=== Running FG flow tests ({len(tests)} scenario process(es), {workers} at a time, {placement}) ===")
+    post_process = "full-frame" if full_post_process else "16-pixel"
+    scenario_environment = (dict(os.environ, **{FLOW_TEST_FULL_POST_PROCESS_VARIABLE: "1"})
+                            if full_post_process else None)
+    log(f"=== Running FG flow tests ({len(tests)} scenario process(es), {workers} at a time, {placement}, "
+        f"{post_process} post-process pass) ===")
     tests = order_flow_tests(tests, load_flow_durations(FLOW_TEST_DURATIONS_FILE))
     free_cores = deque(cores[:workers])
     free_cores_lock = threading.Lock()
@@ -647,7 +667,8 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
         started = time.time()
         try:
             returncode, output = run_flow_scenario_process(
-                [flow_exe, f"--gtest_filter={name}"], FLOW_TEST_OUTPUT_DIR, FLOW_TEST_TIMEOUT_SECONDS, core)
+                [flow_exe, f"--gtest_filter={name}"], FLOW_TEST_OUTPUT_DIR, FLOW_TEST_TIMEOUT_SECONDS, core,
+                scenario_environment)
         finally:
             if core is not None:
                 with free_cores_lock:
@@ -676,7 +697,8 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
         "failed" if failures else "passed",
         duration_seconds=elapsed,
         details={"scenarios": len(tests), "failed": failures, "gtest_filter": gtest_filter, "workers": workers,
-                 "pinned": bool(cores), "scenario_seconds_total": round(busy, 1), "slowest": dict(slowest)},
+                 "pinned": bool(cores), "post_process": post_process, "scenario_seconds_total": round(busy, 1),
+                 "slowest": dict(slowest)},
     )
     if failures:
         log(f"=== FG flow tests FAILED ({len(failures)} of {len(tests)}) ===")
