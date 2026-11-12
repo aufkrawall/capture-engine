@@ -30,6 +30,18 @@ print("warning text", file=sys.stderr)
 sys.exit(3)
 """
 
+AFFINITY_PROBE = """
+import ctypes
+from ctypes import wintypes
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+kernel32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                            ctypes.POINTER(ctypes.c_size_t)]
+process, system = ctypes.c_size_t(0), ctypes.c_size_t(0)
+kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(system))
+print(process.value)
+"""
+
 
 class FlowFailureLogsTest(unittest.TestCase):
     """A failed flow scenario's logs survive the next run of the scenario (FlowFSR, 2026-10-17)."""
@@ -82,6 +94,18 @@ class FlowScenarioProcessTest(unittest.TestCase):
         self.assertTrue(desktop.startswith("CE_FG_"), output)
         self.assertEqual(warning, "warning text")
 
+    @unittest.skipUnless(build.IS_WINDOWS, "core pinning is applied through the Windows process affinity")
+    def test_a_pinned_scenario_runs_on_its_core_alone(self) -> None:
+        cores = build.flow_core_affinity_masks()
+        self.assertTrue(cores, "the core layout of this PC was not read")
+        with tempfile.TemporaryDirectory() as directory:
+            code, output = build.run_flow_scenario_process([sys.executable, "-c", AFFINITY_PROBE], directory, 120,
+                                                           cores[-1])
+            self.assertEqual((code, int(output.strip())), (0, cores[-1]), output)
+            code, output = build.run_flow_scenario_process([sys.executable, "-c", AFFINITY_PROBE], directory, 120)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(int(output.strip()) & cores[-1], cores[-1], "an unpinned scenario may use every core")
+
 
 class FlowSchedulingTest(unittest.TestCase):
     """The slowest scenarios start first, from the times the previous run recorded."""
@@ -91,6 +115,14 @@ class FlowSchedulingTest(unittest.TestCase):
         durations = {"Flow.A": 2.0, "Flow.B": 30.0, "Flow.C": 2.0, "Flow.E": 9.5}
         self.assertEqual(build.order_flow_tests(tests, durations), ["Flow.D", "Flow.B", "Flow.E", "Flow.A", "Flow.C"])
         self.assertEqual(build.order_flow_tests(tests, {}), tests)
+
+    def test_one_slot_per_physical_core_the_runner_may_use(self) -> None:
+        # GetLogicalProcessorInformation entries: SMT cores with two logical processors, a core without SMT, a cache
+        # and a package entry (other relationships), and a core outside the runner's affinity.
+        entries = [(0, 0b11), (2, 0b1111), (0, 0b1100), (0, 0b10000), (3, 0b111111), (0, 0b1000000)]
+        self.assertEqual(build.flow_core_masks(entries, 0b111111), [0b11, 0b1100, 0b10000])
+        self.assertEqual(build.flow_core_masks(entries, 0b101), [0b1, 0b100])
+        self.assertEqual(build.flow_core_masks([], 0b11), [])
 
     def test_a_filtered_run_keeps_the_other_scenarios_times(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

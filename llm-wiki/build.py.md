@@ -404,7 +404,9 @@ Default quality mode currently:
   `build/flow_tests/` - a flow-test hook DLL (every hook DLL source except `main_dllmain.cpp`, plus common and
   `tests/flow/flow_hook_entry.cpp`, product hook flags without LTO at `-O1`, kept out of
   `compile_commands.json`), fake runtime DLLs and `fg_flow_tests.exe` (a WARP D3D12 game + scenarios). With
-  `--run-tests` every scenario runs in its own process (4 at a time, 300 s timeout) on a second thread while the
+  `--run-tests` every scenario runs in its own process (one per physical core, pinned to that core's logical
+  processors from its first instruction - `flow_core_affinity_masks`, `CREATE_SUSPENDED` + `SetProcessAffinityMask`;
+  4 unpinned when the layout is unreadable; 300 s timeout) on a second thread while the
   unit tests and Python self-tests run (`run_test_phase`, 2026-10-24: the unit tests used one core, 9% CPU, and
   only added their 96 s to every gate). `--gtest-filter` applies to both suites. Scenarios start longest first
   from `build/flow_tests/scenario_seconds.json` (written by every run; unknown ones first), and the log names the
@@ -428,6 +430,15 @@ Default quality mode currently:
   display-gamma pass the harness enables (`ExpectPostProcessAccounted`), which alone makes an SDR
   scenario ~2.7x slower (53.7 s -> 20.6 s without it) - deliberate coverage, kept. HDR-only scenarios instead
   assert that no gamma correction ran (2026-11-11); mixed SDR/HDR scenarios still require the SDR pass.
+  2026-11-12 (`FlowXeFG.InitFromTheGamesSwapchainSucceedsWithCEInjected` alone, 2,700 frames, CPU-s from
+  `GetProcessTimes`): WARP's own floor (clear + Present + fence, debug layer on) is 0.17 ms/frame; the debug layer
+  and DRED cost ~2%; everything else is CE's per-output pixel work, scaling with pixels: 177 CPU-s at 640x360 on all
+  16 logical processors (gamma ~121, overlay/copies ~56), 91 on one. The 150%-DPI hero panel was 495x345, 68% of
+  the frame. Now 256x160 with the panel at 100% and the 8 px font (~203x143): 42.6 CPU-s on all processors, 22.5 on
+  one (gamma still ~70%). Suite 805 s -> 264 s wall (2,108 s scenario time, 8 pinned at a time, background load
+  from another agent present). In a quiet 8-way run per-scenario time is ~1.1x its time alone; the longest scenario
+  (~56 s, `FlowXeFG.MultiFrameGeneration...`) bounds any wall time. Further cuts trade coverage: gamma on fewer
+  scenarios, or shorter phases (300/600-frame phases outlast CE windows of 1-4 s; not audited).
   Each scenario's hook log is
   `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log` and `d3d12_debug.log`: the game
   runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). A failed scenario's log

@@ -59,6 +59,10 @@ FLOW_TAKEOVER_GAME_MODULES = (
     ("takeover_game_unsupported.dll", "startup/takeover_game_unsupported.cpp", "takeover_resident/sl.interposer.dll"),
 )
 FLOW_TEST_TIMEOUT_SECONDS = 300
+# Scenarios run one per physical core, each process pinned to that core's logical processors. WARP rasterizes on the CPU
+# with a worker per logical processor it may use: spread over all of them, a scenario's small passes spent about half
+# its CPU in WARP's own hand-offs, and four such processes fought over every core (2026-11-12: one XeFG scenario took
+# 177 CPU-s on all 16 logical processors, 91 on one). Where the core layout cannot be read, this many run unpinned.
 FLOW_TEST_PARALLEL_PROCESSES = 4
 # Each scenario's wall time from the last run, read back to start the longest scenarios first.
 FLOW_TEST_DURATIONS_FILE = os.path.join(FLOW_TEST_OUTPUT_DIR, "scenario_seconds.json")
@@ -274,6 +278,46 @@ def build_flow_tests_standalone(env) -> Optional[str]:
     )
 
 
+def flow_core_masks(cores: Iterable[Tuple[int, int]], allowed: int) -> List[int]:
+    """One affinity mask per physical core from (relationship, processor mask) entries of
+    GetLogicalProcessorInformation, limited to the processors this process may use; cores left with none drop out."""
+    relation_processor_core = 0
+    masks = [mask & allowed for relationship, mask in cores if relationship == relation_processor_core]
+    return [mask for mask in masks if mask]
+
+
+def flow_core_affinity_masks() -> List[int]:
+    """This PC's physical cores as affinity masks of their logical processors (the runner's processor group); empty
+    when the layout cannot be read, and the runner then runs unpinned."""
+    if not IS_WINDOWS:
+        return []
+    from ctypes import wintypes
+
+    class ProcessorInformation(ctypes.Structure):
+        _fields_ = [("ProcessorMask", ctypes.c_size_t), ("Relationship", ctypes.c_int),
+                    ("Reserved", ctypes.c_ulonglong * 2)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetLogicalProcessorInformation.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetLogicalProcessorInformation.restype = wintypes.BOOL
+    kernel32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                                ctypes.POINTER(ctypes.c_size_t)]
+    kernel32.GetProcessAffinityMask.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    length = wintypes.DWORD(0)
+    kernel32.GetLogicalProcessorInformation(None, ctypes.byref(length))
+    count = length.value // ctypes.sizeof(ProcessorInformation)
+    entries = (ProcessorInformation * count)()
+    process_mask, system_mask = ctypes.c_size_t(0), ctypes.c_size_t(0)
+    if (not count or not kernel32.GetLogicalProcessorInformation(entries, ctypes.byref(length))
+            or not kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(process_mask),
+                                                   ctypes.byref(system_mask))):
+        log(f"[flow] processor core layout unreadable ({ctypes.WinError(ctypes.get_last_error())}); "
+            f"{FLOW_TEST_PARALLEL_PROCESSES} scenarios run unpinned")
+        return []
+    return flow_core_masks(((entry.Relationship, entry.ProcessorMask) for entry in entries), process_mask.value)
+
+
 def list_flow_tests(flow_exe: str, gtest_filter: Optional[str]) -> Optional[List[str]]:
     """The scenario names; None when the listing itself failed (the executable did not start, crashed or exited
     non-zero), which must not read as an empty, passing suite."""
@@ -349,6 +393,11 @@ if IS_WINDOWS:
     _flow_kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     _flow_kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     _flow_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _flow_kernel32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+    _flow_kernel32.SetProcessAffinityMask.restype = wintypes.BOOL
+    _flow_kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    _flow_kernel32.ResumeThread.restype = wintypes.DWORD
+    _FLOW_CREATE_SUSPENDED = 0x00000004
 
     def _flow_window_station_name() -> str:
         name = ctypes.create_unicode_buffer(256)
@@ -371,7 +420,8 @@ if IS_WINDOWS:
         stream.seek(0)
         return stream.read().decode("utf-8", "replace").replace("\r\n", "\n")
 
-    def _flow_run_on_desktop(command: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
+    def _flow_run_on_desktop(command: List[str], cwd: str, timeout: float,
+                             affinity: Optional[int] = None) -> Tuple[int, str]:
         desktop, desktop_path = _flow_create_desktop()
         try:
             with contextlib.ExitStack() as files:
@@ -390,7 +440,10 @@ if IS_WINDOWS:
                     for handle in handles:
                         os.set_handle_inheritable(handle, True)
                     try:
-                        created = _flow_kernel32.CreateProcessW(None, command_line, None, None, True, 0, None, cwd,
+                        # Pinned before its first instruction runs: WARP sizes its workers from the processors the
+                        # process may use when the device is created.
+                        created = _flow_kernel32.CreateProcessW(None, command_line, None, None, True,
+                                                                _FLOW_CREATE_SUSPENDED if affinity else 0, None, cwd,
                                                                 ctypes.byref(startup), ctypes.byref(info))
                         error = ctypes.get_last_error()
                     finally:
@@ -399,6 +452,14 @@ if IS_WINDOWS:
                 if not created:
                     raise ctypes.WinError(error)
                 try:
+                    if affinity:
+                        if not _flow_kernel32.SetProcessAffinityMask(info.hProcess, affinity):
+                            log(f"[flow] affinity 0x{affinity:x} not applied "
+                                f"({ctypes.WinError(ctypes.get_last_error())}); the scenario runs unpinned")
+                        if _flow_kernel32.ResumeThread(info.hThread) == 0xFFFFFFFF:
+                            resume_error = ctypes.get_last_error()
+                            _flow_kernel32.TerminateProcess(info.hProcess, 1)
+                            raise ctypes.WinError(resume_error)
                     timed_out = _flow_kernel32.WaitForSingleObject(
                         info.hProcess, int(timeout * 1000)) == _FLOW_WAIT_TIMEOUT
                     if timed_out:
@@ -419,10 +480,12 @@ if IS_WINDOWS:
         return ctypes.c_int32(exit_code.value).value, output
 
 
-def run_flow_scenario_process(command: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
-    """Runs one scenario process on its own desktop; returns its exit code (-1 after a timeout) and its output."""
+def run_flow_scenario_process(command: List[str], cwd: str, timeout: float,
+                              affinity: Optional[int] = None) -> Tuple[int, str]:
+    """Runs one scenario process on its own desktop, on the logical processors of `affinity` (a mask; None: any);
+    returns its exit code (-1 after a timeout) and its output."""
     if IS_WINDOWS:
-        return _flow_run_on_desktop(command, cwd, timeout)
+        return _flow_run_on_desktop(command, cwd, timeout, affinity)
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 timeout=timeout, cwd=cwd)
@@ -566,17 +629,29 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
     if not tests:
         log(f"No FG flow test matches the filter {gtest_filter}")
         return True
-    workers = min(FLOW_TEST_PARALLEL_PROCESSES, len(tests))
-    log(f"=== Running FG flow tests ({len(tests)} scenario process(es), {workers} at a time) ===")
+    cores = flow_core_affinity_masks()
+    workers = min(len(cores) or FLOW_TEST_PARALLEL_PROCESSES, len(tests))
+    placement = "one core each" if cores else "unpinned"
+    log(f"=== Running FG flow tests ({len(tests)} scenario process(es), {workers} at a time, {placement}) ===")
     tests = order_flow_tests(tests, load_flow_durations(FLOW_TEST_DURATIONS_FILE))
+    free_cores = deque(cores[:workers])
+    free_cores_lock = threading.Lock()
     start = time.time()
 
     def run_one(name: str):
         logs = os.path.join(FLOW_TEST_OUTPUT_DIR, "logs", name)
         shutil.rmtree(logs, ignore_errors=True)
+        # A worker holds a core from its scenario's start to its end; workers never outnumber the cores.
+        with free_cores_lock:
+            core = free_cores.popleft() if free_cores else None
         started = time.time()
-        returncode, output = run_flow_scenario_process(
-            [flow_exe, f"--gtest_filter={name}"], FLOW_TEST_OUTPUT_DIR, FLOW_TEST_TIMEOUT_SECONDS)
+        try:
+            returncode, output = run_flow_scenario_process(
+                [flow_exe, f"--gtest_filter={name}"], FLOW_TEST_OUTPUT_DIR, FLOW_TEST_TIMEOUT_SECONDS, core)
+        finally:
+            if core is not None:
+                with free_cores_lock:
+                    free_cores.append(core)
         return name, returncode, output, time.time() - started
 
     failures = []
@@ -594,14 +669,14 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
     save_flow_durations(FLOW_TEST_DURATIONS_FILE, durations)
     slowest = sorted(durations.items(), key=lambda item: item[1], reverse=True)[:FLOW_TEST_SLOWEST_REPORTED]
     busy = sum(durations.values())
-    log(f"FG flow scenario time: {busy:.0f}s in {elapsed:.0f}s wall ({workers} at a time); slowest: "
+    log(f"FG flow scenario time: {busy:.0f}s in {elapsed:.0f}s wall ({workers} at a time, {placement}); slowest: "
         + ", ".join(f"{name} {seconds:.1f}s" for name, seconds in slowest))
     record_verification_step(
         "flow_tests",
         "failed" if failures else "passed",
         duration_seconds=elapsed,
         details={"scenarios": len(tests), "failed": failures, "gtest_filter": gtest_filter, "workers": workers,
-                 "scenario_seconds_total": round(busy, 1), "slowest": dict(slowest)},
+                 "pinned": bool(cores), "scenario_seconds_total": round(busy, 1), "slowest": dict(slowest)},
     )
     if failures:
         log(f"=== FG flow tests FAILED ({len(failures)} of {len(tests)}) ===")
