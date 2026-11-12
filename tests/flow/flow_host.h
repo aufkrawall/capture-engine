@@ -28,13 +28,14 @@ enum class SwapchainKind {
     kXeFG,        // Intel XeSS frame generation's proxy swapchain over a native one the runtime presents itself
 };
 
-// The UI resource an FSR game registers on its frame generation swapchain every frame while FG is enabled
+// The UI resource an FSR game registers on its frame generation swapchain
 // (ffxConfigure REGISTERUIRESOURCE); without a present callback AMD composites it onto every output.
 enum class FSRUiResource {
     kNone,         // none: the HUD is part of the interpolated image
     kEmpty,        // a registration without a resource every frame, HUD interpolated too (OptiScaler, 20261024_010934)
     kFullSize,     // a backbuffer-sized HUD texture (testapp/dx12_fg_switch_fsr.cpp)
     kPlaceholder,  // a 1x1 placeholder with UI composition left on (GTA V Enhanced)
+    kFullSizeWithSuspendedPlaceholder,  // full-size HUD while enabled; placeholder while disabled
 };
 
 // How the game keeps the UI resource it registers intact until AMD composed the frame's outputs.
@@ -196,6 +197,7 @@ public:
     bool RecreateFSREffectContext();
     bool SendRejectedFSRConfigure();
     unsigned FSRAppPresentCallbackCalls() const;
+    uint64_t FSRUiRegistrations(bool enabled) const;
     bool DetachForeignFFXInputs();
     bool ReloadForeignFFXRuntime();
 

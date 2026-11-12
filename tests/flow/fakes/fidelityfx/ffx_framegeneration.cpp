@@ -57,6 +57,8 @@ struct FrameGenerationConfig {
 
 std::mutex g_configMutex;
 FrameGenerationConfig g_config;
+uint64_t g_uiRegistrationsEnabled = 0;
+uint64_t g_uiRegistrationsDisabled = 0;
 
 enum class ContextKind : uint32_t { kSwapchain = 1, kFrameGeneration = 2 };
 
@@ -682,6 +684,11 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
 
 using namespace ce::flow::fake;
 
+extern "C" __declspec(dllexport) uint64_t CEFlow_FFXUiRegistrations(bool enabled) {
+    std::lock_guard<std::mutex> lock(g_configMutex);
+    return enabled ? g_uiRegistrationsEnabled : g_uiRegistrationsDisabled;
+}
+
 extern "C" FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc,
                                                           const ffxAllocationCallbacks*) {
     if (!context || !desc)
@@ -744,6 +751,7 @@ extern "C" FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const
     if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12) {
         const auto& ui = *reinterpret_cast<const ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*>(desc);
         std::lock_guard<std::mutex> lock(g_configMutex);
+        ++(g_config.enabled ? g_uiRegistrationsEnabled : g_uiRegistrationsDisabled);
         if (ui.uiResource.resource != g_config.ui.resource)
             Log(kModule, "ffxConfigure(register UI resource) %p (%ux%u state=0x%X) was %p", ui.uiResource.resource,
                 ui.uiResource.description.width, ui.uiResource.description.height, ui.uiResource.state,

@@ -1,7 +1,7 @@
 // The FidelityFX side of a flow-test game, integrated like testapp/dx12_fg_switch_fsr.cpp: the runtime loaded on
 // demand, the frame generation swapchain created through ffxCreateContext(FOR_HWND) with the system factory and
 // the game queue, a frame generation context, and every frame ffxConfigure (frame ID, enable state, callbacks),
-// the UI resource registration while enabled (GameOptions::fsrUi) and ffxDispatch(PREPARE_V2). The present
+// the UI resource registration (GameOptions::fsrUi) and ffxDispatch(PREPARE_V2). The present
 // callback copies the presented image into the swapchain buffer.
 
 #include <atomic>
@@ -39,6 +39,7 @@ struct FidelityFXGame {
     uint64_t frameId = 1;
     // GameOptions::fsrUi (two with FSRUiBuffering::kGameAlternates); read-only for AMD, like a game's HUD texture
     ComPtr<ID3D12Resource> ui[2];
+    ComPtr<ID3D12Resource> suspendedUi;
     bool emptyUi = false;  // FSRUiResource::kEmpty: registers no resource every frame
     FSRUiBuffering uiBuffering = FSRUiBuffering::kSwapchainCopy;
 };
@@ -134,10 +135,12 @@ ffxReturnCode_t GameFrameGenerationCallback(ffxDispatchDescFrameGeneration* para
 // As testapp/dx12_fg_switch_fsr.cpp declares its HUD: read-only, in shader-resource state, double-buffered by
 // the swapchain because the game rewrites it every frame (or by the game itself: FSRUiBuffering).
 void RegisterUiResource(FidelityFXGame& ffx) {
-    if ((!ffx.ui[0] && !ffx.emptyUi) || !ffx.enabled)
+    if ((!ffx.ui[0] && !ffx.emptyUi) || (!ffx.enabled && !ffx.suspendedUi))
         return;
     const bool alternate = ffx.uiBuffering == FSRUiBuffering::kGameAlternates;
-    ID3D12Resource* texture = ffx.emptyUi ? nullptr : ffx.ui[alternate ? ffx.frameId % 2 : 0].Get();
+    ID3D12Resource* texture = !ffx.enabled && ffx.suspendedUi
+                                  ? ffx.suspendedUi.Get()
+                                  : (ffx.emptyUi ? nullptr : ffx.ui[alternate ? ffx.frameId % 2 : 0].Get());
     ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 ui{};
     ui.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12;
     if (texture)
@@ -267,6 +270,12 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
                                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
     }
+    if (fsrUi_ == FSRUiResource::kFullSizeWithSuspendedPlaceholder && !ffx.suspendedUi) {
+        ffx.suspendedUi = CreateFlowTexture(device_.Get(), 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM,
+                                             D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+                                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
     return true;
 }
 
@@ -341,6 +350,14 @@ bool FlowGame::SendRejectedFSRConfigure() {
 
 unsigned FlowGame::FSRAppPresentCallbackCalls() const {
     return fidelityfx_ ? fidelityfx_->presentCallbackCalls.load(std::memory_order_relaxed) : 0;
+}
+
+uint64_t FlowGame::FSRUiRegistrations(bool enabled) const {
+    if (!fidelityfx_ || !fidelityfx_->module)
+        return 0;
+    const auto count = reinterpret_cast<uint64_t (*)(bool)>(GetProcAddress(fidelityfx_->module,
+                                                                          "CEFlow_FFXUiRegistrations"));
+    return count ? count(enabled) : 0;
 }
 
 bool FlowGame::ReloadForeignFFXRuntime() {

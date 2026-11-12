@@ -66,6 +66,28 @@ TEST(FlowFSR, TogglesWithoutAPresentCallbackKeepTheOverlayOnASubstituteUiResourc
     ToggleFSR(game, false, FSRUiResource::kPlaceholder);
 }
 
+TEST(FlowFSR, RetainedProxyRegistersAPlaceholderDuringSuspension) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(FidelityFXGameOptions(
+        FSRUiResource::kFullSizeWithSuspendedPlaceholder, FSRUiBuffering::kSwapchainCopy))) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(30)) << game.Error();
+    const auto startupRegistrations = game.FSRUiRegistrations(false);
+    EXPECT_GT(startupRegistrations, 0u);
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+        ExpectPublished(game, 2, 2, "FSR FG on");
+        ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
+        const auto before = game.FSRUiRegistrations(false);
+        ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+        EXPECT_GT(game.FSRUiRegistrations(false), before);
+        ExpectPublished(game, 0, 1, "FSR FG suspended");
+    }
+    EXPECT_GT(game.FSRUiRegistrations(true), 0u);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // No UI resource at all: the HUD is part of the interpolated image. The proxy backbuffer carries the overlay only
 // until the final-batch route is proven; drawn there for good, AMD would interpolate it and every output would
 // show it as of the last rendered frame (Talos + OptiScaler, session 20261024_010934).
