@@ -76,6 +76,7 @@ struct GameOptions {
     FSRUiBuffering fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
     bool fsrTestSolidUi = false;  // initialize the HUD with a half-alpha red test color
     bool fsrTestPremultipliedUi = false;
+    bool fsrTestAnimatedUi = false;  // alternate the HUD red channel on every game frame
     bool fsrWrappedGameQueue = false;  // the descriptor queue has two native-interface proxy layers
     // kFidelityFX: the game's FidelityFX image is loaded but unused; frame generation runs on a second image of the
     // same name from a tool's folder, its exports read from its own export table so that none of CE's
@@ -354,6 +355,7 @@ private:
     FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
     bool fsrTestSolidUi_ = false;
     bool fsrTestPremultipliedUi_ = false;
+    bool fsrTestAnimatedUi_ = false;
     bool xefgFromSwapchain_ = false;
     bool fsrWrappedGameQueue_ = false;
     bool fsrToolRuntimeCopy_ = false;

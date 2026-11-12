@@ -40,6 +40,7 @@ struct FidelityFXGame {
     // GameOptions::fsrUi (two with FSRUiBuffering::kGameAlternates); read-only for AMD, like a game's HUD texture
     ComPtr<ID3D12Resource> ui[2];
     ComPtr<ID3D12Resource> suspendedUi;
+    ComPtr<ID3D12DescriptorHeap> animatedUiRtv;
     bool emptyUi = false;  // FSRUiResource::kEmpty: registers no resource every frame
     FSRUiBuffering uiBuffering = FSRUiBuffering::kSwapchainCopy;
     bool premultipliedUi = false;
@@ -302,6 +303,14 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
         queue_->ExecuteCommandLists(1, lists);
         WaitForGpu();
     }
+    if (fsrTestAnimatedUi_ && ffx.ui[0]) {
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heapDesc.NumDescriptors = 1;
+        if (FAILED(device_->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&ffx.animatedUiRtv))))
+            return Fail("creating the animated FSR UI view", E_FAIL);
+        device_->CreateRenderTargetView(ffx.ui[0].Get(), nullptr, ffx.animatedUiRtv->GetCPUDescriptorHandleForHeapStart());
+    }
     return true;
 }
 
@@ -404,6 +413,15 @@ bool FlowGame::ReloadForeignFFXRuntime() {
 
 void FlowGame::SubmitFidelityFXFrame() {
     FidelityFXGame& ffx = *fidelityfx_;
+    if (ffx.animatedUiRtv) {
+        constexpr auto readState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Transition(list_.Get(), ffx.ui[0].Get(), readState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        const float red = frame_ % 2 == 0 ? 1.0f : 0.0f;
+        const float color[] = {red, 0.0f, 0.0f, 0.5f};
+        list_->ClearRenderTargetView(ffx.animatedUiRtv->GetCPUDescriptorHandleForHeapStart(), color, 0, nullptr);
+        Transition(list_.Get(), ffx.ui[0].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, readState);
+    }
     ++ffx.frameId;
     if (ffx.keepProviderConfigureForNextFrame) {
         ffx.keepProviderConfigureForNextFrame = false;

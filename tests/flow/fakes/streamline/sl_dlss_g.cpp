@@ -492,8 +492,12 @@ public:
 private:
     void SampleOutput(UINT flags) {
         const UINT index = real_->GetCurrentBackBufferIndex();
+        using PendingFrame = uint64_t (*)();
+        static const auto pendingFrame = reinterpret_cast<PendingFrame>(
+            GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_PendingRuntimeOutputFrame"));
         if (!(flags & DXGI_PRESENT_TEST) && index < realBuffers_.size())
-            g_nestedOutputProbe.Sample(device_.Get(), ownQueue_.Get(), realBuffers_[index].Get(), index);
+            g_nestedOutputProbe.Sample(device_.Get(), ownQueue_.Get(), realBuffers_[index].Get(), index,
+                                       pendingFrame ? pendingFrame() : 0);
     }
 
     void CreateBuffers() {
@@ -713,6 +717,10 @@ void FlowSampleNestedOutput(bool enabled) {
 uint64_t FlowReadNestedOutput(UINT x, UINT y, uint32_t* pixel, UINT* index) {
     return g_nestedOutputProbe.Read(x, y, pixel, index);
 }
+void FlowSetNestedHistoryPoint(UINT x, UINT y) { g_nestedOutputProbe.SetHistoryPoint(x, y); }
+uint64_t FlowReadNestedHistory(uint64_t ordinal, uint64_t* frame, uint32_t* pixel) {
+    return g_nestedOutputProbe.ReadHistory(ordinal, frame, pixel);
+}
 uint64_t FlowLastOutputDifferentPixels() {
     return g_lastOutputDifferentPixels.load(std::memory_order_acquire);
 }
@@ -756,6 +764,10 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&FlowSampleNestedOutput);
     if (std::strcmp(name, "flowReadNestedOutput") == 0)
         return reinterpret_cast<void*>(&FlowReadNestedOutput);
+    if (std::strcmp(name, "flowSetNestedHistoryPoint") == 0)
+        return reinterpret_cast<void*>(&FlowSetNestedHistoryPoint);
+    if (std::strcmp(name, "flowReadNestedHistory") == 0)
+        return reinterpret_cast<void*>(&FlowReadNestedHistory);
     if (std::strcmp(name, "flowPresentNextBatchOnTitleThread") == 0)
         return reinterpret_cast<void*>(&FlowPresentNextBatchOnTitleThread);
     return nullptr;

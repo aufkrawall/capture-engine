@@ -57,6 +57,65 @@ TEST(FlowSwitch, FFXPremultipliedUiComposesDuringAndAfterGeneration) {
     CheckFFXUiComposition(true);
 }
 
+void CheckFFXBufferedUiKeepsTheScheduledFramePixels(bool reshade) {
+    SetEnvironmentVariableA("CE_FLOW_FFX_COMPOSE_UI", "1");
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kFidelityFX;
+    options.fsrNestedPresenter = true;
+    options.fsrUi = FSRUiResource::kFullSize;
+    options.fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
+    options.fsrTestAnimatedUi = true;
+    if (reshade)
+        options.presentChainOverlays = {{OverlayStandIn::kReShade, 0}};
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+    ASSERT_NE(plugin, nullptr);
+    const auto lookup = reinterpret_cast<void* (*)(const char*)>(GetProcAddress(plugin, "slGetPluginFunction"));
+    ASSERT_NE(lookup, nullptr);
+    const auto enable = reinterpret_cast<void (*)(bool)>(lookup("flowSampleNestedOutput"));
+    const auto setPoint = reinterpret_cast<void (*)(UINT, UINT)>(lookup("flowSetNestedHistoryPoint"));
+    const auto read = reinterpret_cast<uint64_t (*)(uint64_t, uint64_t*, uint32_t*)>(lookup("flowReadNestedHistory"));
+    ASSERT_NE(enable, nullptr);
+    ASSERT_NE(setPoint, nullptr);
+    ASSERT_NE(read, nullptr);
+    setPoint(500, 300);
+    enable(true);
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(16)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(2)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(8)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(false, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(2)) << game.Error();
+    ASSERT_TRUE(game.WaitForFSRPresents()) << game.Error();
+    uint64_t frame = 0;
+    uint32_t pixel = 0;
+    const uint64_t count = read(0, &frame, &pixel);
+    ASSERT_EQ(count, 52u);
+    for (uint64_t i = 0; i < count; ++i) {
+        SCOPED_TRACE(i);
+        ASSERT_EQ(read(i, &frame, &pixel), count);
+        ASSERT_GT(frame, 0u);
+        if (frame % 2 == 1)
+            EXPECT_GE(pixel & 255u, 125u) << "frame " << frame;
+        else
+            EXPECT_LT(pixel & 255u, 35u) << "frame " << frame;
+    }
+    enable(false);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowSwitch, FFXBufferedUiKeepsTheScheduledFramePixels) {
+    CheckFFXBufferedUiKeepsTheScheduledFramePixels(false);
+}
+
+TEST(FlowSwitch, FFXBufferedUiKeepsScheduledPixelsThroughReShade) {
+    CheckFFXBufferedUiKeepsTheScheduledFramePixels(true);
+}
+
 TEST(FlowSwitch, NestedPresenterProbeReadsTheNativeBufferBeforePresent) {
     FlowGame game(CurrentTestName());
     GameOptions options;

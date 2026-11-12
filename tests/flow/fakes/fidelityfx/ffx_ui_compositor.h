@@ -16,6 +16,12 @@ public:
         return state == FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ || state == FFX_API_RESOURCE_STATE_PIXEL_READ ||
                state == FFX_API_RESOURCE_STATE_COMPUTE_READ;
     }
+    static D3D12_RESOURCE_STATES NativeState(uint32_t state) {
+        return state == FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ
+            ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+            : (state == FFX_API_RESOURCE_STATE_PIXEL_READ ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                                                         : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
     bool Initialize(ID3D12Device* device, DXGI_FORMAT targetFormat) {
         signature_.Reset();
         straight_.Reset();
@@ -103,10 +109,7 @@ float4 PS(float4 position : SV_Position) : SV_Target {
 
     void Record(ID3D12GraphicsCommandList* list, ID3D12Resource* ui, ID3D12Resource* output, uint32_t state,
                 bool premultiplied) {
-        const D3D12_RESOURCE_STATES uiState = state == FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ
-            ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
-            : (state == FFX_API_RESOURCE_STATE_PIXEL_READ ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-                                                         : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        const D3D12_RESOURCE_STATES uiState = NativeState(state);
         Transition(list, ui, uiState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Transition(list, output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
         D3D12_SHADER_RESOURCE_VIEW_DESC view{};

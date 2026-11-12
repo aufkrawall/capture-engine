@@ -10,7 +10,7 @@ Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **Inject overlay graph timing in game menus with FSR Frame Generation (GTA V Enhanced):** corrected repeated graph positions when the game submits frames faster than the display refreshes. A subsequent session still reported judder, so smooth motion on the displayed images remains under investigation; the graphics test harness can now compose a retained FSR UI texture and inspect a nested presenter's native buffer before presentation to support that investigation.
+- **Inject overlay graph timing in game menus with FSR Frame Generation (GTA V Enhanced):** corrected repeated graph positions when the game submits frames faster than the display refreshes. A subsequent session still reported judder, so smooth motion on the displayed images remains under investigation; the graphics test harness can now compose retained and per-frame buffered FSR UI textures and inspect a nested presenter's native buffer before presentation to support that investigation.
 
 - **Inject overlay disappearing after a DirectX 12 frame-generation switch:** keep drawing when a disabled Streamline swapchain is replaced after FSR or DLSS Frame Generation. The replacement now proves its own presentation queue and successful overlay submission before continuing, so it does not rely on the departed swapchain or wait for DLSS to turn on.
 

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <mutex>
 #include <vector>
+#include <array>
 
 namespace ce::flow::fake {
 
@@ -22,10 +23,11 @@ public:
         if (enabled) {
             pixels_.clear();
             serial_ = 0;
+            historyCount_ = 0;
         }
     }
 
-    void Sample(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* target, UINT index) {
+    void Sample(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* target, UINT index, uint64_t frame) {
         if (!enabled_.load(std::memory_order_acquire))
             return;
         std::lock_guard<std::mutex> lock(mutex_);
@@ -106,6 +108,27 @@ public:
         height_ = desc.Height;
         index_ = index;
         ++serial_;
+        if (frame && historyX_ < width_ && historyY_ < height_) {
+            history_[historyCount_ % history_.size()] = {frame, pixels_[static_cast<size_t>(historyY_) * width_ + historyX_]};
+            ++historyCount_;
+        }
+    }
+
+    void SetHistoryPoint(UINT x, UINT y) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        historyX_ = x;
+        historyY_ = y;
+        historyCount_ = 0;
+    }
+
+    uint64_t ReadHistory(uint64_t ordinal, uint64_t* frame, uint32_t* pixel) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!frame || !pixel || ordinal >= historyCount_ || historyCount_ - ordinal > history_.size())
+            return historyCount_;
+        const auto& item = history_[ordinal % history_.size()];
+        *frame = item.frame;
+        *pixel = item.pixel;
+        return historyCount_;
     }
 
     uint64_t Read(UINT x, UINT y, uint32_t* pixel, UINT* index) {
@@ -123,6 +146,10 @@ private:
     UINT width_ = 0, height_ = 0, index_ = 0;
     uint64_t serial_ = 0;
     std::vector<uint32_t> pixels_;
+    struct HistoryItem { uint64_t frame; uint32_t pixel; };
+    std::array<HistoryItem, 64> history_{};
+    uint64_t historyCount_ = 0;
+    UINT historyX_ = 0, historyY_ = 0;
 };
 
 }  // namespace ce::flow::fake

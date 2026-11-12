@@ -234,6 +234,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     fsrUiBuffering_ = options.fsrUiBuffering;
     fsrTestSolidUi_ = options.fsrTestSolidUi;
     fsrTestPremultipliedUi_ = options.fsrTestPremultipliedUi;
+    fsrTestAnimatedUi_ = options.fsrTestAnimatedUi;
     xefgFromSwapchain_ = options.xefgFromSwapchain;
     fsrWrappedGameQueue_ = options.fsrWrappedGameQueue;
     fsrToolRuntimeCopy_ = options.fsrToolRuntimeCopy;

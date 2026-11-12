@@ -20,7 +20,10 @@
   frame configurations pin the registered resource until their outputs finish. Two WARP cases check a half-alpha
   HUD pixel on a retained single texture; forcing straight blending for premultiplied input or blending twice fails
   both phases.
-  The fake refuses the opt-in compositor for internally double-buffered UI until snapshot copying is implemented.
+  With internal buffering it snapshots the registered texture on the producer queue, pins it per scheduled frame,
+  and checks a frame-coded HUD pixel on each of 52 outputs through suspension and resume. Removing the snapshot
+  produces wrong-frame pixels and D3D12 cross-queue ordering errors. These are fake-runtime tests, not evidence of
+  the real game's displayed overlay pixels.
 
 ### 2026-11-12 - Overlay graph judder in GTA's FSR-suspended menu, second cause
 

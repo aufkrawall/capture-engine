@@ -25,6 +25,7 @@
 #include "tests/flow/fakes/fake_dxgi_forwarders.h"
 #include "tests/flow/fakes/fake_runtime_log.h"
 #include "tests/flow/fakes/fidelityfx/ffx_ui_compositor.h"
+#include "tests/flow/fakes/fidelityfx/ffx_ui_snapshot.h"
 
 #include <ffx_api.h>
 #include <dx12/ffx_api_dx12.h>
@@ -285,11 +286,6 @@ private:
         }
         if (composeUi_ && !uiComposerReady_)
             return E_FAIL;
-        if (composeUi_ && config.ui.resource &&
-            (config.uiFlags & FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING)) {
-            Log(kModule, "UI compositor has no internally buffered UI snapshot");
-            return E_NOTIMPL;
-        }
         if (composeUi_ && config.ui.resource && !FFXUiCompositor::Supports(config.ui.state)) {
             Log(kModule, "UI compositor cannot use resource state 0x%X", config.ui.state);
             return E_FAIL;
@@ -303,6 +299,18 @@ private:
         }
         // The game's frame must be complete on its queue before the runtime reads it.
         WaitForQueue(gameQueue_.Get());
+        if (composeUi_ && config.ui.resource &&
+            (config.uiFlags & FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING)) {
+            auto snapshot = SnapshotFFXUi(device_.Get(), gameQueue_.Get(), config.uiOwner.Get(),
+                                          FFXUiCompositor::NativeState(config.ui.state));
+            if (!snapshot) {
+                Log(kModule, "UI snapshot creation failed");
+                return E_FAIL;
+            }
+            config.uiOwner = snapshot;
+            config.ui.resource = snapshot.Get();
+            config.ui.state = FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ;
+        }
         ID3D12Resource* rendered = proxyBuffers_[proxyIndex_].Get();
         proxyIndex_ = (proxyIndex_ + 1) % proxyBufferCount_;
         // An enable starts the scenario's Present-chain overlay and, like AMD while its presenter thread starts,
