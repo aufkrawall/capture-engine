@@ -70,6 +70,13 @@ lost-event counts and, per event stream, count, first/last and the largest silen
 CE's `qpcUs=` fields. The stage whose silence starts first over the episode is where frames stopped; compare with the
 decision table in `log/recent.md` (2026-11-10 GTA entry).
 
+Payloads and the compositor's side (since 2026-11-13, self-test `tools/tests/test_dwm_flood_digest.py`):
+`python tools/tracing/dwm_flood_digest.py <etl> --pid <game> [--switch-qpc-us <silenceStartQpcUs>]` prints dwm.exe's
+channel-2 batch floods relative to the swapchain switch, the busiest threads during the flood, when the new surface was
+realized and the game's first independent flip; `--save`/`--load` keep a JSON digest. `python
+tools/tracing/etl_payload.py <etl> --from-us N --to-us N [--name REGEX] [--pid N]` dumps TDH-decoded events of a window
+(`etl_stall_digest.read_records` is the one ETW consumer both build on).
+
 ## First live seal: GTA cold DLSS-G load (2026-11-11)
 
 `20261111_021555`, 0.1.7503: `sealed ep=1 pid=7008 reason=ended silenceMs=1416 silenceStartQpcUs=6899741153
@@ -141,7 +148,7 @@ relative to the new chain's first present (QPC 6899741153 us).
 - Reading method: `etl_stall_digest.py` ranks the stall correctly (the flip streams' gaps) but the verdict needed
   payloads - Win32k `TokenStateChanged`/`TokenCompositionSurfaceObject` (surface LUID, present count, NewState),
   Dwm-Core `CompSurfInfo_*`, `SCHEDULE_SURFACEUPDATE` (first 8 bytes = surface LUID) and DxgKrnl
-  `IndependentFlipTransition`, decoded with TDH property info (scratch decoder, not in the tool yet).
+  `IndependentFlipTransition`, decoded with TDH property info (now `tools/tracing/etl_payload.py`).
 
 ## Reference seals: the black screen is decided at bind time (2026-11-11)
 
@@ -179,7 +186,7 @@ relative to the new chain's first present (QPC 6899741153 us).
 - The Win32k events show nothing else on the clean path: `SwapChainBind` (hWnd, binding handle), `DCompDeferBatch`
   (frame-deadline deferrals, reasons 1/3, under one frame) and one `CompositionTargetGlitch`; SwapChainBindingOpen/
   Status and the sprite/logical-surface binds never fired. A black load with this recorder is what is missing.
-- Reading method (scratch, not in the tool): DWM's `CompSurfInfo_*` and `SCHEDULE_SURFACEUPDATE` by surface LUID
+- Reading method (`tools/tracing/etl_payload.py` since 2026-11-13): DWM's `CompSurfInfo_*` and `SCHEDULE_SURFACEUPDATE` by surface LUID
   against the game's `TokenCompositionSurfaceObject` LUIDs and the DXGI bind events, relative to `silenceStartQpcUs`.
 - Verdict (2026-11-11): no CE cause in evidence. What CE does is identical in clean and black loads up to the bind, and
   the failure precedes its first draw; a CE change would only nudge DWM (a workaround with side effects), so none was
@@ -205,7 +212,7 @@ Not a CE bug: the user saw the same black screen with Capture Engine not running
   slow), continues past the switch and ends at +5.87 / +6.78 s; `CompSurfInfo_ForceUpdateRealization` of the new
   surface fires in that same millisecond, then independent flip. Fresh-boot loads: the flood ended 0.1-0.5 s before
   the switch, no freeze.
-- Standalone repro, CE closed (scratch `flood_repro.cpp`, D3D11, monitor-sized borderless window like GTA's, a
+- Standalone repro, CE closed (`tools/tracing/flood_repro.cpp`, D3D11, monitor-sized borderless window like GTA's, a
   non-GUI thread spinning on one call, the window switches to a new flip-discard swapchain): only ClipCursor (same
   rectangle every call) makes DWM work; keyboard layout, IME and window-from-point calls cause none.
 
@@ -227,9 +234,12 @@ Not a CE bug: the user saw the same black screen with Capture Engine not running
 - Fault: GTA calls ClipCursor in a tight loop during the save load (Rockstar); Windows turns each redundant call into
   queued compositor work that a new swapchain waits behind (Microsoft; seen on Insider build 26300, a release build is
   untested). CE neither causes nor changes it, so there is nothing to fix in CE; a CE-side "kick" would be a workaround.
-- Reading method (scratch, not in the repo): `etl_fast.py` (TDH decode, one pass -> pickle of per-100 ms channel
-  batches and swapchain markers), `q_flood.py`, `q_markers.py`, and the repro harness `run_repro.py` (Dwm-Core all
-  keywords, DxgKrnl 0x8000000000000001, Win32k 0x8000000400001000, `-ct perf` so the repro's QPC lines up).
+- Tools (2026-11-13): `tools/tracing/dwm_flood_digest.py` for the seals; `tools/tracing/run_flood_repro.py
+  clip:10000:0:56000:30000` builds `tools/tracing/flood_repro.cpp` with the project's clang into `build/tracing/`, runs
+  it under an unelevated ETW session (Dwm-Core all keywords, DxgKrnl 0x8000000000000001, Win32k 0x8000000400001000,
+  `-ct perf` so the repro's QPC lines up) and prints calls/s against dwm's batches/s and the onset. It takes over the
+  primary monitor for a few seconds and refuses to run while GTA or CE runs. Check run from the repo: 4 s at 56k/s ->
+  realized +404 ms, flood end +419 ms, 224,887 batches for 224,846 calls.
 
 ## Open questions
 

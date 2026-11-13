@@ -9,7 +9,8 @@
   coalesced, ~50.6k/s capacity. 45k/s: new swapchain shown +6 ms; 56k/s for 10 s: +1063 ms, exactly when the backlog
   drained. GTA calls ClipCursor from its own code (`+0x6d218c`) in a loop right at that capacity.
 - "DWM slows with session age" (morning reading) refuted for these loads. Details and table:
-  [display-stall-trace.md](../display-stall-trace.md). Repro and decoders are scratch, not in the repo.
+  [display-stall-trace.md](../display-stall-trace.md). Repro and decoders now in `tools/tracing/` (`run_flood_repro.py`,
+  `dwm_flood_digest.py`, `etl_payload.py`).
 
 ### 2026-11-13 - Hardware run 0.1.7526 (`20261113_185020`): graph fixes hold; DLSS-off menu drops ~16 frames/s
 
