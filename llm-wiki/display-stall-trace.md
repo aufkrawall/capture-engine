@@ -228,9 +228,27 @@ Not a CE bug: the user saw the same black screen with Capture Engine not running
   unchanged, and kept after the caller exits; DWM works through about 50k/s (~20 us each). A newly bound swapchain's
   realization queues behind them, so its first frame waits until the backlog drains; already-visible surfaces keep
   updating meanwhile (the old chain's last frame stays on screen).
-- Why it varies: GTA's demand (~27k loop passes/s x 2) sits right at DWM's capacity, so whether a backlog exists at the
-  switch, and how big it is, depends on small differences in loop speed and DWM throughput. The 2026-11-13 morning
-  reading "DWM slows with Windows-session age" (12.5 h seal at ~11.4k/s) did not hold for these 5.4-5.7 h loads.
+- Why it varies: GTA's side is constant, DWM's rate on this queue is not. First FG load of each process, all seals of
+  2026-11-13 (`dwm_flood_digest.py --pid <game> --switch-qpc-us <silenceStartQpcUs>`; uptime = QPC at the switch;
+  0.28/0.55 h ran with the unelevated Win32k probe, the others with CE's recorder only):
+
+| Seal | Uptime | Channel-2 batches in the flood | Flood start | DWM rate | Flood end | Result |
+|---|---|---|---|---|---|---|
+| `121918` | 0.28 h | 923k | -18.4 s | 51.3k/s | -0.4 s | clean |
+| `125003` | 0.55 h | 930k | -19.3 s | 49.0k/s | -0.3 s | clean |
+| `175053` | 4.44 h | 1,052k | -21.5 s | 56.5k/s | -2.9 s | clean |
+| `181813` | 4.90 h | 1,103k | -18.7 s | 60.6k/s | -0.5 s | clean |
+| `185020` | 5.44 h | 1,091k | -18.9 s | 44.0k/s | +5.9 s | 5.9 s black |
+| `190605` | 5.70 h | 1,063k | -19.0 s | 41.2k/s | +6.8 s | 6.8 s black |
+| `034532` | 12.72 h (previous boot) | >= 542k by +10 s | -39.5 s | 10.9k/s | still running at +10.2 s | 73 s black |
+
+  GTA queues about 0.9-1.1 M ClipCursor updates in the ~19 s between the flood start and the FG switch at every uptime,
+  so DWM needs >= ~55k/s to drain them in time; each load below that is black for (count / rate) - 19 s. The rate is
+  not monotonic within a boot (60.6k/s at 4.90 h, 44.0k/s 32 min later; the repro measured 50.6k/s at 5.9 h with GTA
+  closed), so it is not a plain leak. What lowers it later in a Windows session is NOT identified; DWM's own processing
+  thread logged fewer events per second in the black loads (3.6-4.3k vs 5.9-6.4k), i.e. it did less per second, not
+  more work. Next step: run the repro's free-running clip mode as a gauge (GTA closed) at intervals and next to what
+  else differs (DWM frame rate, other screen activity, CPU load, DWM's handle/window counts).
 - Fault: GTA calls ClipCursor in a tight loop during the save load (Rockstar); Windows turns each redundant call into
   queued compositor work that a new swapchain waits behind (Microsoft; seen on Insider build 26300, a release build is
   untested). CE neither causes nor changes it, so there is nothing to fix in CE; a CE-side "kick" would be a workaround.
