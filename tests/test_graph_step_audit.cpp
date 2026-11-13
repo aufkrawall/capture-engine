@@ -62,6 +62,31 @@ TEST(GraphStepAuditTest, RuntimeOutputsAreJudgedPerDisplayInterval) {
     EXPECT_EQ(audit.application().draws, 0u);
 }
 
+// An FG switch hands the cursor from runtime outputs to application draws and back (session 20261113_181813). Each
+// route's first draw after the other drew is a handoff, not a step from the route's own last draw seconds earlier.
+TEST(GraphStepAuditTest, ARouteResumingAfterTheOtherIsNotJudgedAgainstItsStalePosition) {
+    GraphStepAudit audit;
+    double position = 100.0;
+    int64_t drawUs = 1'000'000;
+    for (uint64_t id = 1; id <= 3; ++id) {
+        audit.Observe(GraphOutputKind::kDistinctOutput, id, position, drawUs, kSamplePeriodUs, kSamplePeriodUs, false);
+        position += 1.0;
+        drawUs += 6944;
+    }
+    for (int i = 0; i < 500; ++i) {
+        audit.Observe(GraphOutputKind::kApplicationDraw, 0, position, drawUs, kSamplePeriodUs, kSamplePeriodUs, false);
+        position += 1.0;
+        drawUs += 6944;
+    }
+    audit.Observe(GraphOutputKind::kDistinctOutput, 4, position, drawUs, kSamplePeriodUs, kSamplePeriodUs, false);
+    audit.Observe(GraphOutputKind::kDistinctOutput, 5, position + 1.0, drawUs + 6944, kSamplePeriodUs,
+                  kSamplePeriodUs, false);
+    EXPECT_EQ(audit.output().jumps, 0u);
+    EXPECT_NEAR(audit.output().maxStep, 1.0, 1e-9);
+    EXPECT_EQ(audit.output().judged, 3u);  // two before the handoff, one after
+    EXPECT_EQ(audit.application().judged, 499u);
+}
+
 TEST(GraphStepAuditTest, PresentationTimingExpectsOneSlotPerDrawAndRestartForgetsPositions) {
     GraphStepAudit audit;
     audit.Observe(GraphOutputKind::kApplicationDraw, 0, 5.0, 100, 0.0, 0.0, true);

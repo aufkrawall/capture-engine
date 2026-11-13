@@ -6,7 +6,10 @@
 // resync or a route change can still make one draw hold and the next catch up - exactly what a juddering graph looks
 // like. Application draws (the proxy prework, a native Present) and distinct runtime outputs (the final-batch route)
 // run on different clocks, so they are judged apart: a 10 s summary that mixed them hid a failing menu interval
-// (GTA V Enhanced, session gtajudder). Bounded: counters only, reset by the caller's summary.
+// (GTA V Enhanced, session gtajudder). A route's first draw after the other route drew is not judged: its own last
+// draw can be seconds old, and the cursor steps one displayed frame at a handoff by design (graph_scroll_policy.h);
+// judging it against that stale position reported 3596-slot "steps" at every FG switch (session 20261113_181813).
+// Bounded: counters only, reset by the caller's summary.
 
 #include <cmath>
 #include <cstdint>
@@ -34,6 +37,10 @@ public:
         Route& route = distinct ? outputRoute_ : applicationRoute_;
         Last& last = distinct ? output_ : application_;
         ++route.draws;
+        if (lastKindValid_ && kind != lastKind_)
+            last.valid = false;
+        lastKind_ = kind;
+        lastKindValid_ = true;
         double expected = -1.0;
         if (presentationTimed)
             expected = 1.0;
@@ -61,6 +68,7 @@ public:
     void Restart() {
         application_.valid = false;
         output_.valid = false;
+        lastKindValid_ = false;
     }
 
     const Route& application() const { return applicationRoute_; }
@@ -98,4 +106,6 @@ private:
     Route outputRoute_;
     Last application_;
     Last output_;
+    GraphOutputKind lastKind_ = GraphOutputKind::kApplicationDraw;
+    bool lastKindValid_ = false;
 };
