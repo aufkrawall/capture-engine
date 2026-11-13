@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 
@@ -128,12 +129,10 @@ TEST(PresentProgressTest, SharedProviderSetDeliversPresentReturns) {
     const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
     ASSERT_NE(providerSet, std::string::npos);
     EXPECT_NE(etw.find("EnableRuntimePresentProvider(session)", providerSet), std::string::npos);
-    const size_t runtime = etw.find("kRuntimeProvider, kRuntimeKeyword", provider);
-    ASSERT_NE(runtime, std::string::npos);
-    const size_t end = etw.find(");", runtime);
-    const std::string filter = etw.substr(runtime, end - runtime);
-    EXPECT_NE(filter.find("kRuntimePresentStop"), std::string::npos);
-    EXPECT_NE(filter.find("kRuntimeMpoPresentStop"), std::string::npos);
+    EXPECT_NE(etw.find("kRuntimeProvider, kRuntimeKeyword, kRuntimeEventIds.data()", provider), std::string::npos);
+    const auto& ids = display_timing_etw::kRuntimeEventIds;
+    EXPECT_NE(std::find(ids.begin(), ids.end(), display_timing_etw::kRuntimePresentStop), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), display_timing_etw::kRuntimeMpoPresentStop), ids.end());
 }
 
 }  // namespace

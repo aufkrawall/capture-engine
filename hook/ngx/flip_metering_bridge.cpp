@@ -231,9 +231,10 @@ int32_t __cdecl Bridge_SetFlipConfig(IUnknown* commandQueue, UINT vidpnSrcId, vo
 
 // The driver's own SetFlipConfig, observed on its way: sl.dlss_g's batches reach the driver unchanged and the log shows
 // what was asked. GTA V Enhanced presented 161-163 frames/s on a 144 Hz panel with DLSS-G switched off by its menu
-// while DXGI received SyncInterval=1 on sl.dlss_g's own swapchain, every present flipped (session 20261113_181813);
-// whether DLSS-G still meters those single frames was invisible. One line per request or answer change, at most every
-// 10 s while unchanged, with the call count so far.
+// while DXGI received SyncInterval=1 on sl.dlss_g's own swapchain (session 20261113_181813); whether DLSS-G still meters
+// those single frames was invisible. It does (one-frame batches, 0 ms), but the frames above the refresh rate were
+// Windows' VRR setting overriding SyncInterval=1 (captureengine/display_timing/display_timing_vrr_override.h). One line
+// per request or answer change, at most every 10 s while unchanged, with the call count so far.
 using SetFlipConfigFunction = int32_t(__cdecl*)(IUnknown*, UINT, void*);
 std::atomic<SetFlipConfigFunction> g_residentSetFlipConfig{nullptr};
 std::atomic<uint64_t> g_residentSetFlipConfigCalls{0};

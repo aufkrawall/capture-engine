@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-13 - DLSS-off menu frame drops: Windows' "Variable refresh rate" setting overrides V-Sync
+
+- Sealed trace `display_stall_28620_ep3_switch.etl` (`20261113_185020`): DXGI `Present/Start SyncInterval=1` is followed
+  by DXGI `SwapChain/Info NewSyncInterval=0` on every GTA present; dxgi symbols name it `EventOverrideSyncInterval`,
+  raised by `IsVariableRefreshRateOverrideEligible` when the user's `VRROptimizeEnable=1` is set on a VRR output.
+  DLSS-off: 132 cancelled flips in 8 s, none on the FFX chain (FidelityFX paces). Driver profile has no V-Sync value
+  (drs_tool, status -160), so not the driver. Details: graphics-overrides-and-frame-pacing.md.
+- Supersedes the flip-metering hypothesis below (sl.dlss_g's 1-frame `SetFlipConfig` while off is not the cause).
+- Detection: display-timing session now takes DXGI id 0x4A; one `Windows replaces SyncInterval=1` warning per process
+  and `vrrSyncOverrides=` in the health line. Behaviour change (Windows setting off vs CE-side cap) left to the user.
+
 ### 2026-11-13 - GTA cold FG black screen root-caused: not CE (GTA's ClipCursor loop, DWM queue)
 
 - The user saw the black screen with Capture Engine closed. Seals `20261113_185020` (normal overlay, DLSS FG, 5.9 s)

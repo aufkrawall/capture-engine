@@ -512,6 +512,25 @@ Moved to `frame-pacing-and-limiter.md`: producer-queue CPU/present depth enforce
 grid, the `PresentSite` call-site contract, front-loaded cadence placement, FG output-group admission, and the
 Reflex handoff rules.
 
+## Windows' VRR setting replaces `SyncInterval=1` (verified 2026-11-13, build 26300)
+
+- Windows "Variable refresh rate" (Settings > System > Display > Graphics; `VRROptimizeEnable=1` in
+  `HKCU\Software\Microsoft\DirectX\UserGpuPreferences\DirectXUserGlobalSettings`) makes DXGI rewrite a flip present's
+  `SyncInterval=1` to 0 on a VRR output: `dxgi!CDXGISwapChain::FlipPresentToDWM` checks
+  `IsVariableRefreshRateOverrideEligible` (interval == 1, a process flag the setting raises at dxgi load via the DX
+  database query `DX_DATABASE_QUERY_TYPE_VRR_ENABLE`, `IsOutputVariableRefreshRate`, no `DXGI_PRESENT_USE_DURATION`)
+  and writes `EventOverrideSyncInterval` (Microsoft-Windows-DXGI id 0x4A, task SwapChain, keyword
+  0x8000000000000002). Read with symbols from dxgi.dll; no exported API opts a process out.
+- Effect: no tearing, but newest-frame-wins at each refresh - no backpressure; above max refresh the flip queue cancels
+  frames (`DxgKrnl CancelFlip`, `Win32k TokenIndependentFlipSkipComplete`). Kernel `Present/Info FlipInterval=0`.
+- Evidence (`20261113_185020` sealed trace, 144 Hz G-Sync): every GTA present with `SyncInterval=1` (pre-FG, FFX and
+  DLSS-G chains, 3111/4959/3685) got `NewSyncInterval=0`. DLSS-G off on sl.dlss_g's chain, 8 s: 1284 presents, 1152
+  flips, 132 cancelled. FFX chain menu, 8 s: 1151 presents, 1151 flips, 0 cancelled - FidelityFX paces its presents.
+- CE's `vsync_mode=fifo` (`StateFinalPresentVSync`, `route=applied`) states exactly that `SyncInterval=1`, so it
+  inherits the override. Reported once per followed process by the display-timing service (`Windows replaces
+  SyncInterval=1`, `vrrSyncOverrides=`; `captureengine/display_timing/display_timing_vrr_override.h`). Queued V-Sync
+  needs the setting off, or a frame cap below the refresh rate; a CE-side cap would be a synthetic clock (open decision).
+
 ## DLSS on-screen indicator
 
 - The modules that read `ShowDlssIndicator` are `nvngx_dlss.dll` (super resolution) and `nvngx_dlssg.dll` (frame

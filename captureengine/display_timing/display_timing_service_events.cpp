@@ -33,6 +33,14 @@ void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
         return;
     }
     if (IsEqualGUID(header.ProviderId, kRuntimeProvider)) {
+        if (header.EventDescriptor.Id == kRuntimeOverrideSyncInterval) {
+            if (IsTrackedProcess(header.ProcessId) && vrrOverrides_.Observe(header.ProcessId)) {
+                uint32_t newSyncInterval = 0;
+                ReadProperty(event, L"NewSyncInterval", newSyncInterval);
+                display_timing_vrr_override::LogVrrSyncIntervalOverride(header.ProcessId, newSyncInterval);
+            }
+            return;
+        }
         if ((header.EventDescriptor.Id == kRuntimePresentStart ||
              header.EventDescriptor.Id == kRuntimeMpoPresentStart) &&
             IsTrackedProcess(header.ProcessId)) {

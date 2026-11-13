@@ -33,6 +33,8 @@ enum class DisplayCompletionSource : std::size_t {
 struct DisplayTimingHealth {
     uint64_t presents = 0;
     uint64_t ignoredTestPresents = 0;
+    // Followed presents whose SyncInterval=1 Windows' VRR setting replaced (display_timing_vrr_override.h). Cumulative.
+    uint64_t vrrSyncOverrides = 0;
     uint64_t associations = 0;
     // Submissions dropped because no completion claimed them inside the
     // completion bound, and completions refused because the only submission
@@ -264,7 +266,8 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
     if (!stalled && !Log_IsEnabled(LogLevel::Debug))
         return;
     Log(stalled ? LogLevel::Warn : LogLevel::Debug,
-        "[DisplayTiming]%s runtimePresents=%llu runtimeTestProbesIgnored=%llu submitAssociations=%llu "
+        "[DisplayTiming]%s runtimePresents=%llu runtimeTestProbesIgnored=%llu vrrSyncOverrides=%llu "
+        "submitAssociations=%llu "
         "expired=%llu staleRejected=%llu "
         "queued=%llu published=%llu "
         "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
@@ -286,7 +289,8 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "meanShiftUs=%lld maxShiftUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "presentToDisplay(n=%llu meanUs=%lld stddevUs=%lld minUs=%lld p50Us=%lld p95Us=%lld p99Us=%lld "
         "maxUs=%lld) input(retrievals=%llu bursts=%llu) milestones(ready=%llu programmed=%llu)",
-        stalled ? stalledPrefix : "", health.presents, health.ignoredTestPresents, health.associations,
+        stalled ? stalledPrefix : "", health.presents, health.ignoredTestPresents, health.vrrSyncOverrides,
+        health.associations,
         health.expiredAssociations,
         health.staleCompletions, health.queued, health.published, health.suppressed, health.regressed,
         health.payloadReceived, health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,

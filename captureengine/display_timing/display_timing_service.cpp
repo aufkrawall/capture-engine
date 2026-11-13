@@ -396,6 +396,7 @@ bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
     health.tokensCreated = tokens_.created();
     health.tokensUnmatched = tokens_.unmatched();
     health.tokensUndecodable = tokensUndecodable_;
+    health.vrrSyncOverrides = vrrOverrides_.overrides();
     health.tokens = tokens_.total();
     health.surfaceOnsetsLogged = surfaceOnsetLines_;
     health.surfaceOnsetsUnlogged = surfaceOnsetsUnlogged_;

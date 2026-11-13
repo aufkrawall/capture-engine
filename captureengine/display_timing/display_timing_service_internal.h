@@ -24,6 +24,7 @@
 #include "display_timing_submissions.h"
 #include "display_timing_tokens.h"
 #include "display_timing_vblank.h"
+#include "display_timing_vrr_override.h"
 
 #include <windows.h>
 #include <evntrace.h>
@@ -175,6 +176,8 @@ private:
     ComposedPresentation composed_;
     display_timing_tokens::CompositionTokenTally tokens_;
     uint64_t tokensUndecodable_ = 0;  // token events of a layout version this build does not read
+    // Followed processes whose SyncInterval=1 Windows' VRR setting replaced (display_timing_vrr_override.h).
+    display_timing_vrr_override::Monitor vrrOverrides_;
     uint64_t surfaceOnsetLines_ = 0;
     uint64_t surfaceOnsetsUnlogged_ = 0;  // past kMaxSurfaceOnsetLines
     uint64_t ownCompletions_ = 0;

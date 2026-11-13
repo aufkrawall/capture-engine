@@ -50,6 +50,14 @@ inline constexpr uint16_t kRuntimeMpoPresentStart = 0x37;
 // stall detector needs to know which Present calls never came back.
 inline constexpr uint16_t kRuntimePresentStop = 0x2b;
 inline constexpr uint16_t kRuntimeMpoPresentStop = 0x38;
+// dxgi!EventOverrideSyncInterval (task SwapChain, level LogAlways, the runtime keyword): Windows' "Variable refresh
+// rate" graphics setting replaced a present's SyncInterval=1 on a variable-refresh output. It fires only for such
+// presents; see captureengine/display_timing/display_timing_vrr_override.h.
+inline constexpr uint16_t kRuntimeOverrideSyncInterval = 0x4a;
+// Every runtime event a display-timing session takes.
+inline constexpr std::array<USHORT, 5> kRuntimeEventIds = {kRuntimePresentStart, kRuntimeMpoPresentStart,
+                                                          kRuntimePresentStop, kRuntimeMpoPresentStop,
+                                                          kRuntimeOverrideSyncInterval};
 inline constexpr uint16_t kQueuePacketStart = 0xb2;
 // QueuePacket_Stop: the packet finished; carries SubmitSequence only.
 inline constexpr uint16_t kQueuePacketStop = 0xb4;
@@ -261,9 +269,8 @@ inline ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, U
 }
 
 inline ULONG EnableRuntimePresentProvider(TRACEHANDLE session) {
-    return EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
-                                  {kRuntimePresentStart, kRuntimeMpoPresentStart, kRuntimePresentStop,
-                                   kRuntimeMpoPresentStop});
+    return EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword, kRuntimeEventIds.data(),
+                                  kRuntimeEventIds.size());
 }
 
 struct DisplayTimingProviderStatus {
