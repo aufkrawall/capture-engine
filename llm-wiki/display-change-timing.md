@@ -232,13 +232,12 @@ stream is unavailable, denied, failed, or two seconds stale.
     `EraseProcess` drops the compositor's outstanding submissions on recovery without counting them as expired.
   - Missing completions only start tracking; `confirmedProcessId` stays zero until a successful claim in this
     episode (`Begin` resets it), so startup own flips remain usable immediately.
-  - Composed samples are marked (`kDisplayTimingComposed`, sample flag bit 2; set from `PublishComposedFrame` via
-    `PendingTimestamp::composed` / `DisplayTimingPublication::composed`). `PerformanceMetrics::ConsumeDisplayTiming`
-    feeds them to latency and pacing health but not to `m_display`; while the newest sample is composed the
-    effective source is presentation (`IsDisplayStreamComposed`, `composed=` in the overlay's source line). A
-    composed stream is dwm sampling the process at the refresh: Mirror's Edge/DXVK `20261018_162817` presented
-    ~925/s (`runtimeInterval mean 1081us`) and the overlay showed 144 as its fps. The first own flip after composition
-    restarts `m_display`'s interval.
+  - Composed samples are marked (`kDisplayTimingComposed`, flag bit 2; from `PublishComposedFrame` via
+    `PendingTimestamp::composed` / `DisplayTimingPublication::composed`). `ConsumeDisplayTiming` feeds them to latency
+    and pacing health; `m_display` takes only the first one after a run of own flips (a swapchain handoff's hitch,
+    `20261113_181813`), and the first own flip after composition restarts its interval. While the newest sample is
+    composed the effective source is presentation (`IsDisplayStreamComposed`, `composed=` in the source line): dwm
+    samples the process at the refresh (Mirror's Edge/DXVK `20261018_162817`: ~925 presents/s, overlay showed 144).
   - Why a Vulkan swapchain is composed at all: the layer logs `presentation path at <site> ... blockers=` per
     swapchain (window vs monitor in physical pixels, extent vs client, DPI virtualization, `WS_EX_LAYERED`, presenter
     modules at create; `hook/present/presentation_path_policy.h`, rechecked every 512 presents, change-gated). Open
