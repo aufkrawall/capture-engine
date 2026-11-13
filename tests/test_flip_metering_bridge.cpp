@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <windows.h>
+
 #include <cstdint>
 #include <vector>
 
@@ -130,7 +132,49 @@ TEST(FlipMeteringBridge, RuntimeDeclinesWithoutAResidentVulkanLayer) {
     EXPECT_EQ(hookside::MaybeAnswerQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, nullptr, nullptr), nullptr);
     EXPECT_EQ(hookside::MaybeAnswerQueryInterface(0x12345678u, nullptr, nullptr), nullptr);
     int resident = 0;
-    EXPECT_EQ(hookside::MaybeAnswerQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, &resident, nullptr), nullptr);
+    EXPECT_EQ(hookside::MaybeAnswerQueryInterface(hookside::kNvApiIdNgxGetDriverFeatureSupport, &resident, nullptr),
+              nullptr);
+}
+
+struct DriverCall {
+    int calls = 0;
+    IUnknown* queue = nullptr;
+    UINT vidpnSource = 0;
+    void* config = nullptr;
+};
+DriverCall g_driverCall;
+
+int32_t __cdecl FakeDriverSetFlipConfig(IUnknown* queue, UINT vidpnSource, void* config) {
+    ++g_driverCall.calls;
+    g_driverCall.queue = queue;
+    g_driverCall.vidpnSource = vidpnSource;
+    g_driverCall.config = config;
+    auto* const flipConfig = static_cast<hookside::FlipConfigV1*>(config);
+    flipConfig->flipConfigFeedbackMask = hookside::kFlipConfigFeedbackNoIndependentFlip;
+    return hookside::kNvApiIncompatibleStructVersion;
+}
+
+// The driver's own SetFlipConfig is observed, never changed: GTA V Enhanced's DLSS-G-off menu flipped 162 frames/s on a
+// 144 Hz panel with SyncInterval=1 (20261113_181813) and what sl.dlss_g still asked the driver was not visible.
+TEST(FlipMeteringBridge, TheDriversSetFlipConfigReachesTheDriverUnchanged) {
+    using SetFlipConfig = int32_t(__cdecl*)(IUnknown*, UINT, void*);
+    void* const wrapper = hookside::MaybeAnswerQueryInterface(
+        hookside::kNvApiIdD3D12SetFlipConfig, reinterpret_cast<void*>(&FakeDriverSetFlipConfig), nullptr);
+    ASSERT_NE(wrapper, nullptr);
+    ASSERT_NE(wrapper, reinterpret_cast<void*>(&FakeDriverSetFlipConfig));
+    hookside::FlipConfigV1 config{};
+    config.version = hookside::kFlipConfigVer1;
+    config.nFramesPerBatch = 1;
+    auto* const queue = reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(0x1234));
+    g_driverCall = {};
+    const int32_t status = reinterpret_cast<SetFlipConfig>(wrapper)(queue, 2, &config);
+    EXPECT_EQ(status, hookside::kNvApiIncompatibleStructVersion);
+    EXPECT_EQ(g_driverCall.calls, 1);
+    EXPECT_EQ(g_driverCall.queue, queue);
+    EXPECT_EQ(g_driverCall.vidpnSource, 2u);
+    EXPECT_EQ(g_driverCall.config, &config);
+    EXPECT_EQ(config.nFramesPerBatch, 1u);
+    EXPECT_EQ(config.flipConfigFeedbackMask, hookside::kFlipConfigFeedbackNoIndependentFlip);
 }
 
 TEST(FlipMeteringBridge, BinderTakesTheOpenFrameOrTheNextStart) {

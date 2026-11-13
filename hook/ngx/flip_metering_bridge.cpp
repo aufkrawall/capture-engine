@@ -229,6 +229,38 @@ int32_t __cdecl Bridge_SetFlipConfig(IUnknown* commandQueue, UINT vidpnSrcId, vo
     return kNvApiOk;
 }
 
+// The driver's own SetFlipConfig, observed on its way: sl.dlss_g's batches reach the driver unchanged and the log shows
+// what was asked. GTA V Enhanced presented 161-163 frames/s on a 144 Hz panel with DLSS-G switched off by its menu
+// while DXGI received SyncInterval=1 on sl.dlss_g's own swapchain, every present flipped (session 20261113_181813);
+// whether DLSS-G still meters those single frames was invisible. One line per request or answer change, at most every
+// 10 s while unchanged, with the call count so far.
+using SetFlipConfigFunction = int32_t(__cdecl*)(IUnknown*, UINT, void*);
+std::atomic<SetFlipConfigFunction> g_residentSetFlipConfig{nullptr};
+std::atomic<uint64_t> g_residentSetFlipConfigCalls{0};
+
+int32_t __cdecl Observed_SetFlipConfig(IUnknown* commandQueue, UINT vidpnSrcId, void* flipConfig) {
+    const SetFlipConfigFunction resident = g_residentSetFlipConfig.load(std::memory_order_acquire);
+    const int32_t status = resident ? resident(commandQueue, vidpnSrcId, flipConfig) : kNvApiNotSupported;
+    const uint64_t calls = g_residentSetFlipConfigCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const FlipConfigRequest request = ReadFlipConfig(flipConfig);
+    const uint32_t feedback =
+        request.status == kNvApiOk ? static_cast<const FlipConfigV1*>(flipConfig)->flipConfigFeedbackMask : 0u;
+    static ce::log_meter::ChangeGate s_driverGate(10000);
+    const uint64_t key = ce::log_meter::FieldKey(request.framesPerBatch, request.presentedFramesPerBatch,
+                                                 request.version, vidpnSrcId, status, feedback);
+    if (const auto verdict = s_driverGate.Observe(key, GetTickCount64())) {
+        HookLogImportant("NVAPI flip metering: driver SetFlipConfig numFramesPerBatch=%u presented=%u "
+                         "timePerBatch=%.2fms minControlFrameTime=%.2fms status=%d feedback=0x%X queue=%p calls=%llu "
+                         "(struct v%u vidpnSrc=%u)%s",
+                         request.framesPerBatch, request.presentedFramesPerBatch,
+                         static_cast<double>(request.timePerBatchMs),
+                         static_cast<double>(request.minControlFrameTimeMs), status, feedback,
+                         static_cast<void*>(commandQueue), static_cast<unsigned long long>(calls),
+                         request.version >> 16, vidpnSrcId, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    return status;
+}
+
 int32_t __cdecl Bridge_NgxGetDriverFeatureSupport(void* params) {
     const int32_t status = AnswerDriverFeatureSupport(params);
     static ce::log_meter::ChangeGate s_answerGate;
@@ -290,7 +322,10 @@ void* MaybeAnswerQueryInterface(uint32_t functionId, void* resolved, const void*
         ce::overlay_compat::TryGetModulePathFromCodeAddress(callerAddress, caller, sizeof(caller));
         const char* name =
             functionId == kNvApiIdD3D12SetFlipConfig ? "NvAPI_D3D12_SetFlipConfig" : "NvAPI_NGX_GetDriverFeatureSupport";
-        const char* outcome = answer == QueryAnswer::kPassThrough ? "resident NVAPI implements it - passed through"
+        const char* outcome = answer == QueryAnswer::kPassThrough
+                                  ? functionId == kNvApiIdD3D12SetFlipConfig
+                                        ? "resident NVAPI implements it - passed through, its calls observed"
+                                        : "resident NVAPI implements it - passed through"
                               : answer == QueryAnswer::kDeclinedNoMeteringDevice
                                   ? "resident NVAPI has none and no Vulkan device can meter - declined"
                                   : "resident NVAPI has none - answered by CE's flip-metering bridge";
@@ -299,6 +334,11 @@ void* MaybeAnswerQueryInterface(uint32_t functionId, void* resolved, const void*
     }
 
     switch (answer) {
+        case QueryAnswer::kPassThrough:
+            if (functionId != kNvApiIdD3D12SetFlipConfig || !resolved)
+                return nullptr;
+            g_residentSetFlipConfig.store(reinterpret_cast<SetFlipConfigFunction>(resolved), std::memory_order_release);
+            return reinterpret_cast<void*>(&Observed_SetFlipConfig);
         case QueryAnswer::kSetFlipConfig:
             return reinterpret_cast<void*>(&Bridge_SetFlipConfig);
         case QueryAnswer::kDriverFeatureSupport:

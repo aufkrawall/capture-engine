@@ -13,7 +13,8 @@ namespace ce::flip_metering_bridge {
 
 // nvapi_QueryInterface participation. Returns CE's entry point when `functionId` is one the bridge
 // implements, the resident NVAPI returned none (`resolved` is null) and the Vulkan layer has a device
-// that can meter presents; nullptr hands the caller the resident NVAPI's answer.
+// that can meter presents. The resident SetFlipConfig comes back wrapped: the call goes to the driver
+// unchanged and its requests are logged. nullptr hands the caller the resident NVAPI's answer.
 void* MaybeAnswerQueryInterface(uint32_t functionId, void* resolved, const void* callerAddress);
 
 // True when the resident nvapi64.dll (nvapi.dll for x86) is not the NVIDIA driver's - a translation
