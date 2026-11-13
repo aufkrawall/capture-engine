@@ -25,7 +25,14 @@
   `FlowDLSSUnloadOrder.AChainDestroyedWithoutTheDestroyHookStillReleasesTheHeldUnload` (fake interposer
   `flowInterposerSetDestroyHookDispatch(false)`: plugin lets go without the hook CE observes) - fails without the fix
   ("DLSS-G stayed loaded", no forward), passes with it; 44 DLSS/switch/menu scenarios pass.
-- Next run: expect `forwarded reason=chain-gone`, the FFX create by `sl.interposer.dll` BufferCount=3, menu at 144/s.
+- **VALIDATED** `20261113_181813` (0.1.7525, user: "seems fixed"): 4 DLSS->FSR switches, each `deferred` -> `forwarded
+  reason=chain-gone residualRefs=0` after 208-433 ms (caller `dxgi.dll+0x14C0B6`, no deadlock in real Streamline), FFX
+  chain by `sl.interposer.dll` BufferCount=3, FSR windows <= 144 presents/s, 12 swapchain handoffs `missing=0`.
+- Open (pre-existing, DLSS side): with DLSS-G set OFF by the menu on sl.dlss_g's own chain (18:20:07.6-16) the game ran
+  161-163 presents/s with `out(sync=1 flags=0x0)`, every present flipped (+1486/+1488, 0 discarded), no flip schedules
+  applied. Same in 20261113_175053 and gtafsr. Likely the same overlay judder in DLSS menus; not investigated yet.
+- Diagnostic flaw (mine, e8cb83a9): `[OverlayGraph]` per-route residual/maxStep compare a route's draw with its own
+  last draw, seconds old after the other route drew (`out=1072/50/4/3.47/3595.96`); a handoff artifact, not a jump.
 
 ### 2026-11-13 - GTA FSR-suspended menu "overlay at lower fps" (session gtafsr, 0.1.7520): presentation, not the graph
 
