@@ -412,7 +412,9 @@ TEST(PresentInterposerSourceTest, ForcedFifoIsStatedOnTheInterposersOwnFlip) {
     const size_t genericOverride = pacing.find("ProcessVSyncOverride(syncInterval, flags);");
     ASSERT_NE(genericOverride, std::string::npos);
     EXPECT_LT(interposerBranch, genericOverride);
-    EXPECT_NE(pacing.find("return;", interposerBranch), std::string::npos);
+    const size_t interposerReturn = pacing.find("return FinalPresentVSyncRoute::kInterposerFlip;", interposerBranch);
+    ASSERT_NE(interposerReturn, std::string::npos);
+    EXPECT_LT(interposerReturn, genericOverride);
 
     // Only a vertical-blank request applies: off/mailbox are not one, and the interposer's own
     // parameters already are those.
