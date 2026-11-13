@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-11-13 - GTA cold FG black screen root-caused: not CE (GTA's ClipCursor loop, DWM queue)
+
+- The user saw the black screen with Capture Engine closed. Seals `20261113_185020` (normal overlay, DLSS FG, 5.9 s)
+  and `20261113_190605` (`overlay_observer_only=1`, FSR FG, 6.8 s), 0.1.7526: dwm.exe's channel-2 flood (~48k
+  batches/s, from -19.2 s) runs past `SwapChainBind`; the new surface is realized in the millisecond it ends.
+- Standalone repro with CE closed: only ClipCursor (unchanged rectangle) creates DWM work, one batch per call, never
+  coalesced, ~50.6k/s capacity. 45k/s: new swapchain shown +6 ms; 56k/s for 10 s: +1063 ms, exactly when the backlog
+  drained. GTA calls ClipCursor from its own code (`+0x6d218c`) in a loop right at that capacity.
+- "DWM slows with session age" (morning reading) refuted for these loads. Details and table:
+  [display-stall-trace.md](../display-stall-trace.md). Repro and decoders are scratch, not in the repo.
+
 ### 2026-11-13 - Hardware run 0.1.7526 (`20261113_185020`): graph fixes hold; DLSS-off menu drops ~16 frames/s
 
 - Off -> FSR -> DLSS -> FSR in one process. DLSS -> FSR: `[SL UNLOAD ORDER] forwarded reason=chain-gone` after 205 ms,

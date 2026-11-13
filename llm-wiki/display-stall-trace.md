@@ -1,10 +1,10 @@
 # Raw display trace for stall episodes
 
-Last verified: 2026-11-11 (two live seals: GTA 0.1.7503 `20261111_021555` and `20261111_024650`, 1.42/1.38 s
-silence, no events or buffers lost; two `switch` references on 0.1.7504, `20261111_153003` and `20261111_153313`, and
-one on 0.1.7505 without `DCompCommitBatch`, `20261111_162241`; findings below)
-Stale-risk: medium - the 10 s ongoing seal is unrecorded; no black load has been recorded with the Win32k events, and
-whether CE contributes to DWM's missed bind is open.
+Last verified: 2026-11-13 (GTA cold FG black screen root-caused: seals `20261113_185020` / `20261113_190605` on
+0.1.7526 plus a standalone ClipCursor repro with CE closed; earlier: live seals `20261111_021555` / `024650`, `switch`
+references `20261111_153003` / `153313` / `162241`)
+Stale-risk: low for the GTA verdict (not CE: GTA's ClipCursor loop backs up DWM's queue); medium for the recorder
+details - the 10 s ongoing seal is unrecorded.
 
 Why: GTA V Enhanced 0.1.7500 (`20261110_222057`) presented ~131/s for 37 s after a save load while nothing reached the
 screen (`[SCANOUT STALL] ep=1 ... durationUs=38066160 presents=4924`, sensors `composed ready=3563 published=0`). CE's
@@ -187,6 +187,50 @@ relative to the new chain's first present (QPC 6899741153 us).
   log level (on screen by N ms, presents discarded before; [display-change-timing-tokens.md](display-change-timing-tokens.md)),
   so black loads and CE modes can be compared from ordinary sessions; the raw seal adds the DWM/Win32k detail.
 
+## Root cause: GTA's ClipCursor loop backs up DWM's queue (2026-11-13)
+
+Not a CE bug: the user saw the same black screen with Capture Engine not running. Everything below replaces the
+"decided at bind time" reading above as an explanation (the observations there still hold).
+
+- The flood is GTA's own. Unelevated probe (Dwm-Core + Win32k, all keywords) at 0.28-0.59 h uptime: one game thread
+  (start `GTA5_Enhanced+0x13871e`, loop `+0x9272d2`, not the message pump or present thread) spins at 100% CPU during
+  the save load; each loop pass makes dwm.exe commit two one-command batches on its own channel 2
+  (`CHANNELBATCHES_PROCESSED channelHandle=2 processId=<dwm>`). CE running vs fully closed: 930k vs 916k batches in
+  20 s, identical `cdb -pv` stacks with no CE module. `NtUserClipCursor` is called straight from
+  `GTA5_Enhanced+0x6d218c`; ActivateKeyboardLayout, ImmGetConversionStatus and WindowFromPoint/GetGUIThreadInfo
+  (through Epic's `EOSOVH-Win64-Shipping` hooks) are in the same loop.
+- The freeze is the flood overlapping the FG swapchain switch. Seals `20261113_185020` (normal overlay, DLSS FG,
+  5.9 s) and `20261113_190605` (`overlay_observer_only=1`, FSR FG, 6.8 s), 0.1.7526, 5.4-5.7 h uptime: the flood starts
+  19.2 s before `SwapChainBind` in both, runs at ~48k batches/s (the same rate as after a fresh boot, so DWM was not
+  slow), continues past the switch and ends at +5.87 / +6.78 s; `CompSurfInfo_ForceUpdateRealization` of the new
+  surface fires in that same millisecond, then independent flip. Fresh-boot loads: the flood ended 0.1-0.5 s before
+  the switch, no freeze.
+- Standalone repro, CE closed (scratch `flood_repro.cpp`, D3D11, monitor-sized borderless window like GTA's, a
+  non-GUI thread spinning on one call, the window switches to a new flip-discard swapchain): only ClipCursor (same
+  rectangle every call) makes DWM work; keyboard layout, IME and window-from-point calls cause none.
+
+| ClipCursor rate | Spin | DWM channel 2 | New swapchain shown |
+|---|---|---|---|
+| none | - | idle | +6 ms after the switch |
+| 10k/s | 2 s before, 1 s after the switch | 10,002/s, one batch per call | +6 ms, while still spinning |
+| 45k/s | 10 s, stops at the switch | 45,056/s, keeps up | +6 ms |
+| 56k/s | 10 s, stops at the switch | capped at ~50.6k/s; 562,058 batches for 562,007 calls | +1063 ms = when the backlog drained (+1072 ms) |
+| ~350k/s free | 2 s before, 3 s after | ~50k/s, backlog drained for ~30 s after the process had exited | never (run ended at +5.5 s) |
+
+- Mechanism (Windows): every ClipCursor call becomes one DWM batch, never coalesced even when the rectangle is
+  unchanged, and kept after the caller exits; DWM works through about 50k/s (~20 us each). A newly bound swapchain's
+  realization queues behind them, so its first frame waits until the backlog drains; already-visible surfaces keep
+  updating meanwhile (the old chain's last frame stays on screen).
+- Why it varies: GTA's demand (~27k loop passes/s x 2) sits right at DWM's capacity, so whether a backlog exists at the
+  switch, and how big it is, depends on small differences in loop speed and DWM throughput. The 2026-11-13 morning
+  reading "DWM slows with Windows-session age" (12.5 h seal at ~11.4k/s) did not hold for these 5.4-5.7 h loads.
+- Fault: GTA calls ClipCursor in a tight loop during the save load (Rockstar); Windows turns each redundant call into
+  queued compositor work that a new swapchain waits behind (Microsoft; seen on Insider build 26300, a release build is
+  untested). CE neither causes nor changes it, so there is nothing to fix in CE; a CE-side "kick" would be a workaround.
+- Reading method (scratch, not in the repo): `etl_fast.py` (TDH decode, one pass -> pickle of per-100 ms channel
+  batches and swapchain markers), `q_flood.py`, `q_markers.py`, and the repro harness `run_repro.py` (Dwm-Core all
+  keywords, DxgKrnl 0x8000000000000001, Win32k 0x8000000400001000, `-ct perf` so the repro's QPC lines up).
+
 ## Open questions
 
 - Not recorded when CE owns its display trace (elevated CE without the service): a leaked file-mode session would keep
@@ -194,11 +238,6 @@ relative to the new chain's first present (QPC 6899741153 us).
 - History without `DCompCommitBatch` (`20261111_162241`, GTA 4K save load with DLSS-G): 256 MiB, 1.14 M events, span
   72 s, full DxgKrnl detail for the last 49 s (was ~30 s), nothing lost. Whether it keeps the run-up of a 37 s episode
   is open (the 10 s ongoing seal keeps the first 10 s).
-- What DWM's batch-commit storm during GTA's save load is (one DWM thread, its own channel, ~63 k/s); it ran in clean
-  loads of both modes, so it is not the black-screen discriminator.
-- The CE-off baseline (plan step "matched cold start") still has no recorder: CE closed means no service lease. The
-  CE-passive run is clean; a passive run seals nothing, so its DWM sequence is unrecorded.
-- Why DWM, in some Windows sessions, does not take a new flip-model surface into the window's visual at bind time,
-  what makes it do so at ~1.36 s (38 s in an earlier session), and whether CE contributes. Needs a black load sealed
-  with the Win32k events (none since the 14:34 start), and `Surface onset` lines from several loads per Windows
-  session in both normal and observer mode.
+- Resolved 2026-11-13 (see the root-cause section): the batch-commit storm is GTA's ClipCursor loop, and DWM takes the
+  new surface only once that backlog drains. Still open: why GTA's loop runs or overlaps the switch longer in some
+  loads, whether a release Windows build coalesces redundant ClipCursor updates, and the 38 s loads of 2026-11-10.

@@ -47,8 +47,8 @@ DWM's frames reached the display again.
 `confirmed` counts tokens taken into a compositor frame. Before the fix a retired token's release would have counted as
 `otherProcess`, and every independent-flip present as discarded. Presents a newer one replaced before the compositor's
 next frame also end as `discarded`; a black screen is `discarded` with nothing retired or flipped - GTA's cold DLSS-G
-loads took ~150 presents through Confirmed -> Discarded before DWM bound the new surface
-([display-stall-trace.md](display-stall-trace.md)).
+loads took ~150 presents through Confirmed -> Discarded before DWM bound the new surface, queued behind the game's
+own ClipCursor backlog ([display-stall-trace.md](display-stall-trace.md)).
 
 ## Surface onsets
 
