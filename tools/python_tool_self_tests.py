@@ -80,6 +80,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("log_digest", self_test_command("log_digest.py")),
         ("dump_triage", self_test_command("dump_triage.py")),
         ("etl_stall_digest", unittest_command("test_etl_stall_digest")),
+        ("dwm_flood_digest", unittest_command("test_dwm_flood_digest")),
         ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
         ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
         ("capture_av_self_test_dispatch", unittest_command("test_capture_av_self_test_dispatch")),

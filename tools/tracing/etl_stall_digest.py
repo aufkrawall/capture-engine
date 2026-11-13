@@ -181,6 +181,16 @@ class EventNames:
 
 def read_etl(path, sink):
     """Calls sink(timestamp, provider, name, pid) for every event; returns (perf_freq, header lost, reader lost)."""
+    def forward(record, provider, name):
+        sink(record.header.timestamp, provider, name, record.header.process_id)
+
+    return read_records(path, forward)
+
+
+def read_records(path, on_record, on_open=None):
+    """Calls on_record(record, provider, name) for every event, with the EVENT_RECORD valid only during the call (its
+    payload is at record.user_data), after on_open(perf_freq) once the file is open; returns (perf_freq, header lost,
+    reader lost)."""
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     advapi.OpenTraceW.restype = ctypes.c_uint64
     advapi.OpenTraceW.argtypes = [ctypes.c_void_p]
@@ -192,7 +202,7 @@ def read_etl(path, sink):
     def on_event(pointer):
         record = pointer.contents
         provider, name = names.lookup(record)
-        sink(record.header.timestamp, provider, name, record.header.process_id)
+        on_record(record, provider, name)
 
     callback = CALLBACK(on_event)
     logfile = (ctypes.c_ubyte * LOGFILE_SIZE)()
@@ -206,6 +216,8 @@ def read_etl(path, sink):
     try:
         if ctypes.c_uint32.from_buffer(logfile, HEADER_POINTER_SIZE).value not in (4, 8):
             raise RuntimeError("unexpected EVENT_TRACE_LOGFILEW layout (pointer size)")
+        if on_open:
+            on_open(ctypes.c_int64.from_buffer(logfile, HEADER_PERF_FREQ).value)
         status = advapi.ProcessTrace(ctypes.byref(handle), 1, None, None)
         if status not in (0, 1223):  # ERROR_CANCELLED ends a trace the same way
             raise OSError(status, f"ProcessTrace failed for {path}")
@@ -218,7 +230,7 @@ def read_etl(path, sink):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("etl")
     parser.add_argument("--pid", type=int, action="append", help="only these processes (repeatable)")
     parser.add_argument("--by-pid", action="store_true", help="one stream per process")
