@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-11-13 - Hardware run 0.1.7526 (`20261113_185020`): graph fixes hold; DLSS-off menu drops ~16 frames/s
+
+- Off -> FSR -> DLSS -> FSR in one process. DLSS -> FSR: `[SL UNLOAD ORDER] forwarded reason=chain-gone` after 205 ms,
+  FFX chain by `sl.interposer.dll` BufferCount=3; FSR menus <= 144 presents/s (147/s only while alt-tabbed).
+- Switch hitch kept (8eb17982): present gaps 480 ms (FSR -> DLSS) and 526 ms (DLSS -> FSR, 781 ms composed episode);
+  `source_0_1pct_low_x100` 177-190 (a 525-565 ms interval) stays for ~5 s, through and after the episode.
+- `[OverlayGraph]` per-route maxStep 9-12 ms at every switch (cf895d89; was 3596 slots).
+- DLSS-G OFF on sl.dlss_g's chain (perf CSV 18:54:09-16 and 23-32.5): 160-161 presents/s rendered, display series
+  exactly 144.0/s, present interval sd 1.2-1.5 ms (FSR chain 0.56 ms) - ~16 frames/s submitted and never shown
+  (sensors `expired` grows; no immediate flips while off). sl.dlss_g calls `NvAPI_D3D12_SetFlipConfig` on EVERY present
+  while off: `numFramesPerBatch=1 presented=1 timePerBatch=0.00ms`, ~1190 calls in 7.5 s; with FG on 2/2 batches,
+  driver-scheduled immediate MPO flips. Corrects the entry below: not "every present flipped". sl.dlss_g is told
+  driver VSync FORCEON by CE's DRS answer. Hypothesis (unproven): an engaged 1-frame metered batch makes the driver
+  replace queued flips instead of honouring DXGI `sync=1`. The bridge log's key omits `timePerBatch`, so the logged
+  ms values are each change's first call only.
+- First FSR enable from off (18:52:14, uptime 5.44 h): new chain on screen only after 5.9 s, 769 presents discarded,
+  `[SCANOUT STALL] ep=1` 6.3 s, ETL `display_stall_..._ep1_ended.etl` sealed - the first-handoff DWM stall seen so far
+  only with DLSS-G, here with FSR; later handoffs 37-47 ms.
+
 ### 2026-11-13 - Graph: a switch hitch vanished after FG changes; DLSS-off menu above refresh (diagnostic only)
 
 - User: a genuine spike near an FG change "disappeared" afterwards. `20261113_181813`: every DLSS->FSR switch has a
