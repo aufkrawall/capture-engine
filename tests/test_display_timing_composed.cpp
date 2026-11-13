@@ -119,12 +119,14 @@ TEST_F(DisplayTimingModeTest, OnlyTheConfirmedEndRestoresDisplayTimingWithoutAGa
     Publish(true, 12'000);
     ASSERT_FALSE(metrics.IsDisplayStreamComposed());
     ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
-    EXPECT_EQ(metrics.GetSampleCount(), before);
+    // The compositor's first flip after the run of own flips is the screen's next change: its one-refresh interval
+    // stays (a replacement's hitch lives there, 20261113_181813). The rest of the stretch and its end add nothing.
+    EXPECT_EQ(metrics.GetSampleCount(), before + 1);
     for (int i = 0; i < 64; ++i) {
         Publish(false, 12'000);
         ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange) << i;
     }
-    EXPECT_EQ(metrics.GetSampleCount(), before + 64);
+    EXPECT_EQ(metrics.GetSampleCount(), before + 65);
     EXPECT_NEAR(metrics.GetCurrentFPS(), 83.333f, 0.001f);
     EXPECT_NEAR(metrics.GetMaxFrameTime(5.0f), 12.0f, 0.001f);
 }

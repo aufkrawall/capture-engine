@@ -323,6 +323,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         ce::pacing_trace::Invalidate(currentQpcUs);
         m_display.Reset();
         m_graphLastDisplayUs = 0;
+        m_displayOwnIntervalsContinue = false;
         m_displayHistoryEpoch.fetch_add(1, std::memory_order_release);
         m_systemLatency.ResetDisplayHistory();
         m_displayScreenTimeCadence.Reset();
@@ -367,6 +368,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // Missing telemetry is not one long displayed frame. Retain measured
         // history, but start a fresh interval at the first available timestamp.
         m_display.lastFrameTimeUs.store(0, std::memory_order_relaxed);
+        m_displayOwnIntervalsContinue = false;
         m_displayScreenTimeCadence.Reset();
         m_systemLatency.NoteDisplayStreamGap();
     }
@@ -422,8 +424,21 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // the frame-time series does not (kDisplayTimingComposed). The series
         // restarts its interval when the process flips on its own again, so
         // the composed stretch is not one long frame.
+        //
+        // The first composed transition after a run of the process's own flips
+        // is still the screen's next change of its content, so the interval up
+        // to it stays in the series: it is what the screen showed across the
+        // handoff. A swapchain replacement starts exactly such an episode, and
+        // without it the replacement's hitch (GTA V Enhanced DLSS FG -> FSR FG,
+        // 556-800 ms, session 20261113_181813) showed in the graph only while
+        // the episode put it on the presentation series, then vanished when the
+        // display series came back. An own flip that only restarted the series
+        // (inside a composed episode) is no such run.
         const bool wasComposed = m_displayStreamComposed.exchange(composed, std::memory_order_acq_rel);
         if (composed) {
+            if (!wasComposed && m_displayOwnIntervalsContinue)
+                UpdateSeries(m_display, graphTimeUs > 0 ? graphTimeUs : screenTimeUs);
+            m_displayOwnIntervalsContinue = false;
             ++m_nextDisplaySequence;
             continue;
         }
@@ -433,7 +448,9 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // the kernel's unless that reported a synchronized flip sooner than the
         // panel can show one. Latency, pacing health and traces above keep the
         // kernel time.
+        const uint64_t samplesBefore = m_display.sampleCount.load(std::memory_order_relaxed);
         UpdateSeries(m_display, graphTimeUs > 0 ? graphTimeUs : screenTimeUs);
+        m_displayOwnIntervalsContinue = m_display.sampleCount.load(std::memory_order_relaxed) != samplesBefore;
         ++m_nextDisplaySequence;
     }
     m_displayScreenTimePermille.store(m_displayScreenTimeCadence.permille(), std::memory_order_relaxed);

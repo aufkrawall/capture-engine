@@ -316,6 +316,8 @@ private:
     std::mutex m_graphMutex;
     GraphScrollCursor m_graphScroll;
     int64_t m_graphLastDisplayUs = 0;  // guarded by m_displayConsumeMutex
+    // The newest own flip extended a run of own intervals (it was not a restart); guarded by m_displayConsumeMutex.
+    bool m_displayOwnIntervalsContinue = false;
     int64_t m_graphRefreshPeriodUs = 0;
     uint64_t m_graphDraws = 0;
     uint64_t m_graphOutputs = 0;
