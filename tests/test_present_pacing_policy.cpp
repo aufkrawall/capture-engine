@@ -240,10 +240,10 @@ TEST(PresentPacingPolicySourceTest, AllInnerDXGIVSyncPathsRespectNativeFGOutputO
         EXPECT_NE(source.find("ProcessPresentVSyncOverride("), std::string::npos) << file;
     }
     const std::string pacing = ReadProjectSource("hook/present/dxgi_shared_present_pacing.cpp");
-    const size_t policy = pacing.find("void ProcessPresentVSyncOverride(");
+    const size_t policy = pacing.find("FinalPresentVSyncRoute StateFinalPresentVSync(");
     ASSERT_NE(policy, std::string::npos);
     const size_t preserve = pacing.find("ShouldPreserveNativeFGOutputVSync(", policy);
-    const size_t unchanged = pacing.find("return;", preserve);
+    const size_t unchanged = pacing.find("return FinalPresentVSyncRoute::kRuntimeOutput;", preserve);
     const size_t apply = pacing.find("ProcessVSyncOverride(syncInterval, flags);", policy);
     ASSERT_NE(preserve, std::string::npos);
     ASSERT_NE(unchanged, std::string::npos);

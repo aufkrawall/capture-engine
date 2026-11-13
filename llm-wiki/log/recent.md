@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-11-13 - GTA FSR-suspended menu "overlay at lower fps" (session gtafsr, 0.1.7520): presentation, not the graph
+
+- Timeline: DLSS-G on 22:35:35, off 22:36:01; FFX takeover 22:36:08; FSR configure on 12.53 / off 14.99 / on 17.59 /
+  off 20.24 (menu, `suspend-backbuffer` route) until exit 22:36:31.
+- Overlay side clean: one suspend-route draw per game frame on the owner queue; `[OverlayGraph]` 14.7-24.7 s
+  `app=1114/2/0/0.03` (2 holds, 0 jumps, mean residual 0.03 slot); substitute UI texture cleared once on entry, no
+  `UI-composite overlay drawn` (old CE-queue path never ran).
+- Presentation in the menu: prework count and perf CSV agree on ~157 game frames/s (CSV qpc deltas mean 6.38 ms,
+  sd 0.6-0.8 ms) on a 144 Hz panel under `vsync_mode=fifo`; game input `sync=0 flags=0x200`, CE forwards 1/0 at the
+  FFX proxy. sensors.log 22:36:17.9-27.9: runtimePresents +1504, flipped +1503, discarded +0, published +1404
+  (display series refresh-bounded, sd 0). Every present flipped at > refresh = tearing presents; no driver flip
+  metering then (`nvFlipSchedule applied` frozen at 1032 after DLSS-G off).
+- Same unlocked cadence already after DLSS-G off without FFX (22:36:02-07, ~162/s). The only earlier 144 lock
+  (22:34:39-59) was during focus loss: `overlay_wait` 5.2 ms of CE's own fence wait, i.e. GPU back-pressure under
+  composition, not a foreground baseline.
+- Open: the final-flip parameters were logged once per thread (first present: `sync=1 flags=0x0` during the protected
+  FSR startup), so "interval lost above DetourPresent" vs "driver ignores sync=1" is undecided. Added
+  `DXGI final present VSync: route=... in(...) out(...) ... rate=` (hook/present/final_present_vsync_report.h) on
+  change + 10 s heartbeat. Next run: out(sync=1) at rate > refresh names the driver (check NVCP V-Sync for GTA);
+  out(sync=0, 0x200) names the layer that dropped it. No overlay or pacing behaviour changed.
+
 ### 2026-11-12 - FG flow suite 805 s -> 111-143 s: CE's per-pixel WARP work, not WARP or the debug layer
 
 - Measured per scenario (`GetProcessTimes`, flow-host phase timers): WARP floor 0.17 ms/frame, debug layer + DRED

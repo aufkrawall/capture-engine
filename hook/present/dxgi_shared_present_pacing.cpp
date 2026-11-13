@@ -1,8 +1,11 @@
 #include "dxgi_shared_internal.h"
+#include "final_present_vsync_report.h"
+#include "hook/runtime/hook_clock.h"
 #include "present_pacing_policy.h"
 #include "swapchain_flag_apply.h"
 #include "vulkan_dxgi_fifo_policy.h"
 
+#include <chrono>
 #include <cstring>
 
 // Flip-queue pacing and present-queue latency overrides, split out of
@@ -278,7 +281,10 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
 }
 
 namespace DXGIShared {
-void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain) {
+namespace {
+using ce::present_vsync_report::FinalPresentVSyncRoute;
+
+FinalPresentVSyncRoute StateFinalPresentVSync(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain) {
     // XeFG's native swapchain is the same kind of final flip: the runtime spreads its outputs itself.
     if (pSwapChain && (DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) || IsRuntimeOwnedOutputPresent(pSwapChain))) {
         // A present interposer's own output present (NVIDIA Smooth Motion) is the FINAL physical
@@ -312,21 +318,44 @@ void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain
             syncInterval = rewrittenInterval;
             flags = rewrittenFlags;
         }
-        return;
+        return FinalPresentVSyncRoute::kInterposerFlip;
     }
     if (ce::present_pacing_policy::ShouldPreserveNativeFGOutputVSync(
             HookHasRuntimeOwnedNativeFGPresentPath(), DX12_IsFFXProxyPresentHookInstalled(),
             g_StreamlineFGRunning.load(std::memory_order_acquire))) {
         // Do not re-read user intent here: these frames may already have been
-        // scheduled before a config change. AMD owns their output parameters.
-        static thread_local bool logged = false;
-        if (!logged) {
-            logged = true;
-            HookLogImportant("DXGI: preserving FFX output VSync (sync=%u flags=0x%X); "
-                             "user intent applied at FFX proxy input", syncInterval, flags);
-        }
-        return;
+        // scheduled before a config change. AMD owns their output parameters;
+        // the user intent was applied at the FFX proxy input.
+        return FinalPresentVSyncRoute::kRuntimeOutput;
     }
     ProcessVSyncOverride(syncInterval, flags);
+    return FinalPresentVSyncRoute::kApplied;
+}
+
+ce::present_vsync_report::FinalPresentVSyncReport g_finalPresentVSyncReport;
+}  // namespace
+
+void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain) {
+    ce::present_vsync_report::FinalPresentParameters parameters;
+    parameters.inSync = syncInterval;
+    parameters.inFlags = flags;
+    parameters.route = StateFinalPresentVSync(syncInterval, flags, pSwapChain);
+    parameters.outSync = syncInterval;
+    parameters.outFlags = flags;
+    const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                              ce::hook_clock::SteadyNow().time_since_epoch())
+                              .count();
+    const auto line = g_finalPresentVSyncReport.Observe(parameters, nowUs);
+    if (line) {
+        // A rate above the refresh rate under out(sync>=1) means the interval reached DXGI and was not honoured.
+        HookLogImportant(
+            "DXGI final present VSync: route=%s in(sync=%u flags=0x%X) out(sync=%u flags=0x%X) vsync_mode=%s sc=%p "
+            "- %s; since the previous line: presents=%llu rate=%.1f/s changesNotLogged=%llu",
+            ce::present_vsync_report::FinalPresentVSyncRouteName(parameters.route), parameters.inSync,
+            parameters.inFlags, parameters.outSync, parameters.outFlags,
+            GetActiveGraphicsConfigCached().vsyncMode.c_str(), (void*)pSwapChain,
+            line.heartbeat ? "heartbeat" : "changed", static_cast<unsigned long long>(line.presents),
+            line.presentsPerSecond, static_cast<unsigned long long>(line.changesSwallowed));
+    }
 }
 }
