@@ -18,6 +18,15 @@
 // unload is held the title is told what it asked for: slSetFeatureLoaded answers eOk and slIsFeatureLoaded answers
 // "not loaded". Only a repeated unload request ends the hold early (the title kept presenting on its chain and asks
 // again); slFreeResources and slIsFeatureLoaded calls never do: GTA frees resources around its unload.
+//
+// The hold also ends when the native chain's last reference is released, whoever releases it: a destroyed chain can
+// no longer be pinned, so nothing is left to wait for. GTA's real DLSS FG -> FSR FG switch never dispatched the
+// destroy hook (sessions gtajudder through 20261113_175053): the proxy's release took the native chain to zero
+// references through ReShade's dxgi.dll, the hold waited for a dispatch that never came, and DLSS-G stayed loaded in
+// Streamline for the rest of the session. Its plugin then created FidelityFX's replacement swapchain as its own
+// (six buffers, presented through sl.dlss_g), on which the FSR-suspended menu ran ~158 presents/s on a 144 Hz panel
+// against 144.0/s on a direct FSR start. The one exception is a release inside the plugin's own destroy hook: that
+// runs in Streamline's loop over the hook list an unload rebuilds, so the hold waits for the proxy's release there.
 
 namespace ce::streamline_unload_order {
 
@@ -36,7 +45,7 @@ enum class ForwardReason : uint8_t {
     kNoLiveChain,         // not held: nothing to wait for, Streamline's order cannot go wrong
     kProxyReleased,       // the chain's proxy released the native chain after the destroy dispatch
     kTitleKeptChain,      // the title requested the unload again while its chain kept presenting
-    kChainGone,           // the chain is gone and nothing reported its release
+    kChainGone,           // the chain is gone: its last reference was released, or its witness ended unreported
 };
 
 inline const char* ForwardReasonName(ForwardReason reason) {
@@ -99,7 +108,8 @@ enum class LoadAction : uint8_t {
 
 struct ReleaseOutcome {
     bool forwardUnload = false;
-    uint32_t residualRefs = 0;  // what the native chain still held after the proxy's release
+    ForwardReason reason = ForwardReason::kNone;  // kProxyReleased or kChainGone when forwardUnload
+    uint32_t residualRefs = 0;                    // what the native chain still held after the release
 };
 
 class UnloadOrderPolicy {
@@ -147,23 +157,40 @@ public:
         }
     }
 
+    // The plugin's destroy hook is about to run for `chain`: until it returns, Streamline is inside its hook loop.
+    void OnDestroyEntered(ChainId chain) {
+        if (pending_ && chain == chain_) {
+            destroyInProgress_ = true;
+        }
+    }
+
     // The plugin's destroy hook returned for `chain` on `thread`. Releases inside the hook are the plugin's own.
     void OnDestroyReturned(ChainId chain, uint32_t thread) {
         if (pending_ && chain == chain_) {
+            destroyInProgress_ = false;
             destroyReturned_ = true;
             destroyThread_ = thread;
         }
     }
 
     // DXGI's Release of `chain` returned `remaining` to `callerIsStreamline` on `thread`. The release that follows
-    // the destroy dispatch on the same thread is the proxy dropping the native chain.
+    // the destroy dispatch on the same thread is the proxy dropping the native chain; a release that leaves no
+    // reference outside the destroy hook ends the hold too, since a destroyed chain cannot be pinned.
     ReleaseOutcome OnNativeReleaseReturned(ChainId chain, bool callerIsStreamline, uint32_t thread,
                                            uint32_t remaining) {
-        if (!pending_ || chain != chain_ || !destroyReturned_ || thread != destroyThread_ || !callerIsStreamline) {
+        if (!pending_ || chain != chain_) {
+            return {};
+        }
+        ForwardReason reason = ForwardReason::kNone;
+        if (destroyReturned_ && thread == destroyThread_ && callerIsStreamline) {
+            reason = ForwardReason::kProxyReleased;
+        } else if (remaining == 0 && !destroyInProgress_) {
+            reason = ForwardReason::kChainGone;
+        } else {
             return {};
         }
         Clear();
-        return {true, remaining};
+        return {true, reason, remaining};
     }
 
     // The held chain is gone without a release report (its witness ended): true = forward the held unload.
@@ -190,6 +217,7 @@ private:
     void Clear() {
         pending_ = false;
         titleKeptChain_ = false;
+        destroyInProgress_ = false;
         destroyReturned_ = false;
         chain_ = 0;
         destroyThread_ = 0;
@@ -197,6 +225,7 @@ private:
 
     bool pending_ = false;
     bool titleKeptChain_ = false;
+    bool destroyInProgress_ = false;
     bool destroyReturned_ = false;
     ChainId chain_ = 0;
     uint32_t destroyThread_ = 0;

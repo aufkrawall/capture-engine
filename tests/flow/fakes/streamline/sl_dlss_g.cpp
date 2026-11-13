@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "tests/flow/fakes/streamline/nested_output_probe.h"
+#include "tests/flow/fakes/streamline/plugin_chain_refs.h"
 
 #include "sl.h"
 #include "sl_dlss_g.h"
@@ -61,32 +62,9 @@ struct PresentJob {
     UINT flags = 0;
 };
 
-// What the plugin itself holds on a real swapchain: its own reference to the chain and its buffers (real DLSS-G
-// re-takes every buffer after a ResizeBuffers and keeps the chain for its presenter). Only the destroy hook
-// releases them, so a chain whose destroy dispatch never arrives stays pinned (GTA V Enhanced DLSS FG -> FSR FG,
-// 20261110_182518: Streamline drops DLSS-G's hooks at slSetFeatureLoaded(false) and DXGI then refuses the window's
-// replacement swapchain with E_ACCESSDENIED).
-struct PluginChainState {
-    ComPtr<IDXGISwapChain4> realRef;
-    std::vector<ComPtr<ID3D12Resource>> realBuffers;
-};
-
-std::mutex g_chainsMutex;
-std::map<IDXGISwapChain*, std::shared_ptr<PluginChainState>> g_chains;
-
 __attribute__((noinline)) void SwapchainDestroyed(IDXGISwapChain* chain) {
     Log(kModule, "slHookSwapChainDestroyed called for real %p", chain);
-    std::shared_ptr<PluginChainState> state;
-    {
-        std::lock_guard<std::mutex> lock(g_chainsMutex);
-        const auto found = g_chains.find(chain);
-        if (found == g_chains.end())
-            return;
-        state = std::move(found->second);
-        g_chains.erase(found);
-    }
-    state->realBuffers.clear();
-    state->realRef.Reset();
+    ReleasePluginChain(chain);
 }
 
 // The interposer's proxy calls the plugin's destroy hook when the game releases the proxy, as long as the feature is
@@ -111,10 +89,7 @@ public:
           proxyBufferCount_(proxyBufferCount) {
         presentQueue_->GetDevice(IID_PPV_ARGS(&device_));
         plugin_->realRef = real_;
-        {
-            std::lock_guard<std::mutex> lock(g_chainsMutex);
-            g_chains[real_] = plugin_;
-        }
+        TrackPluginChain(real_, plugin_);
         device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_));
         device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_));
         list_->Close();
@@ -760,6 +735,8 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
         return reinterpret_cast<void*>(&DLSSGGetState);
     if (std::strcmp(name, "slHookSwapChainDestroyed") == 0)
         return reinterpret_cast<void*>(&SwapchainDestroyed);
+    if (std::strcmp(name, "flowReleaseChainWithoutDestroyHook") == 0)
+        return reinterpret_cast<void*>(&ReleasePluginChain);
     if (std::strcmp(name, "flowCreateSwapChainForHwnd") == 0)
         return reinterpret_cast<void*>(&CreateProxySwapChainForHwnd);
     if (std::strcmp(name, "flowCreateNestedSwapChainForHwnd") == 0)

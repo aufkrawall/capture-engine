@@ -82,6 +82,46 @@ TEST(FlowDLSSUnloadOrder, GTAOrderLetsStreamlineDispatchTheDestroyBeforeTheRepla
     ExpectNoDebugLayerErrors();
 }
 
+// GTA's real switch (session 20261113_175053): with the unload held, the proxy's release took the native chain to zero
+// references and the destroy hook CE observes never ran. Waiting for it left DLSS-G loaded, so its plugin created
+// FidelityFX's replacement chain on the Streamline factory as its own (six buffers, presented through sl.dlss_g) and
+// GTA's FSR-suspended menu ran unlocked above the refresh rate. The chain's last release now forwards the unload.
+TEST(FlowDLSSUnloadOrder, AChainDestroyedWithoutTheDestroyHookStillReleasesTheHeldUnload) {
+    FlowGame game(CurrentTestName());
+    game.EnableTraceLogging();
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(StreamlineGameOptions())) << game.Error();
+    const HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+    const auto reallyLoaded = reinterpret_cast<bool (*)()>(GetProcAddress(interposer, "flowInterposerDLSSGEnabled"));
+    const auto setDestroyHook =
+        reinterpret_cast<void (*)(bool)>(GetProcAddress(interposer, "flowInterposerSetDestroyHookDispatch"));
+    ASSERT_NE(reallyLoaded, nullptr);
+    ASSERT_NE(setDestroyHook, nullptr);
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.ResizeSwapchain(352, 208)) << game.Error();
+
+    setDestroyHook(false);
+    ASSERT_TRUE(game.UnloadDLSSG()) << game.Error();
+    ASSERT_TRUE(reallyLoaded());  // held
+    // FidelityFX's replacement goes through Streamline's factory on a queue of its own, as GTA's does.
+    ASSERT_TRUE(game.ReplaceStreamlineSwapchainOnNewQueue()) << game.Error() << "; logs: " << game.LogDirectory();
+    setDestroyHook(true);
+    EXPECT_FALSE(reallyLoaded()) << "DLSS-G stayed loaded in Streamline; logs: " << game.LogDirectory();
+    ASSERT_TRUE(game.RenderFrames(20)) << game.Error();
+
+    const std::string text = ReadHookLog(game);
+    const auto deferred = text.find("[SL UNLOAD ORDER] deferred sc=");
+    const auto forwarded = text.find("[SL UNLOAD ORDER] forwarded reason=chain-gone residualRefs=0", deferred);
+    const auto unload = text.find("[SL LIFECYCLE] slSetFeatureLoaded enter feature=DLSS-G arg=0", forwarded);
+    ASSERT_NE(deferred, std::string::npos) << game.LogDirectory();
+    EXPECT_EQ(text.find("[SL LIFETIME] slHookSwapChainDestroyed enter", deferred), std::string::npos);
+    ASSERT_NE(forwarded, std::string::npos) << "the hold outlived its chain; logs: " << game.LogDirectory();
+    ASSERT_NE(unload, std::string::npos) << game.LogDirectory();
+    // Only the first chain was the plugin's: the replacement was created past it.
+    EXPECT_EQ(Count(text, "[SL UNLOAD ORDER] tracked plugin-created D3D12"), 1u) << game.LogDirectory();
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowDLSSUnloadOrder, ALoadBeforeTheReleaseCancelsTheHeldUnload) {
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(StreamlineGameOptions())) << game.Error();

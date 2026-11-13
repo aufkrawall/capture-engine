@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-11-13 - GTA FSR menu judder after DLSS->FSR: CE's held DLSS-G unload never ended (root cause, fixed)
+
+- User A/B (session `20261113_175053`, 0.1.7524): direct FSR start -> menu fine; FSR -> DLSS -> FSR -> menu judder /
+  ghosting again. Good menu: exactly 144 presents/s (mean 6946 us); bad menu ~158-160/s (mean 6263-6324 us). Both
+  `DXGI final present VSync: route=runtime-output in(sync=1 flags=0x0) out(sync=1 flags=0x0)`, DXGI forward ~0.2 ms in
+  both, same overlay route (`suspend-backbuffer`), clean `[OverlayGraph]` counters in both.
+- Difference: the good FSR chain was created through `sl.interposer.dll` with BufferCount=3 (GTA had unloaded DLSS-G
+  first: `slSetFeatureLoaded(DLSS-G,0)` forwarded, no live chain); the bad one by `sl.dlss_g.dll` with BufferCount=6.
+  At the switch CE held the unload (`[SL UNLOAD ORDER] deferred` 17:53:35.108). The proxy's release took the native
+  chain to 0 refs at .534 (callers `dxgi.dll+0x14C03E/0x14C0B6` = ReShade's proxy, stack via `sl.interposer+0x2A68F`)
+  with NO `slHookSwapChainDestroyed`, so `proxy-released` never matched and the lazy `chain-gone` check needs another
+  `slSetFeatureLoaded`, which GTA never makes. DLSS-G stayed loaded all session and its plugin made FidelityFX's chain.
+- Same signature in every DLSS->FSR session since the hold (gtajudder, gtafsroverlaystutteryghosty,
+  gtaoverlaylatefsrgraphstuttery, gtafsr, 20261112_*): `deferred`, never `proxy-released`; once `chain-gone` at a later
+  load call. Supersedes the "tearing / driver ignores sync=1" reading of the gtafsr entry below: the unlocked cadence
+  belongs to sl.dlss_g-created chains (also 163/s with DLSS-G off on the DLSS chain itself), not to FSR.
+- Fix: `UnloadOrderPolicy::OnNativeReleaseReturned` forwards (`reason=chain-gone`) at the release that leaves the held
+  chain with no reference, except while that chain's destroy hook runs (`OnDestroyEntered`, Streamline's hook loop).
+  Forward context is the same as the existing proxy-released path (after the native Release returned, inside the
+  caller's Release). Not hardware-verified: whether real Streamline accepts `slSetFeatureLoaded` re-entrantly there.
+- Tests: `StreamlineUnloadOrderPolicy.AHeldChainDestroyedWithoutTheDispatchForwardsAtItsLastRelease`,
+  `.TheLastReleaseInsideTheDestroyHookWaitsForTheHookToReturn`; flow
+  `FlowDLSSUnloadOrder.AChainDestroyedWithoutTheDestroyHookStillReleasesTheHeldUnload` (fake interposer
+  `flowInterposerSetDestroyHookDispatch(false)`: plugin lets go without the hook CE observes) - fails without the fix
+  ("DLSS-G stayed loaded", no forward), passes with it; 44 DLSS/switch/menu scenarios pass.
+- Next run: expect `forwarded reason=chain-gone`, the FFX create by `sl.interposer.dll` BufferCount=3, menu at 144/s.
+
 ### 2026-11-13 - GTA FSR-suspended menu "overlay at lower fps" (session gtafsr, 0.1.7520): presentation, not the graph
 
 - Timeline: DLSS-G on 22:35:35, off 22:36:01; FFX takeover 22:36:08; FSR configure on 12.53 / off 14.99 / on 17.59 /

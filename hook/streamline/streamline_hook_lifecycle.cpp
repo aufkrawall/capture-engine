@@ -148,6 +148,7 @@ void SwapchainDestroyed(IDXGISwapChain* chain) {
         original(chain);
         return;
     }
+    ce::streamline_unload_order::NoteDestroyEntered(chain);
     const auto witness = swapchain_lifetime_witness::Describe(chain);
     if (witness.state != swapchain_lifetime_witness::ChainState::kAlive) {
         original(chain);

@@ -35,6 +35,9 @@ SetLoadedAction OnSetFeatureLoaded(bool loaded);
 // slIsFeatureLoaded(DLSS-G): true = the unload is held, so the title is answered "not loaded".
 bool AnswerNotLoaded();
 
+// The DLSS-G plugin's destroy hook is about to run for `chain`: a release inside it never ends the hold.
+void NoteDestroyEntered(IDXGISwapChain* chain);
+
 // The DLSS-G plugin's destroy hook returned for `chain`. Never forwards from inside the hook: it runs inside
 // Streamline's loop over the hook list that an unload clears.
 void NoteDestroyReturned(IDXGISwapChain* chain);

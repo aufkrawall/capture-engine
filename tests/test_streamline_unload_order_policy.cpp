@@ -122,10 +122,12 @@ TEST(StreamlineUnloadOrderPolicy, OnlyTheProxysReleaseAfterTheDispatchOnTheSameT
     EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, true, kTitleThread, 1).forwardUnload);
     policy.OnDestroyReturned(kChain, kTitleThread);
     EXPECT_FALSE(policy.OnNativeReleaseReturned(kOtherChain, true, kTitleThread, 0).forwardUnload);
-    EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, true, kOtherThread, 0).forwardUnload);
-    EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, false, kTitleThread, 0).forwardUnload);
+    EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, true, kOtherThread, 1).forwardUnload);
+    EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, false, kTitleThread, 1).forwardUnload);
     EXPECT_TRUE(policy.Pending());
-    EXPECT_TRUE(policy.OnNativeReleaseReturned(kChain, true, kTitleThread, 0).forwardUnload);
+    const auto release = policy.OnNativeReleaseReturned(kChain, true, kTitleThread, 0);
+    EXPECT_TRUE(release.forwardUnload);
+    EXPECT_EQ(release.reason, ForwardReason::kProxyReleased);
 }
 
 TEST(StreamlineUnloadOrderPolicy, AReleaseBeforeTheDestroyDispatchNeverForwards) {
@@ -210,7 +212,41 @@ TEST(StreamlineUnloadOrderPolicy, ANewHoldStartsCleanAfterAForward) {
     EXPECT_EQ(policy.PendingChain(), kOtherChain);
     EXPECT_FALSE(policy.TitleKeptChain());
     // The previous chain's destroy report does not carry over.
-    EXPECT_FALSE(policy.OnNativeReleaseReturned(kOtherChain, true, kTitleThread, 0).forwardUnload);
+    EXPECT_FALSE(policy.OnNativeReleaseReturned(kOtherChain, true, kTitleThread, 1).forwardUnload);
+}
+
+// GTA V Enhanced's real DLSS FG -> FSR FG switch (session 20261113_175053): slFreeResources and the held unload, then
+// the proxy's release took the native chain to zero references through ReShade's dxgi.dll with no destroy dispatch.
+// Waiting on for a dispatch left DLSS-G loaded, and its plugin created FidelityFX's replacement chain.
+TEST(StreamlineUnloadOrderPolicy, AHeldChainDestroyedWithoutTheDispatchForwardsAtItsLastRelease) {
+    UnloadOrderPolicy policy;
+    ASSERT_EQ(policy.OnUnloadRequested(Ready(), kChain).action, RequestAction::kHold);
+    EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, false, kTitleThread, 1).forwardUnload);
+    const auto release = policy.OnNativeReleaseReturned(kChain, false, kTitleThread, 0);
+    EXPECT_TRUE(release.forwardUnload);
+    EXPECT_EQ(release.reason, ForwardReason::kChainGone);
+    EXPECT_EQ(release.residualRefs, 0u);
+    EXPECT_FALSE(policy.Pending());
+    EXPECT_FALSE(policy.AnswersNotLoaded());
+}
+
+// Inside the plugin's destroy hook Streamline is looping over the hook list an unload rebuilds: even the last
+// reference going there does not forward. The proxy's release after the hook does, as in Streamline's own order.
+TEST(StreamlineUnloadOrderPolicy, TheLastReleaseInsideTheDestroyHookWaitsForTheHookToReturn) {
+    UnloadOrderPolicy policy;
+    ASSERT_EQ(policy.OnUnloadRequested(Ready(), kChain).action, RequestAction::kHold);
+    policy.OnDestroyEntered(kOtherChain);
+    EXPECT_TRUE(policy.OnNativeReleaseReturned(kChain, false, kOtherThread, 0).forwardUnload)
+        << "another chain's destroy hook does not hold this chain's release";
+
+    ASSERT_EQ(policy.OnUnloadRequested(Ready(), kChain).action, RequestAction::kHold);
+    policy.OnDestroyEntered(kChain);
+    EXPECT_FALSE(policy.OnNativeReleaseReturned(kChain, false, kTitleThread, 0).forwardUnload);
+    EXPECT_TRUE(policy.Pending());
+    policy.OnDestroyReturned(kChain, kTitleThread);
+    const auto release = policy.OnNativeReleaseReturned(kChain, true, kTitleThread, 0);
+    EXPECT_TRUE(release.forwardUnload);
+    EXPECT_EQ(release.reason, ForwardReason::kProxyReleased);
 }
 
 }  // namespace

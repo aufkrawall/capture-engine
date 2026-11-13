@@ -56,6 +56,7 @@ void ForwardHeldUnload() {
 
 // DXGI's Release of the held chain returned. After the plugin's destroy dispatch, the Streamline module's Release on
 // the dispatching thread is the proxy dropping the native chain: Streamline's order is restored, so the unload goes.
+// A Release that destroyed the chain ends the hold as well (reason chain-gone): nothing is left to pin.
 void OnNativeRelease(const native_release::ReleaseReport& report) {
     ReleaseOutcome outcome;
     int64_t heldUs = 0;
@@ -74,7 +75,7 @@ void OnNativeRelease(const native_release::ReleaseReport& report) {
     }
     HookLogImportant("[SL UNLOAD ORDER] forwarded reason=%s residualRefs=%u sc=%p lifetime=%llu caller=%s+0x%llX "
                      "tid=0x%04lX heldUs=%lld",
-                     ForwardReasonName(ForwardReason::kProxyReleased), outcome.residualRefs, report.chain,
+                     ForwardReasonName(outcome.reason), outcome.residualRefs, report.chain,
                      static_cast<unsigned long long>(generation), report.callerImage,
                      static_cast<unsigned long long>(report.callerOffset), report.threadId,
                      static_cast<long long>(heldUs));
@@ -196,6 +197,13 @@ bool AnswerNotLoaded() {
     }
     std::lock_guard<std::mutex> lock(g_Mutex);
     return g_Policy.AnswersNotLoaded();
+}
+
+void NoteDestroyEntered(IDXGISwapChain* chain) {
+    if (chain && g_HeldChain.load(std::memory_order_acquire) == chain) {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        g_Policy.OnDestroyEntered(reinterpret_cast<ChainId>(chain));
+    }
 }
 
 void NoteDestroyReturned(IDXGISwapChain* chain) {

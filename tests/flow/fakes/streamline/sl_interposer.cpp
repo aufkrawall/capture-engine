@@ -42,6 +42,8 @@ GetPluginFunction_t PluginFunctions(HMODULE plugin) {
 }
 std::atomic<bool> g_initialized{false};
 std::atomic<bool> g_dlssgEnabled{true};
+// False: the plugin lets go of a dying chain without the slHookSwapChainDestroyed call CE observes (below).
+std::atomic<bool> g_destroyHookDispatched{true};
 uint32_t g_initCalls = 0;
 uint32_t g_setDeviceCalls = 0;
 uint64_t g_initFlags = 0;
@@ -138,10 +140,19 @@ extern "C" __declspec(dllexport) void flowInterposerDispatchSwapChainDestroyed(I
         Log(kModule, "slHookSwapChainDestroyed not dispatched for real %p: DLSS-G is unloaded", chain);
         return;
     }
-    const auto destroyed = g_dlssgFunction ? reinterpret_cast<Destroyed_t>(g_dlssgFunction("slHookSwapChainDestroyed"))
-                                           : nullptr;
+    const bool hook = g_destroyHookDispatched.load(std::memory_order_relaxed);
+    const char* const name = hook ? "slHookSwapChainDestroyed" : "flowReleaseChainWithoutDestroyHook";
+    const auto destroyed = g_dlssgFunction ? reinterpret_cast<Destroyed_t>(g_dlssgFunction(name)) : nullptr;
+    if (!hook)
+        Log(kModule, "real %p released by the plugin without slHookSwapChainDestroyed", chain);
     if (destroyed)
         destroyed(chain);
+}
+
+// GTA V Enhanced's real DLSS FG -> FSR FG switch (session 20261113_175053): with the unload held, the proxy's release
+// took the native chain to zero references and CE never saw slHookSwapChainDestroyed for it.
+extern "C" __declspec(dllexport) void flowInterposerSetDestroyHookDispatch(bool dispatched) {
+    g_destroyHookDispatched.store(dispatched, std::memory_order_relaxed);
 }
 
 extern "C" __declspec(dllexport) uint32_t flowInterposerInitCalls() { return g_initCalls; }
