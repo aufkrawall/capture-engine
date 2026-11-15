@@ -154,12 +154,22 @@ bool explicitFinalOutputWithNativeSubmit = false;
     if (cachedSLFGActive && !postSLConfirmedRendering && !dx12_hook_g_HadFSRFGPhase &&
         sqSLWrapperQueue && samePresentQueue && exactNormalOverlayOriginalQueueSwapchainProof &&
         explicitSetOptionsActivation && DXGIShared::IsPostSLFinalOutputPresentCallback()) {
-        // Match the native dispatch the submission stage will use. Discovery of another queue is
-        // insufficient to veto this path, but it also cannot prove a native submission on its own.
+        // Match the native dispatch the submission stage will use (either the origECL == realECL
+        // fast path or, while passive realECL discovery is deferred during cold start,
+        // SelectPostSLBootstrapSubmitPath's kSelectedQueueOriginal path proven by
+        // DX12_HasNativeStartupOutputSubmitPath).
         const auto originalEcl = GetOriginalExecuteCommandLists(sqScQueue);
         const auto nativeEcl = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
-        explicitFinalOutputWithNativeSubmit = originalEcl && originalEcl == nativeEcl &&
-            (!g_PostSLQueues.SelectedQueue() || g_PostSLQueues.SelectedQueue() == sqScQueue);
+        const bool selectedQueueCompatible =
+            !g_PostSLQueues.SelectedQueue() || g_PostSLQueues.SelectedQueue() == sqScQueue;
+        const bool hasNativeStartupSubmit =
+            originalEcl != nullptr && !nativeEcl && selectedQueueCompatible &&
+            DX12_HasNativeStartupOutputSubmitPath(sqScQueue);
+        explicitFinalOutputWithNativeSubmit =
+            ce::dx12_overlay_policy::HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(
+                originalEcl != nullptr, nativeEcl != nullptr,
+                originalEcl != nullptr && originalEcl == nativeEcl, hasNativeStartupSubmit,
+                selectedQueueCompatible);
     }
     sameQueuePureDLSSColdStartSafe = ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe(
         dx12_hook_g_HadFSRFGPhase, samePresentQueue,

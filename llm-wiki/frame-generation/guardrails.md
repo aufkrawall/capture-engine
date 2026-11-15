@@ -665,19 +665,21 @@ either runtime's chain.
   logged, not enforced (no healthy-hardware evidence yet of which queue PostSL legitimately uses on DLSS-G chains);
   `slShutdown`+`slInit` without an interposer unload keeps an "unloaded" state. Hardware retest pending.
 
-### Explicit DLSS-G activation on a live native queue (2026-11-09)
+### Explicit DLSS-G activation on a live native queue (2026-11-09, updated 2026-11-15)
 
-The Witcher 3 resumed from a minimized load with Steam and ReShade active. The game drew normally after
-restore, then explicitly enabled DLSS-G. The first DLSS outputs had 22 uncovered Presents over 219 ms
-in the PostSL countdown and warmup. Streamline had submitted work on other queues, but the confirmed
-PostSL route used the same native Present queue and swapchain as the preceding normal overlay.
-
-`PostSLRenderSession::PrepareRouteActivation` can accept that first final output without a retained
-startup transport swapchain when the normal draw, queue capture and live RTV/sync backend all identify
-the current swapchain, and the selected Present queue resolves to the native ECL entry. Separate runtime
-queues observed by ECL cannot invalidate this direct dispatch proof. GetState-only activation with such
-queues and a different swapchain or Present queue retain their startup gates. The native branch reports
-`nativeFinalOutput=1` on immediate takeover. Hardware retest pending.
+The Witcher 3 resumed from a minimized load with Steam and ReShade active, drew normally, then explicitly enabled
+DLSS-G (`22` uncovered Presents over `219 ms` before PostSL warmup). `PostSLRenderSession::PrepareRouteActivation`
+accepts the first final output when exact normal-draw, queue-capture, and RTV/sync backend proofs match the
+current swapchain and the Present queue resolves to the native ECL entry (`HasExplicitFinalOutputNativeSubmitForSameQueueColdStart`
+in `postsl_queue_selection.h`). During cold-start's 3 s `ProbeRealD3D12ECL` deferral (`realECL == nullptr`), even
+with `dx12_hook_g_SLWrapperQueue != nullptr`, `DX12_HasNativeStartupOutputSubmitPath(sqScQueue)` satisfies that
+proof so it matches `SubmitAndConfirmOutput`'s `kSelectedQueueOriginal` dispatch (fixes RoboCop `20261115_142942`).
+On such proven same-queue Streamline swapchains, `ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn` /
+`ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn` (`fg_metrics_and_transitions.h`) also keep the pre-SL draw alive
+when `runtimeOwnsSwapchain` is true from startup interposition. Version-1 `slDLSSGState` queries (`hook/ngx/dlssg_health_policy.h`)
+must gate v2 `numFramesToGenerateMax` and v3 completion-fence fields on `state.structVersion` so stack padding/neighboring
+`ViewportHandle` GUIDs are never misread as active DLSS-G. Separate runtime queues cannot veto direct proof;
+`GetState`-only or unproven swapchains keep startup gates. Diagnostics: `nativeFinalOutput=1`, `dlss-toggle-on-presl-kept-drawing`.
 
 ### Native return during a held DLSS OFF (2026-11-09)
 

@@ -521,9 +521,14 @@ TEST(DXGISharedTest, EagerlyDrawsPreSLOverlayDuringDLSSToggleOnWhenSameQueue) {
     // FSR history -> a separate SL/FSR queue topology is likely; keep the strict suppression.
     EXPECT_FALSE(
         ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, /*hadFSRFGPhase=*/true, false, true, true, true));
-    // Runtime owns the swapchain -> not the same-queue case.
+    // Runtime owns the swapchain -> rejected unless exact original-queue normal-overlay proof holds
+    // (RoboCop wraps the native swapchain through Streamline on the game's own queue at startup).
     EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, false, /*runtimeOwnsSwapchain=*/true,
                                                                  true, true, true));
+    EXPECT_TRUE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        /*eagerEnabled=*/false, /*explicitSetOptionsActivation=*/true, /*hadFSRFGPhase=*/false,
+        /*runtimeOwnsSwapchain=*/true, /*overlayInit=*/true, /*syncInit=*/true,
+        /*swapchainQueueIsOriginalGameQueue=*/true, /*exactNormalOverlayOriginalQueueSwapchainProof=*/true));
     // Overlay backend or sync resources not initialized -> nothing to keep drawing.
     EXPECT_FALSE(
         ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, false, false, /*overlayInit=*/false, true, true));
@@ -555,6 +560,50 @@ TEST(DXGISharedTest, PreSLOverlayKeptLiveOnlyUntilPostSLConfirms) {
                                                                true, true, true));
     EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, false, false, true, false, false, true, true,
                                                                /*swapchainQueueIsOriginalGameQueue=*/false));
+    // Runtime-owned Streamline swapchain on the game's own queue still keeps the pre-SL draw live
+    // when exact original-queue normal-overlay proof holds, and suppresses it without that proof.
+    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(
+        true, false, false, true, false, /*runtimeOwnsSwapchain=*/true, true, true, true,
+        /*exactNormalOverlayOriginalQueueSwapchainProof=*/false));
+    EXPECT_TRUE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(
+        true, false, false, true, false, /*runtimeOwnsSwapchain=*/true, true, true, true,
+        /*exactNormalOverlayOriginalQueueSwapchainProof=*/true));
+}
+
+TEST(DXGISharedTest, ExplicitFinalOutputNativeSubmitForSameQueueColdStartAllowsStartupNativeQueueBeforeRealEclProbe) {
+    using ce::dx12_overlay_policy::HasExplicitFinalOutputNativeSubmitForSameQueueColdStart;
+    using ce::dx12_overlay_policy::PostSLBootstrapSubmitPath;
+    using ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath;
+    using ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe;
+
+    // Steady state after ProbeRealD3D12ECL ran: requires origECL == nativeECL and compatible queue.
+    EXPECT_TRUE(HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(
+        /*hasOriginalEcl=*/true, /*hasNativeEcl=*/true, /*originalEclMatchesNativeEcl=*/true,
+        /*hasNativeStartupOutputSubmitPath=*/false, /*selectedQueueCompatible=*/true));
+    EXPECT_FALSE(HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(
+        /*hasOriginalEcl=*/true, /*hasNativeEcl=*/true, /*originalEclMatchesNativeEcl=*/false,
+        /*hasNativeStartupOutputSubmitPath=*/true, /*selectedQueueCompatible=*/true));
+
+    // RoboCop cold-start OFF->ON inside the 3 s startup window: RealD3D12ECL is not probed yet,
+    // SL wrapper queue is already present, and SubmitAndConfirmOutput uses kSelectedQueueOriginal.
+    const bool coldStartNativeSubmit = HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(
+        /*hasOriginalEcl=*/true, /*hasNativeEcl=*/false, /*originalEclMatchesNativeEcl=*/false,
+        /*hasNativeStartupOutputSubmitPath=*/true, /*selectedQueueCompatible=*/true);
+    EXPECT_TRUE(coldStartNativeSubmit);
+    EXPECT_EQ(SelectPostSLBootstrapSubmitPath(/*hadFSRFGPhase=*/false, /*hasRealQueueBehindWrapper=*/false,
+                                              /*hasRealD3D12ECL=*/false, /*selectedQueueIsSwapchainQueue=*/true,
+                                              /*hasSelectedQueueOrigECL=*/true),
+              PostSLBootstrapSubmitPath::kSelectedQueueOriginal);
+    EXPECT_TRUE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+        /*hadFSRFGPhase=*/false, /*swapchainQueueIsOriginalGameQueue=*/true,
+        /*noSeparateCommandQueue=*/true, /*exactNormalOverlayOriginalQueueSwapchainProof=*/true,
+        /*hasSeparateSLWrapperQueue=*/true, /*deviceRemoved=*/false,
+        /*explicitFinalOutputWithNativeSubmit=*/coldStartNativeSubmit));
+
+    // Unproven startup submit path, missing origECL, or incompatible selected queue must still fail closed.
+    EXPECT_FALSE(HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(true, false, false, false, true));
+    EXPECT_FALSE(HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(false, false, false, true, true));
+    EXPECT_FALSE(HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(true, false, false, true, false));
 }
 
 // Both suppression sites must consult the same decision: the [outer] SL FG ON cooldown suppressed W3's

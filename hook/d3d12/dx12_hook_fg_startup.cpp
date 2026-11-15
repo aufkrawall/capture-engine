@@ -560,17 +560,26 @@ bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pS
 
 bool DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn() {
     bool swapchainQueueIsOriginalGameQueue = false;
+    bool exactNormalOverlayOriginalQueueSwapchainProof = false;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+        IDXGISwapChain* const cachedSwapChain = dx12_hook_g_State.cachedSwapChain;
         swapchainQueueIsOriginalGameQueue =
             dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_SwapchainQueue == dx12_hook_g_OriginalGameQueue;
+        exactNormalOverlayOriginalQueueSwapchainProof =
+            swapchainQueueIsOriginalGameQueue && cachedSwapChain != nullptr &&
+            dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.load(std::memory_order_acquire) == cachedSwapChain &&
+            dx12_hook_g_LastProvenOriginalQueueSwapchain.load(std::memory_order_acquire) == cachedSwapChain &&
+            dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire) == cachedSwapChain &&
+            dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit;
     }
     return ce::dx12_overlay_policy::ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
         g_PostSLLifecycle.RouteConfirmed(),
         DXGIShared::IsDlssToggleEagerOverlayEnabled(), HookHasExplicitStreamlineSetOptionsActivation(),
         dx12_hook_g_HadFSRFGPhase, dx12_hook_g_FGRuntimeOwnsSwapchain, dx12_hook_g_State.overlayInit,
-        dx12_hook_g_State.syncInit, swapchainQueueIsOriginalGameQueue);
+        dx12_hook_g_State.syncInit, swapchainQueueIsOriginalGameQueue,
+        exactNormalOverlayOriginalQueueSwapchainProof);
 }
 
 

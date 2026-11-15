@@ -42,8 +42,10 @@ namespace ce::dx12_overlay_policy {
 inline bool ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(bool eagerEnabled, bool explicitSetOptionsActivation,
                                                             bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
                                                             bool overlayInit, bool syncInit,
-                                                            bool swapchainQueueIsOriginalGameQueue) {
-    return (eagerEnabled || explicitSetOptionsActivation) && !hadFSRFGPhase && !runtimeOwnsSwapchain && overlayInit &&
+                                                            bool swapchainQueueIsOriginalGameQueue,
+                                                            bool exactNormalOverlayOriginalQueueSwapchainProof = false) {
+    return (eagerEnabled || explicitSetOptionsActivation) && !hadFSRFGPhase &&
+           (!runtimeOwnsSwapchain || exactNormalOverlayOriginalQueueSwapchainProof) && overlayInit &&
            syncInit && swapchainQueueIsOriginalGameQueue;
 }
 
@@ -53,11 +55,13 @@ inline bool ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(bool streamlineFGRunni
                                                           bool eagerEnabled, bool explicitSetOptionsActivation,
                                                           bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
                                                           bool overlayInit, bool syncInit,
-                                                          bool swapchainQueueIsOriginalGameQueue) {
+                                                          bool swapchainQueueIsOriginalGameQueue,
+                                                          bool exactNormalOverlayOriginalQueueSwapchainProof = false) {
     return streamlineFGRunning && !postSLConfirmedRendering &&
            ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(eagerEnabled, explicitSetOptionsActivation, hadFSRFGPhase,
                                                            runtimeOwnsSwapchain, overlayInit, syncInit,
-                                                           swapchainQueueIsOriginalGameQueue);
+                                                           swapchainQueueIsOriginalGameQueue,
+                                                           exactNormalOverlayOriginalQueueSwapchainProof);
 }
 
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown

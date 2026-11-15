@@ -210,6 +210,25 @@ inline PostSLBootstrapSubmitPath SelectPostSLBootstrapSubmitPath(bool hadFSRFGPh
     return PostSLBootstrapSubmitPath::kReject;
 }
 
+// During the cold-start startup window, passive discovery of dx12_hook_g_RealD3D12ECL
+// (hasNativeEcl) may still be deferred when the game first enables DLSS-G via explicit
+// slDLSSGSetOptions. SubmitAndConfirmOutput already falls back to
+// PostSLBootstrapSubmitPath::kSelectedQueueOriginal when !hasNativeEcl &&
+// selectedQueueCompatible, so PrepareRouteActivation may accept the same-queue cold start
+// whenever sqScQueue's original ExecuteCommandLists is proven by
+// DX12_HasNativeStartupOutputSubmitPath.
+inline bool HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(
+    bool hasOriginalEcl, bool hasNativeEcl, bool originalEclMatchesNativeEcl,
+    bool hasNativeStartupOutputSubmitPath, bool selectedQueueCompatible) {
+    if (!hasOriginalEcl || !selectedQueueCompatible) {
+        return false;
+    }
+    if (hasNativeEcl) {
+        return originalEclMatchesNativeEcl;
+    }
+    return hasNativeStartupOutputSubmitPath;
+}
+
 inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
                                                                   bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
                                                                   bool selectedQueueIsSwapchainQueue,
