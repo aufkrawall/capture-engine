@@ -625,11 +625,15 @@ sl::Result DLSSGGetState(const sl::ViewportHandle&, sl::DLSSGState& state, const
     state.status = sl::DLSSGStatus::eOk;
     state.minWidthOrHeight = 128;
     state.numFramesActuallyPresented = g_presentedSinceGetState.exchange(0, std::memory_order_relaxed);
-    state.numFramesToGenerateMax = 3;
-    state.bIsVsyncSupportAvailable = sl::eTrue;
     state.estimatedVRAMUsageInBytes = 0;
-    state.inputsProcessingCompletionFence = nullptr;
-    state.lastPresentInputsProcessingCompletionFenceValue = g_inputsFenceValue.load(std::memory_order_relaxed);
+    if (state.structVersion >= sl::kStructVersion2) {
+        state.numFramesToGenerateMax = 3;
+        state.bIsVsyncSupportAvailable = sl::eTrue;
+    }
+    if (state.structVersion >= sl::kStructVersion3) {
+        state.inputsProcessingCompletionFence = nullptr;
+        state.lastPresentInputsProcessingCompletionFenceValue = g_inputsFenceValue.load(std::memory_order_relaxed);
+    }
     return sl::Result::eOk;
 }
 

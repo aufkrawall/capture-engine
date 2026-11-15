@@ -27,9 +27,14 @@ namespace ce::streamline_runtime_policy {
 // and reported "dynamic MFG NOT supported" while the runtime was demonstrably
 // varying the cadence between 2x and 4x to hold ~139.6 fps. Unknown has to be
 // spelled unknown.
+inline constexpr size_t kDLSSGStateMaxFramesMinVersion = 2;
 inline constexpr size_t kDLSSGStateVsyncSupportMinVersion = 2;
 inline constexpr size_t kDLSSGStateFenceMinVersion = 3;
 inline constexpr size_t kDLSSGStateDynamicMFGMinVersion = 4;
+
+inline constexpr bool DLSSGStateCarriesMaxFramesToGenerate(size_t structVersion) {
+    return structVersion >= kDLSSGStateMaxFramesMinVersion;
+}
 
 inline constexpr bool DLSSGStateCarriesDynamicMFGSupport(size_t structVersion) {
     return structVersion >= kDLSSGStateDynamicMFGMinVersion;
@@ -37,6 +42,26 @@ inline constexpr bool DLSSGStateCarriesDynamicMFGSupport(size_t structVersion) {
 
 inline constexpr bool DLSSGStateCarriesVsyncSupport(size_t structVersion) {
     return structVersion >= kDLSSGStateVsyncSupportMinVersion;
+}
+
+inline constexpr bool DLSSGStateCarriesCompletionFence(size_t structVersion) {
+    return structVersion >= kDLSSGStateFenceMinVersion;
+}
+
+inline constexpr uint32_t ResolveDLSSGStateMaxFramesToGenerate(size_t structVersion, uint32_t numFramesToGenerateMax) {
+    return DLSSGStateCarriesMaxFramesToGenerate(structVersion) ? numFramesToGenerateMax : 0u;
+}
+
+inline void* ResolveDLSSGStateCompletionFence(size_t structVersion, void* fence) {
+    return DLSSGStateCarriesCompletionFence(structVersion) ? fence : nullptr;
+}
+
+inline constexpr uint64_t ResolveDLSSGStateCompletionFenceValue(size_t structVersion, uint64_t fenceValue) {
+    return DLSSGStateCarriesCompletionFence(structVersion) ? fenceValue : 0ull;
+}
+
+inline bool HasDLSSGStateRuntimeFenceEvidence(size_t structVersion, const void* fence, uint64_t fenceValue) {
+    return DLSSGStateCarriesCompletionFence(structVersion) && (fence != nullptr || fenceValue != 0ull);
 }
 
 // Tri-state for a `char` boolean the runtime may not have written: -1 unknown

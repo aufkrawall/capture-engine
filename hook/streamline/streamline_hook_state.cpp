@@ -543,11 +543,13 @@ bool ShouldSuppressNewGetStateActivation() {
 
 
 bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state) {
+    if (!ce::streamline_runtime_policy::DLSSGStateCarriesCompletionFence(state.structVersion)) {
+        return false;
+    }
 
-
-    return state.inputsProcessingCompletionFence != nullptr ||
-           state.lastPresentInputsProcessingCompletionFenceValue != 0;
-
+    return ce::streamline_runtime_policy::HasDLSSGStateRuntimeFenceEvidence(
+        state.structVersion, state.inputsProcessingCompletionFence,
+        state.lastPresentInputsProcessingCompletionFenceValue);
 }
 
 
@@ -582,18 +584,23 @@ void MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool callSuc
     const bool optionsRequestActive =
         options != nullptr && ce::streamline_runtime_policy::IsDLSSGModeEnabled(options->mode);
     const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
+    const uint64_t completionFenceValue =
+        ce::streamline_runtime_policy::DLSSGStateCarriesCompletionFence(state.structVersion)
+            ? ce::streamline_runtime_policy::ResolveDLSSGStateCompletionFenceValue(
+                  state.structVersion, state.lastPresentInputsProcessingCompletionFenceValue)
+            : 0ull;
     const bool hasSample = s_hasPreviousSample.load(std::memory_order_relaxed);
     const uint64_t previousFenceValue = s_previousFenceValue.load(std::memory_order_relaxed);
     const uint32_t previousFramesPresented = s_previousFramesPresented.load(std::memory_order_relaxed);
-    s_previousFenceValue.store(state.lastPresentInputsProcessingCompletionFenceValue, std::memory_order_relaxed);
+    s_previousFenceValue.store(completionFenceValue, std::memory_order_relaxed);
     s_previousFramesPresented.store(state.numFramesActuallyPresented, std::memory_order_relaxed);
     s_hasPreviousSample.store(true, std::memory_order_relaxed);
 
     const bool evidenceAdvancing =
         callSucceeded && optionsRequestActive && hasRuntimeFenceEvidence &&
         ce::streamline_runtime_policy::IsDLSSGGenerationEvidenceAdvancing(
-            hasSample, previousFenceValue, state.lastPresentInputsProcessingCompletionFenceValue,
-            previousFramesPresented, state.numFramesActuallyPresented);
+            hasSample, previousFenceValue, completionFenceValue, previousFramesPresented,
+            state.numFramesActuallyPresented);
     const uint32_t streak = ce::streamline_runtime_policy::UpdateGetStateOnlyBlockGenerationEvidenceStreak(
         evidenceAdvancing, s_advancingSampleStreak.load(std::memory_order_relaxed));
     s_advancingSampleStreak.store(streak, std::memory_order_relaxed);
@@ -608,8 +615,7 @@ void MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool callSuc
                 "Streamline Hook: Retired persistent GetState-only DLSS FG suppression on sustained generation "
                 "evidence (viewport=%u advancingStreak=%u fenceValue=%llu presented=%u) — the runtime generates "
                 "frames without an explicit slDLSSGSetOptions enable",
-                viewportKey, streak, (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
-                state.numFramesActuallyPresented);
+                viewportKey, streak, (unsigned long long)completionFenceValue, state.numFramesActuallyPresented);
         }
         s_suppressedPresentCount.store(0, std::memory_order_relaxed);
         return;
@@ -629,8 +635,7 @@ void MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool callSuc
                 "Streamline Hook: GetState-only activation suppressed for %llu presents (viewport=%u mode=%u "
                 "fenceValue=%llu presented=%u advancingStreak=%u)",
                 (unsigned long long)suppressedPresents, viewportKey, options->mode,
-                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
-                state.numFramesActuallyPresented, streak);
+                (unsigned long long)completionFenceValue, state.numFramesActuallyPresented, streak);
         }
     }
 

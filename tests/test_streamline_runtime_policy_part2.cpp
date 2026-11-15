@@ -753,4 +753,41 @@ TEST(StreamlineRuntimePolicyTest, DLSSGStateOptionalBoolReportsUnknownRatherThan
     EXPECT_EQ(ResolveDLSSGStateOptionalBool(5, kDLSSGStateDynamicMFGMinVersion, 7, kInvalid), 1);
 }
 
+TEST(StreamlineRuntimePolicyTest, DLSSGStateMaxFramesAndCompletionFenceAreGatedOnStructVersion) {
+    using ce::streamline_runtime_policy::DLSSGStateCarriesCompletionFence;
+    using ce::streamline_runtime_policy::DLSSGStateCarriesMaxFramesToGenerate;
+    using ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState;
+    using ce::streamline_runtime_policy::HasDLSSGStateRuntimeFenceEvidence;
+    using ce::streamline_runtime_policy::ResolveDLSSGStateCompletionFence;
+    using ce::streamline_runtime_policy::ResolveDLSSGStateCompletionFenceValue;
+    using ce::streamline_runtime_policy::ResolveDLSSGStateMaxFramesToGenerate;
+
+    EXPECT_FALSE(DLSSGStateCarriesMaxFramesToGenerate(1));
+    EXPECT_TRUE(DLSSGStateCarriesMaxFramesToGenerate(2));
+    EXPECT_EQ(ResolveDLSSGStateMaxFramesToGenerate(1, 190u), 0u);
+    EXPECT_EQ(ResolveDLSSGStateMaxFramesToGenerate(2, 3u), 3u);
+
+    EXPECT_FALSE(DLSSGStateCarriesCompletionFence(1));
+    EXPECT_FALSE(DLSSGStateCarriesCompletionFence(2));
+    EXPECT_TRUE(DLSSGStateCarriesCompletionFence(3));
+
+    const auto* stackFence = reinterpret_cast<const void*>(0x4FC89B3C171B6435ULL);
+    constexpr uint64_t stackFenceVal = 11865411779754169497ULL;
+    EXPECT_EQ(ResolveDLSSGStateCompletionFence(1, const_cast<void*>(stackFence)), nullptr);
+    EXPECT_EQ(ResolveDLSSGStateCompletionFenceValue(1, stackFenceVal), 0ull);
+    EXPECT_FALSE(HasDLSSGStateRuntimeFenceEvidence(1, stackFence, stackFenceVal));
+    EXPECT_FALSE(HasDLSSGStateRuntimeFenceEvidence(2, reinterpret_cast<const void*>(0x1), 99ULL));
+    EXPECT_FALSE(HasDLSSGStateRuntimeFenceEvidence(3, nullptr, 0ULL));
+    EXPECT_TRUE(HasDLSSGStateRuntimeFenceEvidence(3, reinterpret_cast<const void*>(0x1), 0ULL));
+    EXPECT_TRUE(HasDLSSGStateRuntimeFenceEvidence(3, nullptr, 4545ULL));
+
+    // A stateVer=1 GetState(options={mode=on}) support poll with stack garbage must not trigger OFF->ON.
+    const bool fenceEvidence = HasDLSSGStateRuntimeFenceEvidence(1, stackFence, stackFenceVal);
+    const auto eval = EvaluateViewportRuntimeUpdateFromGetState(
+        /*callSucceeded=*/true, /*hasOptions=*/true, /*viewportWasActive=*/false, fenceEvidence,
+        /*suppressNewActivation=*/false, /*mode=*/1u, /*requestedGeneratedFrames=*/1u,
+        ResolveDLSSGStateMaxFramesToGenerate(1, 190u));
+    EXPECT_FALSE(eval.update.shouldUpdate);
+}
+
 }  // namespace
