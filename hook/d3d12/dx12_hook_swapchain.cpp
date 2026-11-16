@@ -186,3 +186,33 @@ void DX12_InstallPresentHooksForSwapchain(IDXGISwapChain* pSwapChain) {
 
     (void)pSwapChain;
 }
+
+void MarkThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain, const char* creatorModulePath) {
+    DXGIShared::DX12_RegisterThirdPartyOverlaySwapchain(pSwapChain, creatorModulePath);
+}
+
+void MarkThirdPartyOverlaySwapchain(IDXGISwapChain1* pSwapChain, const char* creatorModulePath) {
+    MarkThirdPartyOverlaySwapchain(static_cast<IDXGISwapChain*>(pSwapChain), creatorModulePath);
+}
+
+void ForgetSwapchainFromTracking(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(pSwapChain);
+    DXGIShared::DX12_UnregisterPresentInterposerPrivateSwapchain(pSwapChain);
+    // A retired chain leaves a partial measurement window that no longer describes anything.
+    DXGIShared::ResetPresentInterposerCadence();
+
+    std::lock_guard<std::mutex> hwndLock(dx12_hook_s_hwndSwapchainMutex);
+    for (auto it = dx12_hook_s_hwndSwapchainMap.begin(); it != dx12_hook_s_hwndSwapchainMap.end();) {
+        auto& vec = it->second;
+        vec.erase(std::remove(vec.begin(), vec.end(), pSwapChain), vec.end());
+        if (vec.empty()) {
+            it = dx12_hook_s_hwndSwapchainMap.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}

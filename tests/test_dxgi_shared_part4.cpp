@@ -101,3 +101,131 @@ TEST(DXGISharedTest, SuspendedPostSLScreenshotOwnershipRequiresThisPresentEviden
     EXPECT_FALSE(ShouldPostSLOwnScreenshotOrdering(true, false, true, true, false, true));
     EXPECT_FALSE(ShouldPostSLOwnScreenshotOrdering(true, true, false, true, false, true));
 }
+
+TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleSkipsTransitionCooldown) {
+    using ce::fg_runtime::RuntimeMode;
+
+    // Suspend and resume edges of a live no-callback native-FSR session flip
+    // only the FG flag; the draw cooldown would blank the overlay for ~60
+    // frames at every menu-style toggle.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kOff, true, false, false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true, false, false, true));
+
+    // The same transitions without the live no-callback suspension shape keep
+    // the protective cooldown.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kOff, true, false, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true, false, false, false));
+}
+
+TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleRequiresExactShape) {
+    using ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle;
+    using ce::fg_runtime::RuntimeMode;
+
+    EXPECT_TRUE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                          true, true, true));
+    EXPECT_TRUE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true, true,
+                                                          true, true, true));
+
+    // Streamline running, missing latch, missing ownership, missing queue,
+    // uninitialized backend, or a backend on a different queue (early enable
+    // edge before the FFX swapchain goes live) must all keep the cooldown.
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, true, true, true,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, false, true,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, false,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                           false, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                           true, false, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                           true, true, false));
+
+    // Only FSR_FG <-> Off toggles qualify; DLSS transitions keep their paths.
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kDLSSFG, false, true, true,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kDLSSFG, RuntimeMode::kOff, false, true, true,
+                                                           true, true, true));
+}
+
+// ---------------------------------------------------------------------------
+// FSR-FG passthrough overlay visibility. Runtime-owned suspension and protected
+// disabled startup arming both present the proxy backbuffer without consuming the
+// registered UI resource. The proxy-present prework must draw onto that buffer on
+// the target-compatible owner queue. Usually that is the exact FFX descriptor
+// queue; a proven Streamline wrapper resolves to CE's validated underlying real
+// game queue. Queue ordering then provides completion without a foreign queue or
+// per-frame CPU wait.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueForPassthroughRoutes) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t prework = text.find("DX12_RunFFXProxyPrePresentWork(");
+    ASSERT_NE(prework, std::string::npos);
+    const size_t startupGate = text.find("ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(", prework);
+    const size_t suspensionGate = text.find("DX12_IsNativeFSRFGSuspendedDisablePending()", prework);
+    // No registered UI resource: the overlay rides the proxy backbuffer AMD interpolates until the final-batch route
+    // is proven (FG flow test FlowFSR; the route choice itself: FFXOutputFramesPolicyTest).
+    const size_t noUiResourceGate = text.find("DX12_IsFFXUiResourceCachedForBundle()", prework);
+    const size_t routeChoice = text.find("ChooseFFXProxyPreworkRoute(", prework);
+    const size_t backbufferCall = text.find("DX12_CompositeOverlayOntoSuspendBackbuffer(", prework);
+    ASSERT_NE(startupGate, std::string::npos);
+    ASSERT_NE(suspensionGate, std::string::npos);
+    ASSERT_NE(noUiResourceGate, std::string::npos);
+    ASSERT_NE(routeChoice, std::string::npos);
+    ASSERT_NE(backbufferCall, std::string::npos);
+    EXPECT_LT(startupGate, backbufferCall);
+    EXPECT_LT(suspensionGate, backbufferCall);
+    EXPECT_LT(noUiResourceGate, backbufferCall);
+    EXPECT_LT(routeChoice, backbufferCall);
+
+    // The backbuffer composite must resolve against the actual target resource and use the selected owner
+    // queue. It must not use the foreign dedicated-queue path or wait on the CPU.
+    const size_t fn = text.find("bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, "
+                                "const char* routeName) {");
+    ASSERT_NE(fn, std::string::npos);
+    size_t fnEnd = text.find("\n}\n", fn);
+    if (fnEnd == std::string::npos) {
+        // Source checkouts use either LF or CRLF depending on Git's Windows
+        // line-ending policy; keep this structural test invariant to both.
+        fnEnd = text.find("\n}\r\n", fn);
+    }
+    ASSERT_NE(fnEnd, std::string::npos);
+    const std::string body = text.substr(fn, fnEnd - fn);
+    EXPECT_NE(body.find("AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer)"), std::string::npos);
+    EXPECT_NE(body.find("request.presentationQueue = ownerQueue.queue"), std::string::npos);
+    EXPECT_NE(body.find("SubmitNativeFSROwnerQueueOverlayCommandList"), std::string::npos);
+    EXPECT_NE(body.find("no target-compatible"), std::string::npos);
+    EXPECT_EQ(body.find("g_FFXUiCompositeQueue"), std::string::npos);
+    EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, ProtectedFFXStartupNestedPresentNeverSubmitsOnStagedInternalQueue) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+
+    const size_t processFrameQueueRouting = text.find("FSR FG: FSR creates a NEW swapchain");
+    ASSERT_NE(processFrameQueueRouting, std::string::npos);
+    const size_t normalRoute = text.find("gameQueue = nullptr;", processFrameQueueRouting);
+    ASSERT_NE(normalRoute, std::string::npos);
+    const size_t protectedBranch = text.find("if (protectedOfficialFFXStartupOverlayOnly) {", normalRoute);
+    const size_t protectedReturn = text.find("return ProcessFrameFlow::kReturn;", protectedBranch);
+    const size_t normalRouting = text.find("DecideSwapchainOverlayRouting(", protectedBranch);
+    ASSERT_NE(protectedBranch, std::string::npos);
+    ASSERT_NE(protectedReturn, std::string::npos);
+    ASSERT_NE(normalRouting, std::string::npos);
+    EXPECT_LT(protectedReturn, normalRouting)
+        << "the nested real-swapchain path must return tracking-only before normal overlay queue selection";
+    EXPECT_EQ(text.find("gameQueue = protectedOfficialFFXStartupQueueRef"), std::string::npos)
+        << "the staged nested DXGI create queue is AMD's internal presenter and is evidence only";
+}

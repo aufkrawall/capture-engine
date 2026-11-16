@@ -646,6 +646,8 @@ class DX11PresentPerfRow;
 // DetourPresent1's last step: through Streamline's routing while it is active, timed by `perfRow`.
 HRESULT ForwardFinalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                              const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow, bool d3d12);
+HRESULT HandleReentrantPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                const DXGI_PRESENT_PARAMETERS* pParams, APIType api, bool observerOnlyMode);
 void DisableSLPresentRouting();
 }
 

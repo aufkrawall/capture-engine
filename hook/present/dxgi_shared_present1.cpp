@@ -576,41 +576,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     // Re-entrant Present1 call — same logic as DetourPresent.
     if (IsRecursivePresent()) {
-        // Post-SL overlay rendering (same as DetourPresent).
-        auto postSLCallback =
-            observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-        if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
-            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
-        } else if (postSLCallback) {
-            static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount1{0};
-            const int logCount = s_postSLOffKeepAliveRecursiveDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 300) == 0) {
-                HookLogImportant(
-                    "DetourPresent1: Skipping re-entrant PostSL callback because the exact-proxy explicit-OFF "
-                    "keep-alive already drew in this top-level Present (sc=%p log=%d)",
-                    pSwapChain, logCount + 1);
-            }
-        }
-        if (api == APIType::D3D12) {
-            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present1");
-        }
-        ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
-        static std::atomic<int> s_reentrantLogCount1{0};
-        int reentrantNum1 = s_reentrantLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (reentrantNum1 <= 10 || reentrantNum1 == 50 || reentrantNum1 == 100 || (reentrantNum1 % 500) == 0) {
-            HookLog("DetourPresent1: Re-entrant #%d (postSL=%p, trampoline=%p, bypass=%p)", reentrantNum1,
-                    (void*)postSLCallback, (void*)dxgi_shared_oPresent1Trampoline, (void*)dxgi_shared_oPresent1Bypass);
-        }
-        if (dxgi_shared_oPresent1Trampoline) {
-            return ForwardPresent1Through(dxgi_shared_oPresent1Trampoline, pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
-        if (dxgi_shared_oPresent1Bypass) {
-            return ForwardPresent1Through(dxgi_shared_oPresent1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
-        if (reentrantNum1 <= 10) {
-            HookLog("DetourPresent1: Re-entrant #%d → S_OK (no bypass trampoline)", reentrantNum1);
-        }
-        return S_OK;
+        return HandleReentrantPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters, api, observerOnlyMode);
     }
     EnterStage(CostStage::kCorePolicy);
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
