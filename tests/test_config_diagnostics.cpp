@@ -69,8 +69,13 @@ std::vector<std::string> WarningLines(const std::string& log) {
     std::string line;
     while (std::getline(stream, line)) {
         const size_t stamp = line.find("] ");
-        if (stamp != std::string::npos && line.find("[WARN]", stamp) == stamp + 2)
-            lines.push_back(line.substr(stamp + 2));
+        if (stamp != std::string::npos && line.find("[WARN]", stamp) == stamp + 2) {
+            std::string entry = line.substr(stamp + 2);
+            // Under concurrent --verify disk contention, the logger may emit a slow-mutex notice unrelated to config.
+            if (entry.find("Single Log() call held the log mutex") != std::string::npos)
+                continue;
+            lines.push_back(std::move(entry));
+        }
     }
     return lines;
 }
