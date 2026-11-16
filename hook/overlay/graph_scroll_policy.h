@@ -173,7 +173,8 @@ public:
                                   kMaxDryStreak * sample.displayIntervalUs;
             outputUs = (std::min)(outputUs, latest);
         }
-        const double lead = (std::max)(0.0, (outputUs - sample.lastSampleUs) / sample.sampleIntervalUs);
+        const double lead =
+            (std::max)(0.0, (outputUs - static_cast<double>(sample.lastSampleUs)) / sample.sampleIntervalUs);
         // The trail covers the largest lead seen, then relaxes: a display stall grows it to the cap, and keeping
         // that would leave the graph needlessly far behind the stream once scanouts are published again.
         const double boundedLead = (std::min)(lead, static_cast<double>(kMaxDryStreak));

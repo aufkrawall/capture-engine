@@ -19,12 +19,12 @@ namespace ce::overlay_compat {
 
 namespace detail {
 
-inline char ToLowerAscii(char ch) {
-    return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+inline uint32_t ToLowerAscii(char ch) {
+    return static_cast<uint32_t>(std::tolower(static_cast<unsigned char>(ch)));
 }
 
-inline wchar_t ToLowerAscii(wchar_t ch) {
-    return static_cast<wchar_t>(std::towlower(ch));
+inline uint32_t ToLowerAscii(wchar_t ch) {
+    return static_cast<uint32_t>(std::towlower(ch));
 }
 
 template <typename CharT>

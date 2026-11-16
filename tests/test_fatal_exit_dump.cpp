@@ -31,7 +31,8 @@ std::optional<int> RunFatalExitChildProbe(int argc, char** argv) {
         if (std::strcmp(argv[i], "--fatal-exit-child-probe") == 0) {
             isProbe = true;
         } else if (std::strncmp(argv[i], "--exit-code=", 12) == 0) {
-            exitCode = std::atoi(argv[i] + 12);
+            char* end = nullptr;
+            exitCode = static_cast<int>(std::strtol(argv[i] + 12, &end, 10));
         } else if (std::strcmp(argv[i], "--nested") == 0) {
             nested = true;
         } else if (std::strcmp(argv[i], "--candidate-fault") == 0) {

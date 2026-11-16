@@ -148,7 +148,10 @@ TEST(DisplayTimingTokens, AHealthySwitchShowsItsNewSurfaceWithinItsFirstPresents
     EXPECT_FALSE(tally.TakeOnset().has_value());
     Compose(tally, 1, 25'000);
     const auto onset = tally.TakeOnset();
-    ASSERT_TRUE(onset.has_value());
+    if (!onset.has_value()) {
+        ADD_FAILURE() << "Expected onset";
+        return;
+    }
     EXPECT_EQ(onset->processId, kPid);
     EXPECT_EQ(onset->surfaceLuid, kLuid);
     EXPECT_EQ(onset->bindId, kBind);
@@ -177,7 +180,10 @@ TEST(DisplayTimingTokens, ABlackSwitchReportsTheUnshownPresentsAndTheDelay) {
     Create(tally, 151, start + 1'359'000);
     Compose(tally, 151, start + 1'384'000);
     const auto onset = tally.TakeOnset();
-    ASSERT_TRUE(onset.has_value());
+    if (!onset.has_value()) {
+        ADD_FAILURE() << "Expected onset";
+        return;
+    }
     EXPECT_EQ(onset->shownUs - onset->firstPresentUs, 1'384'000 - 9'000);
     EXPECT_EQ(onset->presents, 151u);
     EXPECT_EQ(onset->discardedBefore, 150u);
@@ -188,7 +194,10 @@ TEST(DisplayTimingTokens, AnOnsetCanEndByIndependentFlip) {
     Create(tally, 1, 100);
     State(tally, 1, kStateDiscarded, true, 4'100);
     const auto onset = tally.TakeOnset();
-    ASSERT_TRUE(onset.has_value());
+    if (!onset.has_value()) {
+        ADD_FAILURE() << "Expected onset";
+        return;
+    }
     EXPECT_TRUE(onset->shownByIndependentFlip);
     EXPECT_EQ(onset->shownUs, 4'100);
 }
@@ -202,7 +211,10 @@ TEST(DisplayTimingTokens, ANewBindingOfTheSameSurfaceIsANewOnsetAndOldOnesAreRem
     Create(tally, 2, 2'000, kLuid, kBind + 1);
     Compose(tally, 2, 3'000, kLuid, kBind + 1);
     const auto rebound = tally.TakeOnset();
-    ASSERT_TRUE(rebound.has_value());
+    if (!rebound.has_value()) {
+        ADD_FAILURE() << "Expected rebound onset";
+        return;
+    }
     EXPECT_EQ(rebound->bindId, kBind + 1);
     // Back on the first binding: remembered, no onset.
     Create(tally, 3, 4'000);
@@ -219,7 +231,10 @@ TEST(DisplayTimingTokens, ASurfaceLeftBeforeItWasShownIsReportedUnshown) {
     // The process moves to another surface: the first onset ends without a shown frame.
     Create(tally, 1, 20'000, kLuid + 1);
     const auto left = tally.TakeOnset();
-    ASSERT_TRUE(left.has_value());
+    if (!left.has_value()) {
+        ADD_FAILURE() << "Expected left onset";
+        return;
+    }
     EXPECT_EQ(left->surfaceLuid, kLuid);
     EXPECT_EQ(left->shownUs, 0);
     EXPECT_EQ(left->presents, 2u);

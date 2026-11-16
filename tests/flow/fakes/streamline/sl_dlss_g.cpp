@@ -268,8 +268,7 @@ private:
         UINT rows = 0;
         UINT64 rowBytes = 0, size = 0;
         device_->GetCopyableFootprints(&desc, 0, 1, 0, &layout, &rows, &rowBytes, &size);
-        D3D12_HEAP_PROPERTIES heap{};
-        heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
         D3D12_RESOURCE_DESC buffer{};
         buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         buffer.Width = size;

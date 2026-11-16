@@ -70,18 +70,45 @@ float4 PS(float4 position : SV_Position) : SV_Target {
             SUCCEEDED(compile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &ps, &errors));
         if (!compiled)
             return false;
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
-        desc.pRootSignature = signature_.Get();
-        desc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
-        desc.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-        desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        desc.NumRenderTargets = 1;
-        desc.RTVFormats[0] = targetFormat;
-        desc.SampleDesc.Count = 1;
-        desc.SampleMask = UINT_MAX;
-        desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        desc.RasterizerState.DepthClipEnable = TRUE;
+        constexpr D3D12_RENDER_TARGET_BLEND_DESC kDefaultBlend = {
+            FALSE,           FALSE,
+            D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+            D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+            D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL};
+        constexpr D3D12_DEPTH_STENCILOP_DESC kDefaultStencilOp = {
+            D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_ALWAYS};
+        constexpr D3D12_RASTERIZER_DESC kDefaultRasterizer = {
+            D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE, FALSE, D3D12_DEFAULT_DEPTH_BIAS, 0.0f, 0.0f, TRUE, FALSE,
+            FALSE,                 0,                    D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF};
+        constexpr D3D12_DEPTH_STENCIL_DESC kDefaultDepthStencil = {
+            FALSE,           D3D12_DEPTH_WRITE_MASK_ALL, D3D12_COMPARISON_FUNC_LESS, FALSE,
+            D3D12_DEFAULT_STENCIL_READ_MASK, D3D12_DEFAULT_STENCIL_WRITE_MASK,
+            kDefaultStencilOp, kDefaultStencilOp};
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+            signature_.Get(),
+            {vs->GetBufferPointer(), vs->GetBufferSize()},
+            {ps->GetBufferPointer(), ps->GetBufferSize()},
+            {},
+            {},
+            {},
+            {},
+            {FALSE,
+             FALSE,
+             {kDefaultBlend, kDefaultBlend, kDefaultBlend, kDefaultBlend, kDefaultBlend, kDefaultBlend, kDefaultBlend,
+              kDefaultBlend}},
+            UINT_MAX,
+            kDefaultRasterizer,
+            kDefaultDepthStencil,
+            {},
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            1,
+            {targetFormat},
+            DXGI_FORMAT_UNKNOWN,
+            {1, 0},
+            0,
+            {},
+            D3D12_PIPELINE_STATE_FLAG_NONE};
         auto& blend = desc.BlendState.RenderTarget[0];
         blend.BlendEnable = TRUE;
         blend.SrcBlend = D3D12_BLEND_SRC_ALPHA;

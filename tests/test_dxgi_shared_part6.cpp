@@ -166,13 +166,13 @@ TEST(DXGISharedTest, RetainedNoCallbackFSRSuspensionInitIsNotDeferredByQueueSett
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
         /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*runtimeOwnsSwapchain=*/true,
         /*hasSwapchainQueue=*/true, /*hasCommandQueue=*/true, /*commandQueueMatchesSwapchainQueue=*/false,
-        /*retainedNoCallbackFSRSuspension=*/true, false));
+        /*retainedFSRSuspension=*/true, false));
     // Null command queue during the suspension: same exemption (the render targets scQueue anyway).
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
         false, false, true, true, /*hasCommandQueue=*/false, false, true, false));
     // The exemption changes nothing outside the suspension (Talos post-FG settle crash path stays guarded).
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
-        false, false, true, true, true, false, /*retainedNoCallbackFSRSuspension=*/false, false));
+        false, false, true, true, true, false, /*retainedFSRSuspension=*/false, false));
 }
 
 TEST(DXGISharedTest, D3D12InjectionProbeDoesNotAddFixedStartupDelay) {

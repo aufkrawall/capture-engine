@@ -19,21 +19,31 @@ using OpenFileFn = decltype(&NtCreateFile);
 using SetFileFn = decltype(&NtSetInformationFile);
 using StatusErrorFn = decltype(&RtlNtStatusToDosError);
 
-const auto kOpenFile = reinterpret_cast<OpenFileFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
-const auto kSetFile = reinterpret_cast<SetFileFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
-const auto kStatusError =
-    reinterpret_cast<StatusErrorFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
+OpenFileFn GetOpenFileFn() noexcept {
+    static const auto fn = reinterpret_cast<OpenFileFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    return fn;
+}
+SetFileFn GetSetFileFn() noexcept {
+    static const auto fn =
+        reinterpret_cast<SetFileFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
+    return fn;
+}
+StatusErrorFn GetStatusErrorFn() noexcept {
+    static const auto fn =
+        reinterpret_cast<StatusErrorFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
+    return fn;
+}
 
 bool NativeResult(NTSTATUS status) {
     if (status >= 0)
         return true;
-    SetLastError(kStatusError ? kStatusError(status) : ERROR_GEN_FAILURE);
+    SetLastError(GetStatusErrorFn() ? GetStatusErrorFn()(status) : ERROR_GEN_FAILURE);
     return false;
 }
 
 Handle OpenDirectoryEntry(HANDLE directory, const std::wstring& leaf, ACCESS_MASK access,
                           ULONG options, ULONG sharing) {
-    if (!kOpenFile) {
+    if (!GetOpenFileFn()) {
         SetLastError(ERROR_PROC_NOT_FOUND);
         return {};
     }
@@ -49,7 +59,7 @@ Handle OpenDirectoryEntry(HANDLE directory, const std::wstring& leaf, ACCESS_MAS
     IO_STATUS_BLOCK io{};
     HANDLE raw = nullptr;
     // Synchronous, no-follow, single-leaf access relative to the retained object.
-    const NTSTATUS status = kOpenFile(&raw, access | SYNCHRONIZE, &attributes, &io, nullptr, FILE_ATTRIBUTE_NORMAL,
+    const NTSTATUS status = GetOpenFileFn()(&raw, access | SYNCHRONIZE, &attributes, &io, nullptr, FILE_ATTRIBUTE_NORMAL,
                                      sharing, FILE_OPEN,
                                      FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT | options,
                                      nullptr, 0);
@@ -139,7 +149,7 @@ bool DeleteFileInDirectory(HANDLE parentDirectory, const std::wstring& path) {
 bool RenameFileInDirectory(HANDLE parentDirectory, const std::wstring& path, const std::wstring& destination) {
     if (!parentDirectory)
         return MoveFileExW(path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
-    if (!kSetFile || DirectoryOf(path) != DirectoryOf(destination)) {
+    if (!GetSetFileFn() || DirectoryOf(path) != DirectoryOf(destination)) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return false;
     }
@@ -154,7 +164,7 @@ bool RenameFileInDirectory(HANDLE parentDirectory, const std::wstring& path, con
     rename->FileNameLength = static_cast<ULONG>(leaf.size() * sizeof(wchar_t));
     std::memcpy(rename->FileName, leaf.data(), rename->FileNameLength);
     IO_STATUS_BLOCK io{};
-    return NativeResult(kSetFile(file.Get(), &io, rename, static_cast<ULONG>(bytes), FileRenameInformation));
+    return NativeResult(GetSetFileFn()(file.Get(), &io, rename, static_cast<ULONG>(bytes), FileRenameInformation));
 }
 
 bool RemoveOrRenameAway(const std::wstring& path, bool* deferredToReboot, HANDLE parentDirectory) {

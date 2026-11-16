@@ -18,7 +18,7 @@ TEST(GraphStepAuditTest, DrawsOnTheirOwnClockAreNeitherHoldsNorJumps) {
     for (int i = 0; i < 100; ++i) {
         const int64_t interval = i % 2 ? 6000 : 7000;
         drawUs += interval;
-        position += interval / kSamplePeriodUs;
+        position += static_cast<double>(interval) / kSamplePeriodUs;
         audit.Observe(GraphOutputKind::kApplicationDraw, 0, position, drawUs, kSamplePeriodUs, kSamplePeriodUs, false);
     }
     EXPECT_EQ(audit.application().draws, 100u);

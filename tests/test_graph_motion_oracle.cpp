@@ -35,6 +35,7 @@ std::vector<uint16_t> Profile(double offset, double pixelsPerSlot = 2.6, double 
 
 std::vector<Shift> Steps(const std::vector<double>& offsets) {
     std::vector<std::vector<uint16_t>> profiles;
+    profiles.reserve(offsets.size());
     for (double offset : offsets)
         profiles.push_back(Profile(offset));
     std::vector<Shift> steps;
@@ -66,6 +67,7 @@ TEST(GraphMotionOracleTest, AFlatLineOrAScaleChangeIsNoMeasurement) {
 
 TEST(GraphMotionOracleTest, UniformScrollingPasses) {
     std::vector<double> offsets;
+    offsets.reserve(100);
     for (int i = 0; i < 100; ++i)
         offsets.push_back(i * 2.6);
     const Verdict verdict = JudgeSteps(Steps(offsets), {}, 0.35);
@@ -93,6 +95,7 @@ TEST(GraphMotionOracleTest, BackwardMotionIsFlagged) {
     // Rewinding is a negative shift, which the search (0..16 px) never explains: the step is unmeasured or a hold,
     // never a pass.
     std::vector<double> offsets;
+    offsets.reserve(40);
     for (int i = 0; i < 40; ++i)
         offsets.push_back(i == 20 ? 19 * 2.6 - 2.6 : i * 2.6);
     const Verdict verdict = JudgeSteps(Steps(offsets), {}, 0.35);

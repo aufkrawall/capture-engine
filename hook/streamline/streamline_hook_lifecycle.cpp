@@ -54,12 +54,24 @@ struct LifecycleExport {
     }
 };
 
-LifecycleExport<PFun_slSetFeatureLoaded> g_SetFeatureLoaded{"slSetFeatureLoaded"};
-LifecycleExport<PFun_slIsFeatureLoaded> g_IsFeatureLoaded{"slIsFeatureLoaded"};
-LifecycleExport<PFun_slFreeResources> g_FreeResources{"slFreeResources"};
+LifecycleExport<PFun_slSetFeatureLoaded>& GetSetFeatureLoaded() {
+    static LifecycleExport<PFun_slSetFeatureLoaded> s{"slSetFeatureLoaded"};
+    return s;
+}
+LifecycleExport<PFun_slIsFeatureLoaded>& GetIsFeatureLoaded() {
+    static LifecycleExport<PFun_slIsFeatureLoaded> s{"slIsFeatureLoaded"};
+    return s;
+}
+LifecycleExport<PFun_slFreeResources>& GetFreeResources() {
+    static LifecycleExport<PFun_slFreeResources> s{"slFreeResources"};
+    return s;
+}
 // Streamline 2.x sl.api/internal.h's PFunSwapchainDestroyedBefore. We only
 // observe the provider's dispatch. The title and interposer own the callback.
-LifecycleExport<void(IDXGISwapChain*)> g_SwapchainDestroyed{"slHookSwapChainDestroyed"};
+LifecycleExport<void(IDXGISwapChain*)>& GetSwapchainDestroyed() {
+    static LifecycleExport<void(IDXGISwapChain*)> s{"slHookSwapChainDestroyed"};
+    return s;
+}
 std::atomic<HMODULE> g_InspectedDlssg{nullptr};
 
 template <typename Function, typename Argument>
@@ -92,7 +104,7 @@ sl::Result Observe(LifecycleExport<Function>& api, sl::Feature feature, const Ar
 // registry: an unloaded DLSS-G presents nothing, so its FG signal is a front (ce::fg_presenter). The answer CE gives the
 // title while it holds an unload is not that state.
 sl::Result ForwardDlssgSetFeatureLoaded(bool loaded) {
-    const sl::Result result = Observe(g_SetFeatureLoaded, sl::kFeatureDLSS_G, loaded, loaded ? 1u : 0u);
+    const sl::Result result = Observe(GetSetFeatureLoaded(), sl::kFeatureDLSS_G, loaded, loaded ? 1u : 0u);
     if (result == sl::Result::eOk && !HookIsShuttingDown()) {
         fg_presenter::NoteDLSSGFeatureLoaded(loaded, "slSetFeatureLoaded reached Streamline");
     }
@@ -101,7 +113,7 @@ sl::Result ForwardDlssgSetFeatureLoaded(bool loaded) {
 
 sl::Result SetFeatureLoaded(sl::Feature feature, bool loaded) {
     if (feature != sl::kFeatureDLSS_G) {
-        return Observe(g_SetFeatureLoaded, feature, loaded, loaded ? 1u : 0u);
+        return Observe(GetSetFeatureLoaded(), feature, loaded, loaded ? 1u : 0u);
     }
     if (ce::streamline_unload_order::OnSetFeatureLoaded(loaded) ==
         ce::streamline_unload_order::SetLoadedAction::kAnswerOk) {
@@ -114,7 +126,7 @@ sl::Result SetFeatureLoaded(sl::Feature feature, bool loaded) {
 }
 
 sl::Result IsFeatureLoaded(sl::Feature feature, bool& loaded) {
-    auto* original = g_IsFeatureLoaded.Original();
+    auto* original = GetIsFeatureLoaded().Original();
     if (!original) {
         return sl::Result::eErrorInvalidState;
     }
@@ -131,16 +143,16 @@ void ForwardHeldUnload() {
 }
 
 bool DestroyHookInstalled() {
-    return g_SwapchainDestroyed.installed.load(std::memory_order_acquire) &&
-           g_SwapchainDestroyed.Original() != nullptr;
+    return GetSwapchainDestroyed().installed.load(std::memory_order_acquire) &&
+           GetSwapchainDestroyed().Original() != nullptr;
 }
 
 sl::Result FreeResources(sl::Feature feature, const sl::ViewportHandle& viewport) {
-    return Observe(g_FreeResources, feature, viewport, static_cast<uint32_t>(viewport));
+    return Observe(GetFreeResources(), feature, viewport, static_cast<uint32_t>(viewport));
 }
 
 void SwapchainDestroyed(IDXGISwapChain* chain) {
-    auto* original = g_SwapchainDestroyed.Original();
+    auto* original = GetSwapchainDestroyed().Original();
     if (!original) {
         return;
     }
@@ -172,7 +184,7 @@ void SwapchainDestroyed(IDXGISwapChain* chain) {
 
 bool IsDlssgCreatingSwapchain() {
     HMODULE plugin = nullptr;
-    void* const target = g_SwapchainDestroyed.target.load(std::memory_order_acquire);
+    void* const target = GetSwapchainDestroyed().target.load(std::memory_order_acquire);
     if (!target || !DoesAddressBelongToLoadedModule(target, &plugin, nullptr, 0, nullptr)) {
         return false;
     }
@@ -192,9 +204,9 @@ void QueueInterposerDiagnostics(HMODULE module, StreamlineInlineHookBatch& batch
     callbacks.forwardHeldUnload = &ForwardHeldUnload;
     callbacks.destroyHookInstalled = &DestroyHookInstalled;
     ce::streamline_unload_order::SetCallbacks(callbacks);
-    g_SetFeatureLoaded.Queue(module, batch, &SetFeatureLoaded);
-    g_IsFeatureLoaded.Queue(module, batch, &IsFeatureLoaded);
-    g_FreeResources.Queue(module, batch, &FreeResources);
+    GetSetFeatureLoaded().Queue(module, batch, &SetFeatureLoaded);
+    GetIsFeatureLoaded().Queue(module, batch, &IsFeatureLoaded);
+    GetFreeResources().Queue(module, batch, &FreeResources);
 }
 
 void QueueDlssgDestroyDiagnostic(HMODULE module, StreamlineInlineHookBatch& batch) {
@@ -204,25 +216,25 @@ void QueueDlssgDestroyDiagnostic(HMODULE module, StreamlineInlineHookBatch& batc
     }
     const auto lookup = reinterpret_cast<PFN_slGetPluginFunction>(GetProcAddress(module, "slGetPluginFunction"));
     HMODULE owner = nullptr;
-    void* target = lookup ? lookup(g_SwapchainDestroyed.name) : nullptr;
+    void* target = lookup ? lookup(GetSwapchainDestroyed().name) : nullptr;
     if (!target || !DoesAddressBelongToLoadedModule(target, &owner, nullptr, 0, nullptr) || owner != module) {
         HookLogImportant("[SL LIFETIME] slHookSwapChainDestroyed unavailable in DLSS-G module %p", module);
         return;
     }
-    g_SwapchainDestroyed.QueueAddress(target, batch, &SwapchainDestroyed);
+    GetSwapchainDestroyed().QueueAddress(target, batch, &SwapchainDestroyed);
 }
 
 void OnModuleUnloaded(const void* moduleBase, size_t moduleSize) {
-    if (g_SetFeatureLoaded.OnUnload(moduleBase, moduleSize)) {
+    if (GetSetFeatureLoaded().OnUnload(moduleBase, moduleSize)) {
         // The interposer is gone: a held unload has nothing to go to. Runs under the loader lock: the call takes a
         // short mutex and logs, like the rest of this function's callers.
         ce::streamline_unload_order::OnInterposerUnloaded();
         // A Streamline loaded again starts with the features its slInit names.
         fg_presenter::NoteDLSSGFeatureLoaded(true, "Streamline interposer unloaded");
     }
-    g_IsFeatureLoaded.OnUnload(moduleBase, moduleSize);
-    g_FreeResources.OnUnload(moduleBase, moduleSize);
-    g_SwapchainDestroyed.OnUnload(moduleBase, moduleSize);
+    GetIsFeatureLoaded().OnUnload(moduleBase, moduleSize);
+    GetFreeResources().OnUnload(moduleBase, moduleSize);
+    GetSwapchainDestroyed().OnUnload(moduleBase, moduleSize);
     HMODULE inspected = reinterpret_cast<HMODULE>(const_cast<void*>(moduleBase));
     g_InspectedDlssg.compare_exchange_strong(inspected, nullptr, std::memory_order_acq_rel);
 }

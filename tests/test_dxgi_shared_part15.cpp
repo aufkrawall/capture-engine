@@ -214,7 +214,7 @@ TEST(DXGISharedTest, FreshStreamlineHandoffSwapchainInitIsNotDeferredByQueueSett
     EXPECT_FALSE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
         /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*runtimeOwnsSwapchain=*/true,
         /*hasSwapchainQueue=*/true, /*hasCommandQueue=*/true, /*commandQueueMatchesSwapchainQueue=*/false,
-        /*retainedNoCallbackFSRSuspension=*/false, /*freshStreamlineHandoffOnSubmittableQueue=*/true));
+        /*retainedFSRSuspension=*/false, /*freshStreamlineHandoffOnSubmittableQueue=*/true));
     // Command tracking not populated yet: the render targets the live swapchain queue either way.
     EXPECT_FALSE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
                                                                      /*hasCommandQueue=*/false, false, false, true));

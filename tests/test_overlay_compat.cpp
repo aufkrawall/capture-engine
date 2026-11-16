@@ -433,7 +433,7 @@ TEST(OverlayPresentEntryChainPolicyTest, StreamlineRuntimeSwapchainWrapperOnlyWh
         EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, /*interceptedBelowForeignChain=*/false, overlays, true),
                   StreamlineRuntimeSwapchainView::kNonRetainingWrapper);
         // A deep view of a different chain (present interposer) does not cover this one.
-        EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, true, overlays, /*presentCovered=*/false),
+        EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, true, overlays, /*presentCoveredByDeepBodyHook=*/false),
                   StreamlineRuntimeSwapchainView::kNonRetainingWrapper);
     }
     // Fewer than two overlays keep the historical skip-wrap, deep view or not.

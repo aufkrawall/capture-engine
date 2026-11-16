@@ -64,8 +64,7 @@ public:
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
         UINT64 bytes = 0;
         device->GetCopyableFootprints(&desc, 0, 1, 0, &layout, nullptr, nullptr, &bytes);
-        D3D12_HEAP_PROPERTIES heap{};
-        heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
         D3D12_RESOURCE_DESC buffer{};
         buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         buffer.Width = bytes;
@@ -123,8 +122,8 @@ public:
         std::vector<uint32_t> pixels(static_cast<size_t>(desc.Width) * desc.Height);
         for (UINT y = 0; y < desc.Height; ++y) {
             const auto* row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped) +
-                                                                 layout.Offset + y * layout.Footprint.RowPitch);
-            std::copy(row, row + desc.Width, pixels.begin() + static_cast<size_t>(y) * desc.Width);
+                                                                 layout.Offset + static_cast<size_t>(y) * layout.Footprint.RowPitch);
+            std::copy(row, row + desc.Width, pixels.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * desc.Width));
         }
         D3D12_RANGE noWrites{};
         readback->Unmap(0, &noWrites);

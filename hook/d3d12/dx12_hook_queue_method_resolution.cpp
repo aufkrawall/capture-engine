@@ -136,8 +136,8 @@ bool DX12_HasNativeStartupOutputSubmitPath(ID3D12CommandQueue* queue) {
     }
     const char* basename = strrchr(path, '\\');
     basename = basename ? basename + 1 : path;
-    if (_stricmp(basename, "d3d12.dll") && _stricmp(basename, "d3d12core.dll") &&
-        _stricmp(basename, "d3d12sdklayers.dll")) {
+    if (_stricmp(basename, "d3d12.dll") != 0 && _stricmp(basename, "d3d12core.dll") != 0 &&
+        _stricmp(basename, "d3d12sdklayers.dll") != 0) {
         return false;
     }
     const void* jump = FollowDirectJump(original);

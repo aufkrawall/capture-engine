@@ -4,8 +4,10 @@
 
 #include <gtest/gtest.h>
 
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <string>
 
@@ -58,10 +60,34 @@ inline int ExpectPanelsFitTheDefaultFrame(const FlowGame& game) {
         const size_t at = line.find("[Overlay] Panel: ");
         if (at == std::string::npos)
             continue;
+        auto parseNext = [&](const char* prefix, auto& out) -> bool {
+            const size_t pos = line.find(prefix, at);
+            if (pos == std::string::npos)
+                return false;
+            const char* begin = line.data() + pos + std::strlen(prefix);
+            const char* end = line.data() + line.size();
+            const auto res = std::from_chars(begin, end, out);
+            return res.ec == std::errc{};
+        };
         int layout = 0, viewportWidth = 0, viewportHeight = 0;
         float width = 0, height = 0, x = 0, y = 0, available = 0;
-        if (std::sscanf(line.c_str() + at, "[Overlay] Panel: layout=%d size=%fx%f at=%f,%f viewport=%dx%d available=%f",
-                        &layout, &width, &height, &x, &y, &viewportWidth, &viewportHeight, &available) != 8) {
+        const size_t sizePos = line.find(" size=", at);
+        const size_t atPos = line.find(" at=", at);
+        const size_t vpPos = line.find(" viewport=", at);
+        const auto parsePair = [&](size_t pos, size_t prefixLen, char sep, auto& a, auto& b) -> bool {
+            if (pos == std::string::npos)
+                return false;
+            const char* p = line.data() + pos + prefixLen;
+            const char* end = line.data() + line.size();
+            const auto r1 = std::from_chars(p, end, a);
+            if (r1.ec != std::errc{} || r1.ptr >= end || *r1.ptr != sep)
+                return false;
+            const auto r2 = std::from_chars(r1.ptr + 1, end, b);
+            return r2.ec == std::errc{};
+        };
+        if (!parseNext("layout=", layout) || !parsePair(sizePos, 6, 'x', width, height) ||
+            !parsePair(atPos, 4, ',', x, y) || !parsePair(vpPos, 10, 'x', viewportWidth, viewportHeight) ||
+            !parseNext("available=", available)) {
             ADD_FAILURE() << "unreadable panel line: " << line;
             continue;
         }

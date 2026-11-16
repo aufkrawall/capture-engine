@@ -17,7 +17,7 @@ struct GuidLess {
 
 // A swapchain that stores private-data interfaces the way DXGI does: one reference per stored interface, released
 // when replaced or when the object is destroyed. Only the IUnknown/IDXGIObject surface is ever called.
-class FakeSwapChain : public IDXGISwapChain {
+class FakeSwapChain final : public IDXGISwapChain {
 public:
     ~FakeSwapChain() { DestroyPrivateData(); }
 

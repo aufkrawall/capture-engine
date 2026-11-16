@@ -114,7 +114,7 @@ inline Verdict JudgeSteps(const std::vector<Shift>& steps, const std::vector<dou
     if (normalized.empty())
         return verdict;
     std::vector<double> sorted = normalized;
-    std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+    std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
     verdict.medianPixels = sorted[sorted.size() / 2];
     const double median = verdict.medianPixels;
     for (size_t i = 0; i < steps.size(); ++i) {

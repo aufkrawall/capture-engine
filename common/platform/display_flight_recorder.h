@@ -181,7 +181,13 @@ public:
     Recorder() = default;
     Recorder(const Recorder&) = delete;
     Recorder& operator=(const Recorder&) = delete;
-    ~Recorder() { Stop(); }
+    ~Recorder() noexcept {
+        try {
+            Stop();
+        } catch (...) {
+            std::atomic_signal_fence(std::memory_order_relaxed);
+        }
+    }
 
     // A session of the same name left by a crashed owner is stopped first: the name is this owner's alone.
     ULONG Start(const wchar_t* sessionName, const std::wstring& workFile) {

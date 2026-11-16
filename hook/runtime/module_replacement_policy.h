@@ -50,7 +50,7 @@ inline bool StartsWithInsensitive(const CharT* text, const char* prefix) {
     }
     for (; *prefix; ++text, ++prefix) {
         if (!*text || ce::overlay_compat::detail::ToLowerAscii(*text) !=
-                          static_cast<CharT>(ce::overlay_compat::detail::ToLowerAscii(*prefix))) {
+                          ce::overlay_compat::detail::ToLowerAscii(*prefix)) {
             return false;
         }
     }
@@ -157,7 +157,7 @@ inline bool BareNameMatchesBaseName(const CharT* request, const char* baseName) 
     bool hasDot = false;
     for (size_t i = 0; i < length; ++i) {
         if (!baseName[i] || ce::overlay_compat::detail::ToLowerAscii(request[i]) !=
-                                static_cast<CharT>(ce::overlay_compat::detail::ToLowerAscii(baseName[i]))) {
+                                ce::overlay_compat::detail::ToLowerAscii(baseName[i])) {
             return false;
         }
         hasDot = hasDot || request[i] == static_cast<CharT>('.');

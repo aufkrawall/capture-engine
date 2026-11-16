@@ -82,9 +82,9 @@ void DisplayStallTraceSealer::Run() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             wake_.wait(lock, [this] { return stop_ || pending_.has_value(); });
-            if (stop_)
+            if (stop_ || !pending_.has_value())
                 return;
-            request = *pending_;
+            request = pending_.value();
             pending_.reset();
             busy_ = true;
         }

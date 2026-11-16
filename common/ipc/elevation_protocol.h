@@ -112,7 +112,7 @@ inline bool IsSealedDisplayTracePath(const std::array<wchar_t, 260>& path) {
         return false;
     const std::wstring_view value(path.data(), static_cast<size_t>(end - path.data()));
     if (value.size() < 3 || value[1] != L':' || value[2] != L'\\' || value.find(L"\\..") != std::wstring_view::npos ||
-        value.find(L"/") != std::wstring_view::npos)
+        value.find(L'/') != std::wstring_view::npos)
         return false;
     const size_t fileStart = value.rfind(L'\\') + 1;
     const std::wstring_view file = value.substr(fileStart);

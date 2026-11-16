@@ -163,19 +163,23 @@ TEST(DX11HookDiscoveryProbeTest, D3D10SamplerHookSlotIsCreateSamplerState) {
     auto createSamplerState = reinterpret_cast<CreateSamplerStateFn>(
         VTableOf(device.Get())[ce::d3d10_vtable_slots::kDeviceCreateSamplerState]);
 
-    D3D10_SAMPLER_DESC desc = {};
-    desc.Filter = D3D10_FILTER_ANISOTROPIC;
-    desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
-    desc.AddressV = D3D10_TEXTURE_ADDRESS_CLAMP;
-    desc.AddressW = D3D10_TEXTURE_ADDRESS_MIRROR;
-    desc.MaxAnisotropy = 7;
-    desc.ComparisonFunc = D3D10_COMPARISON_NEVER;
-    desc.MaxLOD = D3D10_FLOAT32_MAX;
+    D3D10_SAMPLER_DESC desc{D3D10_FILTER_ANISOTROPIC,
+                            D3D10_TEXTURE_ADDRESS_WRAP,
+                            D3D10_TEXTURE_ADDRESS_CLAMP,
+                            D3D10_TEXTURE_ADDRESS_MIRROR,
+                            0.0f,
+                            7,
+                            D3D10_COMPARISON_NEVER,
+                            {0.0f, 0.0f, 0.0f, 0.0f},
+                            0.0f,
+                            D3D10_FLOAT32_MAX};
     ComPtr<ID3D10SamplerState> sampler;
     ASSERT_TRUE(SUCCEEDED(createSamplerState(device.Get(), &desc, &sampler)));
     ASSERT_NE(sampler.Get(), nullptr);
 
-    D3D10_SAMPLER_DESC created = {};
+    D3D10_SAMPLER_DESC created = desc;
+    created.Filter = D3D10_FILTER_MIN_MAG_MIP_POINT;
+    created.MaxAnisotropy = 0;
     sampler->GetDesc(&created);
     EXPECT_EQ(created.Filter, desc.Filter);
     EXPECT_EQ(created.AddressV, desc.AddressV);
