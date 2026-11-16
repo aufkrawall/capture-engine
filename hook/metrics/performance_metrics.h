@@ -11,9 +11,9 @@
 
 class PerformanceMetrics {
 public:
-    static const int HISTORY_SIZE = 8192;       // covers 15s at >500 FPS
-    static const int GRAPH_HISTORY_SIZE = 240;  // visual window
-    static const int VARIANCE_WINDOW = 120;
+    static constexpr int HISTORY_SIZE = 8192;       // covers 15s at >500 FPS
+    static constexpr int GRAPH_HISTORY_SIZE = 240;  // visual window
+    static constexpr int VARIANCE_WINDOW = 120;
 
     enum class FrameTimingState { Presentation, DisplayStarting, DisplayActive, Composed, Stale, Unavailable };
 
