@@ -33,6 +33,7 @@ and `ReleaseLogCleanupPolicyTest` pins that wiring.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import unittest
@@ -103,6 +104,9 @@ def _tracked_files() -> List[Path]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=REPO_ROOT,
+        # Windows can drop empty values from the native environment when a
+        # mock restores os.environ. Pass its full mapping to preserve Git's keys and values.
+        env=os.environ.copy(),
         capture_output=True,
         check=True,
     )
@@ -158,6 +162,14 @@ def _user_path_hits(path: Path) -> List[Tuple[int, str]]:
 
 
 class PrivacyPathPolicyTest(unittest.TestCase):
+    def test_git_inventory_preserves_an_empty_config_value(self) -> None:
+        git_env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "captureengine.test", "GIT_CONFIG_VALUE_0": ""}
+        with patch.object(os, "environ", git_env), patch.object(
+            subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=b"tracked.txt\0")
+        ) as run:
+            self.assertEqual(_tracked_files(), [REPO_ROOT / "tracked.txt"])
+        self.assertEqual(run.call_args.kwargs.get("env"), git_env)
+
     def test_no_developer_user_paths_in_tracked_files(self) -> None:
         findings: List[str] = []
         for path in _tracked_files():

@@ -42,13 +42,20 @@ class VersionTest(unittest.TestCase):
 
 class EnvironmentTest(unittest.TestCase):
     def test_git_auth_header_exists_only_in_the_release_job(self) -> None:
-        with mock.patch.dict(os.environ, {"GH_TOKEN": "secret-token", "GITHUB_ACTIONS": "true"}):
+        # Model a launcher that supplies its own Git configuration, including an empty value.
+        local_env = {
+            "GH_TOKEN": "secret-token",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": "",
+        }
+        with mock.patch.object(stable_release, "os") as release_os:
+            release_os.environ = local_env
+            self.assertEqual(stable_release._git_env(), {**local_env, "GIT_TERMINAL_PROMPT": "0"})
+            release_os.environ = {**local_env, "GITHUB_ACTIONS": "true"}
             env = stable_release._git_env()
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "http.https://github.com/.extraheader")
         self.assertNotIn("secret-token", env["GIT_CONFIG_VALUE_0"])  # base64, never the raw token
-        with mock.patch.dict(os.environ, {"GH_TOKEN": "secret-token"}, clear=False):
-            os.environ.pop("GITHUB_ACTIONS", None)
-            self.assertNotIn("GIT_CONFIG_COUNT", stable_release._git_env())
 
     def test_release_job_output_is_redacted(self) -> None:
         profile = r"C:\Users\TestUser"

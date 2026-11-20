@@ -8,6 +8,8 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Direct3D 10 startup crash:** fixed a stack overflow when a Direct3D 10 application loads part of the graphics runtime after Capture Engine initializes its hooks.
 
+- **Windows build self-tests with launcher-provided Git settings:** fixed false failures in the repository privacy and release authentication tests when the launcher supplies Git configuration with an empty value.
+
 ## v0.1.7161
 
 Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7160).
