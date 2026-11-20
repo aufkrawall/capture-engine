@@ -288,3 +288,156 @@ TEST(ProcessThreadStateTest, TerminatedFlagComesFromTheKernelQuery) {
     EXPECT_EQ(ce::process_threads::QueryThreadExitState(queryOnly), ThreadExitState::kExiting);
     CloseHandle(queryOnly);
 }
+
+namespace {
+
+// A live peer whose kernel DACL explicitly denies suspend and context rights to Everyone while
+// keeping query/synchronize rights allowed — the exact anti-freeze security descriptor third-party
+// hook engines (e.g. ReLimiter 4.0's hook installer thread) apply to prevent cross-hook deadlocks.
+class DaclProtectedPeer {
+public:
+    DaclProtectedPeer() : release_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {
+        thread_ = ce::test_support::CreateThreadWithExactStart(&WaitForRelease, release_);
+        if (!thread_) {
+            ADD_FAILURE() << "CreateThreadWithExactStart failed";
+            return;
+        }
+        id_ = GetThreadId(thread_);
+
+        BYTE worldSid[SECURITY_MAX_SID_SIZE] = {};
+        DWORD sidSize = sizeof(worldSid);
+        if (!CreateWellKnownSid(WinWorldSid, nullptr, worldSid, &sidSize)) {
+            ADD_FAILURE() << "CreateWellKnownSid failed: " << GetLastError();
+            return;
+        }
+        BYTE aclBuffer[256] = {};
+        auto* dacl = reinterpret_cast<PACL>(aclBuffer);
+        if (!InitializeAcl(dacl, sizeof(aclBuffer), ACL_REVISION) ||
+            !AddAccessDeniedAce(dacl, ACL_REVISION,
+                                THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, worldSid) ||
+            !AddAccessAllowedAce(dacl, ACL_REVISION, THREAD_ALL_ACCESS, worldSid)) {
+            ADD_FAILURE() << "DACL build failed: " << GetLastError();
+            return;
+        }
+        SECURITY_DESCRIPTOR sd = {};
+        if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) ||
+            !SetSecurityDescriptorDacl(&sd, TRUE, dacl, FALSE) ||
+            !SetKernelObjectSecurity(thread_, DACL_SECURITY_INFORMATION, &sd)) {
+            ADD_FAILURE() << "SetKernelObjectSecurity failed: " << GetLastError();
+            return;
+        }
+        protected_ = true;
+    }
+
+    ~DaclProtectedPeer() {
+        if (release_)
+            SetEvent(release_);
+        if (thread_) {
+            WaitForSingleObject(thread_, INFINITE);
+            CloseHandle(thread_);
+        }
+        if (release_)
+            CloseHandle(release_);
+    }
+
+    bool IsProtected() const {
+        return protected_;
+    }
+    DWORD id() const {
+        return id_;
+    }
+
+private:
+    HANDLE release_ = nullptr;
+    HANDLE thread_ = nullptr;
+    DWORD id_ = 0;
+    bool protected_ = false;
+};
+
+}  // namespace
+
+// Regression for ReLimiter 4.0's anti-freeze hook installer thread: a peer thread whose DACL
+// denies THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT must NOT poison process-scoped NtGetNextThread
+// enumeration or fail ThreadQuiescence with QuiesceFailure::kEnumeration (on either the
+// NtGetNextThread route or the Toolhelp system-snapshot fallback).
+TEST(ThreadQuiescenceProtectedPeerTest, DaclProtectedPeerDoesNotBreakWalkOrQuiescence) {
+    ParkedPeer peerBefore;
+    DaclProtectedPeer protectedPeer;
+    ASSERT_TRUE(protectedPeer.IsProtected());
+    ParkedPeer peerAfter;
+
+    // Confirm the kernel really denies suspend/context open while allowing query open.
+    HANDLE denied = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, protectedPeer.id());
+    EXPECT_EQ(denied, nullptr);
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_ACCESS_DENIED));
+
+    constexpr ACCESS_MASK kDesired =
+        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | SYNCHRONIZE;
+    constexpr ACCESS_MASK kFallback = THREAD_QUERY_INFORMATION | SYNCHRONIZE;
+
+    // 1) Process-scoped walk (NtGetNextThread) must complete without poisoning availability and
+    //    visit normal peers created before and after the protected peer with full access.
+    //    (On Windows 10/11 NtGetNextThread skips DACL-denied threads internally; if a kernel build
+    //    returns STATUS_ACCESS_DENIED instead, the fallback path classifies it as !grantedDesired.)
+    ce::process_threads::ResetProcessScopedWalkAvailabilityForTesting();
+    bool sawBefore = false;
+    bool sawAfter = false;
+    bool sawProtectedWithFullAccess = false;
+    bool sawProtectedFallback = false;
+    auto checkWalk = [&](HANDLE handle, DWORD tid, bool grantedDesired) -> bool {
+        if (tid == peerBefore.id() && grantedDesired)
+            sawBefore = true;
+        if (tid == peerAfter.id() && grantedDesired)
+            sawAfter = true;
+        if (tid == protectedPeer.id()) {
+            if (grantedDesired)
+                sawProtectedWithFullAccess = true;
+            else
+                sawProtectedFallback = true;
+        }
+        CloseHandle(handle);
+        return true;
+    };
+    EXPECT_EQ(ce::process_threads::WalkCurrentProcessThreads(GetCurrentThreadId(), kDesired, kFallback, checkWalk),
+              ce::process_threads::WalkResult::kCompleted);
+    EXPECT_TRUE(ce::process_threads::ProcessScopedWalkAvailable());
+    EXPECT_TRUE(sawBefore);
+    EXPECT_TRUE(sawAfter);
+    EXPECT_FALSE(sawProtectedWithFullAccess);
+
+    // 2) System-snapshot fallback sees every TID via Toolhelp, hits ERROR_ACCESS_DENIED on the
+    //    protected peer, and must complete via fallback query access instead of aborting.
+    sawBefore = sawAfter = sawProtectedWithFullAccess = sawProtectedFallback = false;
+    EXPECT_EQ(ce::process_threads::WalkCurrentProcessThreadsViaSystemSnapshot(GetCurrentThreadId(), kDesired, kFallback,
+                                                                              checkWalk),
+              ce::process_threads::WalkResult::kCompleted);
+    EXPECT_TRUE(sawBefore);
+    EXPECT_TRUE(sawAfter);
+    EXPECT_FALSE(sawProtectedWithFullAccess);
+    EXPECT_TRUE(sawProtectedFallback);
+
+    // 3) ThreadQuiescence succeeds on the process-scoped route and suspends/resumes normal peers.
+    static int patchTarget = 0;
+    {
+        ThreadQuiescence quiescence(&patchTarget, sizeof(patchTarget), UnstableSnapshotPolicy::kAcceptSuspendedSet);
+        ASSERT_TRUE(quiescence.IsReady()) << ce::hook_patch::GetQuiesceFailureName(quiescence.FailureReason());
+        EXPECT_EQ(SuspendCountOf(peerBefore.handle()), 1u);
+        EXPECT_EQ(SuspendCountOf(peerAfter.handle()), 1u);
+    }
+    EXPECT_EQ(SuspendCountOf(peerBefore.handle()), 0u);
+    EXPECT_EQ(SuspendCountOf(peerAfter.handle()), 0u);
+
+    // 4) ThreadQuiescence also succeeds on the Toolhelp system-snapshot fallback route and
+    //    explicitly counts the DACL-protected peer instead of failing with kEnumeration.
+    ce::process_threads::SetProcessScopedWalkAvailableForTesting(false);
+    {
+        ThreadQuiescence quiescence(&patchTarget, sizeof(patchTarget), UnstableSnapshotPolicy::kAcceptSuspendedSet);
+        ASSERT_TRUE(quiescence.IsReady()) << ce::hook_patch::GetQuiesceFailureName(quiescence.FailureReason());
+        EXPECT_GE(quiescence.ProtectedPeersSkipped(), 1u);
+        EXPECT_EQ(SuspendCountOf(peerBefore.handle()), 1u);
+        EXPECT_EQ(SuspendCountOf(peerAfter.handle()), 1u);
+    }
+    ce::process_threads::ResetProcessScopedWalkAvailabilityForTesting();
+    EXPECT_EQ(SuspendCountOf(peerBefore.handle()), 0u);
+    EXPECT_EQ(SuspendCountOf(peerAfter.handle()), 0u);
+}

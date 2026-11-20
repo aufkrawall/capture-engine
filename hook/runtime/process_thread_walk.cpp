@@ -10,6 +10,9 @@ namespace {
 
 // STATUS_NO_MORE_ENTRIES: the process-scoped walk reached its last thread.
 constexpr LONG kStatusNoMoreEntries = static_cast<LONG>(0x8000001AL);
+// STATUS_ACCESS_DENIED: the next thread's DACL denies the requested rights.
+constexpr LONG kStatusAccessDenied = static_cast<LONG>(0xC0000022L);
+constexpr ACCESS_MASK kMinimalQueryAccess = THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
 
 using PFN_NtGetNextThread = LONG(NTAPI*)(HANDLE, HANDLE, ACCESS_MASK, ULONG, ULONG, PHANDLE);
 
@@ -82,7 +85,18 @@ void ResetProcessScopedWalkAvailabilityForTesting() {
     g_processScopedWalkUsable.store(true, std::memory_order_release);
 }
 
+void SetProcessScopedWalkAvailableForTesting(bool available) {
+    g_processScopedWalkUsable.store(available, std::memory_order_release);
+}
+
 WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredAccess, const ThreadVisitor& visit) {
+    return WalkCurrentProcessThreads(
+        excludeThreadId, desiredAccess, 0,
+        [&visit](HANDLE threadHandle, DWORD threadId, bool) { return visit(threadHandle, threadId); });
+}
+
+WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredAccess, ACCESS_MASK fallbackAccess,
+                                     const ThreadAccessVisitor& visit) {
     const PFN_NtGetNextThread ntGetNextThread = ResolveNtGetNextThread();
     if (!ntGetNextThread || !g_processScopedWalkUsable.load(std::memory_order_acquire))
         return WalkResult::kUnavailable;
@@ -94,7 +108,19 @@ WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredA
     HANDLE cursor = nullptr;
     for (;;) {
         HANDLE next = nullptr;
-        const LONG status = ntGetNextThread(process, cursor, desiredAccess, 0, 0, &next);
+        bool grantedDesiredAccess = true;
+        LONG status = ntGetNextThread(process, cursor, desiredAccess, 0, 0, &next);
+        if (status == kStatusAccessDenied && fallbackAccess != 0) {
+            // A peer thread's DACL denied desiredAccess (e.g. an anti-freeze
+            // hook installer thread denying suspend/context rights). Retry from
+            // the same cursor with reduced query access so the walk can inspect
+            // and step past it without poisoning process-scoped enumeration.
+            grantedDesiredAccess = false;
+            status = ntGetNextThread(process, cursor, fallbackAccess, 0, 0, &next);
+            if (status == kStatusAccessDenied && fallbackAccess != kMinimalQueryAccess) {
+                status = ntGetNextThread(process, cursor, kMinimalQueryAccess, 0, 0, &next);
+            }
+        }
         if (cursor) {
             CloseHandle(cursor);
             cursor = nullptr;
@@ -102,9 +128,9 @@ WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredA
         if (status == kStatusNoMoreEntries)
             return WalkResult::kCompleted;
         if (status < 0 || !next) {
-            // Never observed inside one's own process. Latch the route off
-            // rather than hand back a partial thread set that a quiescence
-            // would treat as complete.
+            // Never observed inside one's own process outside DACL-restricted
+            // threads. Latch the route off rather than hand back a partial
+            // thread set that a quiescence would treat as complete.
             g_processScopedWalkUsable.store(false, std::memory_order_release);
             return WalkResult::kUnavailable;
         }
@@ -115,12 +141,12 @@ WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredA
             continue;
 
         HANDLE owned = nullptr;
-        if (!DuplicateHandle(process, next, process, &owned, desiredAccess, FALSE, 0) || !owned) {
+        if (!DuplicateHandle(process, next, process, &owned, 0, FALSE, DUPLICATE_SAME_ACCESS) || !owned) {
             g_processScopedWalkUsable.store(false, std::memory_order_release);
             CloseHandle(cursor);
             return WalkResult::kUnavailable;
         }
-        if (!visit(owned, threadId)) {
+        if (!visit(owned, threadId, grantedDesiredAccess)) {
             CloseHandle(cursor);
             return WalkResult::kAborted;
         }
@@ -129,6 +155,13 @@ WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredA
 
 WalkResult WalkCurrentProcessThreadsViaSystemSnapshot(DWORD excludeThreadId, ACCESS_MASK desiredAccess,
                                                       const ThreadVisitor& visit) {
+    return WalkCurrentProcessThreadsViaSystemSnapshot(
+        excludeThreadId, desiredAccess, 0,
+        [&visit](HANDLE threadHandle, DWORD threadId, bool) { return visit(threadHandle, threadId); });
+}
+
+WalkResult WalkCurrentProcessThreadsViaSystemSnapshot(DWORD excludeThreadId, ACCESS_MASK desiredAccess,
+                                                      ACCESS_MASK fallbackAccess, const ThreadAccessVisitor& visit) {
     const DWORD processId = GetCurrentProcessId();
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (snapshot == INVALID_HANDLE_VALUE)
@@ -141,14 +174,30 @@ WalkResult WalkCurrentProcessThreadsViaSystemSnapshot(DWORD excludeThreadId, ACC
         do {
             if (entry.th32OwnerProcessID != processId || entry.th32ThreadID == excludeThreadId)
                 continue;
+            bool grantedDesiredAccess = true;
             HANDLE thread = OpenThread(desiredAccess, FALSE, entry.th32ThreadID);
             if (!thread) {
-                if (GetLastError() == ERROR_INVALID_PARAMETER)
+                const DWORD err = GetLastError();
+                if (err == ERROR_INVALID_PARAMETER)
                     continue;  // Thread exited after the snapshot was taken.
-                result = WalkResult::kAborted;
-                break;
+                if (err == ERROR_ACCESS_DENIED && fallbackAccess != 0) {
+                    grantedDesiredAccess = false;
+                    thread = OpenThread(fallbackAccess, FALSE, entry.th32ThreadID);
+                    if (!thread && GetLastError() == ERROR_ACCESS_DENIED && fallbackAccess != kMinimalQueryAccess) {
+                        thread = OpenThread(kMinimalQueryAccess, FALSE, entry.th32ThreadID);
+                    }
+                    if (!thread) {
+                        if (GetLastError() == ERROR_INVALID_PARAMETER)
+                            continue;
+                        result = WalkResult::kAborted;
+                        break;
+                    }
+                } else {
+                    result = WalkResult::kAborted;
+                    break;
+                }
             }
-            if (!visit(thread, entry.th32ThreadID)) {
+            if (!visit(thread, entry.th32ThreadID, grantedDesiredAccess)) {
                 result = WalkResult::kAborted;
                 break;
             }

@@ -15,6 +15,7 @@ namespace ce::hook_patch {
 namespace {
 constexpr DWORD kQuiesceThreadAccess =
     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | SYNCHRONIZE;
+constexpr DWORD kQuiesceFallbackAccess = THREAD_QUERY_INFORMATION | SYNCHRONIZE;
 
 DWORD SuspendPeerThread(HANDLE thread) {
     return SuspendThread(thread);
@@ -80,7 +81,7 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
 
         // Adopt one peer thread. Returning false aborts the walk, which fails
         // the transaction closed exactly as an enumeration error does.
-        auto adopt = [&](HANDLE thread, DWORD threadId) -> bool {
+        auto adopt = [&](HANDLE thread, DWORD threadId, bool grantedDesiredAccess) -> bool {
             const bool tracked = std::any_of(threads_.begin(), threads_.end(), [&](const SuspendedThread& known) {
                 return known.handle && known.threadId == threadId;
             });
@@ -92,16 +93,42 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
                 CloseHandle(thread);
                 return false;
             }
-            threads_.push_back({thread, threadId, false, 0, false});
+            SuspendedThread entry{};
+            entry.handle = thread;
+            entry.threadId = threadId;
+            if (!grantedDesiredAccess) {
+                const auto exitState = ops.exitState(thread);
+                if (exitState != ce::process_threads::ThreadExitState::kRunning) {
+                    if (exitState == ce::process_threads::ThreadExitState::kExiting) {
+                        ++exitingPeersSkipped_;
+                        lastExitingPeerId_ = threadId;
+                        lastExitingPeerStart_ = ce::process_threads::QueryThreadStartAddress(thread);
+                    }
+                    entry.departed = true;
+                } else {
+                    // This peer's DACL explicitly denies suspend/context rights to its
+                    // own process (e.g. ReLimiter 4.0's hook installer thread denying
+                    // cross-hook suspension to prevent mutual-freeze deadlocks). Keep its
+                    // handle open so later passes do not rediscover it as new, and honor
+                    // its DACL by leaving it unsuspended while all other peers quiesce.
+                    entry.suspendDenied = true;
+                    ++protectedPeersSkipped_;
+                    lastProtectedPeerId_ = threadId;
+                    lastProtectedPeerStart_ = ce::process_threads::QueryThreadStartAddress(thread);
+                }
+            }
+            threads_.push_back(entry);
             return true;
         };
 
         ce::process_threads::WalkResult walk =
-            ce::process_threads::WalkCurrentProcessThreads(currentThreadId, kQuiesceThreadAccess, adopt);
+            ce::process_threads::WalkCurrentProcessThreads(currentThreadId, kQuiesceThreadAccess,
+                                                           kQuiesceFallbackAccess, adopt);
         if (walk == ce::process_threads::WalkResult::kUnavailable) {
             usedSystemSnapshot = true;
             walk = ce::process_threads::WalkCurrentProcessThreadsViaSystemSnapshot(currentThreadId,
-                                                                                   kQuiesceThreadAccess, adopt);
+                                                                                   kQuiesceThreadAccess,
+                                                                                   kQuiesceFallbackAccess, adopt);
         }
         if (walk != ce::process_threads::WalkResult::kCompleted) {
             failure_ = QuiesceFailure::kEnumeration;
@@ -110,6 +137,8 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
 
         for (size_t i = previousCount; i < threads_.size(); ++i) {
             auto& thread = threads_[i];
+            if (thread.departed || thread.suspendDenied)
+                continue;
             if (ops.suspend(thread.handle) == static_cast<DWORD>(-1)) {
                 const DWORD suspendError = GetLastError();
                 // The kernel refuses SuspendThread for two kinds of peer that are not
@@ -154,7 +183,7 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
     // Capture it once instead of issuing one GetThreadContext call per thread
     // per target.
     for (auto& thread : threads_) {
-        if (!thread.handle || thread.departed)
+        if (!thread.handle || thread.departed || thread.suspendDenied)
             continue;
         CONTEXT context = {};
         context.ContextFlags = CONTEXT_CONTROL;
@@ -294,6 +323,18 @@ ThreadQuiescence::~ThreadQuiescence() {
                     "start=%s, #%u) - range-checked as stopped, left suspended; ready=%d",
                     heldPeers_, static_cast<unsigned long>(lastHeldPeerId_),
                     static_cast<unsigned long>(lastHeldPeerCount_), start, index + 1, ready_ ? 1 : 0);
+        }
+    }
+    if (protectedPeersSkipped_ != 0) {
+        static std::atomic<uint32_t> s_protectedPeerLogs{0};
+        const uint32_t index = s_protectedPeerLogs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 8 || (index % 64) == 0) {
+            char start[MAX_PATH + 32] = {};
+            DescribeStartAddress(lastProtectedPeerStart_, start, sizeof(start));
+            HookLog("ThreadQuiescence: skipped %u DACL-protected peer(s) that deny suspend/context access (last "
+                    "tid=%lu start=%s, #%u) - left running to honor anti-freeze DACL; ready=%d",
+                    protectedPeersSkipped_, static_cast<unsigned long>(lastProtectedPeerId_), start, index + 1,
+                    ready_ ? 1 : 0);
         }
     }
     if (exitingPeersSkipped_ != 0) {

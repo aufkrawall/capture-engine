@@ -66,22 +66,51 @@ private:
     bool (*invoke_)(void*, HANDLE, DWORD) = nullptr;
 };
 
+// Variant that also reports whether `desiredAccess` was granted or a
+// reduced `fallbackAccess` handle had to be opened because the thread's DACL
+// denies `desiredAccess` (for example, another hook engine's anti-freeze
+// installer thread denying THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT).
+class ThreadAccessVisitor {
+public:
+    template <typename Fn, typename = std::enable_if_t<
+                               !std::is_same_v<std::decay_t<Fn>, ThreadAccessVisitor>>>
+    // NOLINTNEXTLINE(bugprone-forwarding-reference-overload) - constrained above; function-view semantics.
+    ThreadAccessVisitor(Fn&& fn) noexcept
+        : context_(static_cast<void*>(&fn)),
+          invoke_([](void* context, HANDLE handle, DWORD threadId, bool grantedDesiredAccess) -> bool {
+              return (*static_cast<std::remove_reference_t<Fn>*>(context))(handle, threadId, grantedDesiredAccess);
+          }) {}
+
+    bool operator()(HANDLE threadHandle, DWORD threadId, bool grantedDesiredAccess) const {
+        return invoke_(context_, threadHandle, threadId, grantedDesiredAccess);
+    }
+
+private:
+    void* context_ = nullptr;
+    bool (*invoke_)(void*, HANDLE, DWORD, bool) = nullptr;
+};
+
 // Process-scoped walk. Returns kUnavailable when NtGetNextThread cannot serve
 // this process, which latches for the process lifetime so a partial walk can
 // never silently reduce thread coverage on a later transaction.
 WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredAccess, const ThreadVisitor& visit);
+WalkResult WalkCurrentProcessThreads(DWORD excludeThreadId, ACCESS_MASK desiredAccess, ACCESS_MASK fallbackAccess,
+                                     const ThreadAccessVisitor& visit);
 
 // The system-wide snapshot, filtered to this process. Correct but expensive;
 // kept as the fallback and as the equivalence oracle the tests compare against.
 WalkResult WalkCurrentProcessThreadsViaSystemSnapshot(DWORD excludeThreadId, ACCESS_MASK desiredAccess,
                                                       const ThreadVisitor& visit);
+WalkResult WalkCurrentProcessThreadsViaSystemSnapshot(DWORD excludeThreadId, ACCESS_MASK desiredAccess,
+                                                      ACCESS_MASK fallbackAccess, const ThreadAccessVisitor& visit);
 
 // True while the process-scoped walk is still trusted.
 bool ProcessScopedWalkAvailable();
 
-// Test seam: clears the latch so a test can exercise both routes in one
+// Test seams: toggle the latch so tests can exercise both routes in one
 // process. Not called by the runtime.
 void ResetProcessScopedWalkAvailabilityForTesting();
+void SetProcessScopedWalkAvailableForTesting(bool available);
 
 // A peer thread's exit state as the kernel sees it.
 //

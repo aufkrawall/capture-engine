@@ -10,6 +10,8 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **ReLimiter 4.0 and ReShade add-on compatibility:** preserve Capture Engine hook installation when a co-resident hook engine runs a thread whose DACL denies suspend/context access (`ThreadQuiescence` now steps past DACL-protected peers instead of aborting thread enumeration).
+
 - **Direct3D 10 startup crash:** fixed a stack overflow when a Direct3D 10 application loads part of the graphics runtime after Capture Engine initializes its hooks.
 
 - **Windows build self-tests with launcher-provided Git settings:** fixed false failures in the repository privacy and release authentication tests when the launcher supplies Git configuration with an empty value.

@@ -148,6 +148,14 @@ public:
         return heldPeers_;
     }
 
+    // Live peers whose kernel DACL explicitly denies suspend/context rights to
+    // this process (e.g. another hook engine's anti-freeze installer thread).
+    // Tracked with query access so they do not fail enumeration or destabilize
+    // the snapshot, and left running to honor their anti-freeze DACL.
+    uint32_t ProtectedPeersSkipped() const {
+        return protectedPeersSkipped_;
+    }
+
 private:
     void Quiesce(UnstableSnapshotPolicy unstablePolicy, const PeerThreadOps& ops);
 
@@ -157,8 +165,9 @@ private:
         bool suspended = false;
         uintptr_t instructionPointer = 0;
         bool contextCaptured = false;
-        bool departed = false;  // exited or exiting when suspension was refused; never runs user code again
-        bool held = false;      // suspended by another owner; this transaction holds no suspension to undo
+        bool departed = false;      // exited or exiting when suspension was refused; never runs user code again
+        bool held = false;          // suspended by another owner; this transaction holds no suspension to undo
+        bool suspendDenied = false; // DACL denies suspend/context rights; left running to avoid cross-hook deadlocks
     };
 
     enum class RefusalVerdict : uint8_t { kDeparted, kHeld, kLive };
@@ -177,6 +186,9 @@ private:
     DWORD lastHeldPeerId_ = 0;
     DWORD lastHeldPeerCount_ = 0;
     const void* lastHeldPeerStart_ = nullptr;
+    uint32_t protectedPeersSkipped_ = 0;
+    DWORD lastProtectedPeerId_ = 0;
+    const void* lastProtectedPeerStart_ = nullptr;
 
     // Reported by the destructor, after every peer has resumed. Logging inside
     // the suspended window can deadlock: the logger takes a lock and may
