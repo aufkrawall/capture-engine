@@ -318,7 +318,9 @@ class Preflight:
         if failed:
             details = []
             for result in failed[:3]:
-                details.append(f"--- {result.name} (exit {result.returncode})")
+                outcome = "launch failed" if result.returncode is None else f"exit {result.returncode}"
+                details.append(f"--- {result.name} ({outcome})")
+                details.extend(str(error) for error in result.launch_errors)
                 details.extend(_tail(result.stdout + "\n" + result.stderr, 8))
             return CheckResult("python_self_tests", "fail", 0.0,
                                f"{len(failed)} of {len(results)} suite(s) failed: "

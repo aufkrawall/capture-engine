@@ -6,19 +6,20 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
+from typing import List, Mapping, Optional, Sequence
 
 
 @dataclass(frozen=True)
 class ToolSelfTestResult:
     name: str
     command: Sequence[str]
-    returncode: int
+    returncode: Optional[int]
     stdout: str
     stderr: str
     elapsed: float
+    launch_errors: tuple[OSError, ...] = ()
 
 
 def _commands(project_root: str, python_executable: str) -> List[tuple[str, List[str]]]:
@@ -36,6 +37,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("build_flag_policy", unittest_command("test_build_flags") + ["tools.tests.test_fuzz_invocation_policy"]),
         ("sharpen_shader_generation", unittest_command("test_sharpen_shader_generation")),
         ("build_gate_composition", unittest_command("test_build_gate_composition")),
+        ("python_tool_self_test_launches", unittest_command("test_python_tool_self_tests")),
         ("build_resume_policy", unittest_command("test_build_resume")),
         ("build_tests_only_coverage", unittest_command("test_build_tests_only_coverage")),
         ("flow_failure_logs", unittest_command("test_flow_failure_logs")),
@@ -105,32 +107,42 @@ def run_tool_self_tests(
     exclude: Sequence[str] = (),
 ) -> List[ToolSelfTestResult]:
     commands = [item for item in _commands(project_root, python_executable) if item[0] not in exclude]
+    child_env = dict(os.environ if env is None else env)
 
     def run_one(item: tuple[str, List[str]]) -> ToolSelfTestResult:
         name, command = item
-        started = time.time()
-        result = subprocess.run(
-            command,
-            env=dict(env) if env is not None else None,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        started = time.monotonic()
+        try:
+            process = subprocess.Popen(
+                command,
+                env=child_env,
+                cwd=project_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as error:
+            return ToolSelfTestResult(name, command, None, "", "", time.monotonic() - started,
+                                      (error.with_traceback(None),))
+        with process:
+            stdout, stderr = process.communicate()
         return ToolSelfTestResult(
-            name,
-            command,
-            result.returncode,
-            result.stdout or "",
-            result.stderr or "",
-            time.time() - started,
+            name, command, process.returncode, stdout or "", stderr or "", time.monotonic() - started,
         )
 
-    results: Dict[str, ToolSelfTestResult] = {}
-    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(commands)))) as executor:
-        futures = [executor.submit(run_one, item) for item in commands]
-        for future in as_completed(futures):
-            result = future.result()
-            results[result.name] = result
-    return [results[name] for name, _ in commands]
+    workers = max(1, min(jobs, len(commands)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = list(executor.map(run_one, commands))
+
+    # A denied spawn never entered the suite. Try it once without competing children,
+    # with the same permissions and environment. A launched suite's exit code is final.
+    if workers > 1:
+        for index, result in enumerate(results):
+            if result.launch_errors and isinstance(result.launch_errors[0], PermissionError):
+                retried = run_one(commands[index])
+                results[index] = replace(retried, elapsed=result.elapsed + retried.elapsed,
+                                         launch_errors=result.launch_errors + retried.launch_errors)
+    return results

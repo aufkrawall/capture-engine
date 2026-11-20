@@ -77,7 +77,12 @@ def run_python_tool_self_tests(env):
     ok = True
     for result in results:
         result_ok = result.returncode == 0
-        details = {"exit_code": result.returncode, "command": result.command}
+        details: Dict[str, Any] = {"exit_code": result.returncode, "command": result.command}
+        if result.launch_errors:
+            launch_errors = [str(error) for error in result.launch_errors]
+            details["launch_errors"] = launch_errors
+            outcome = "could not launch" if result.returncode is None else "launched on serial retry"
+            log(f"Python tool self-test {outcome}: {result.name} ({' / '.join(launch_errors)})")
         if result_ok and result.name in {"module_boundary_tree", "module_depth"}:
             try:
                 report = json.loads(result.stdout)
@@ -105,7 +110,8 @@ def run_python_tool_self_tests(env):
                 detail=result.returncode == 0,
             )
         if not result_ok:
-            log(f"Python tool self-test failed: {result.name} (exit code {result.returncode})")
+            if result.returncode is not None:
+                log(f"Python tool self-test failed: {result.name} (exit code {result.returncode})")
             ok = False
     if ok:
         log("=== Python Tool Self-Tests Passed ===")

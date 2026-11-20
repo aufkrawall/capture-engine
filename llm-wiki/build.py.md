@@ -500,7 +500,16 @@ Default quality mode currently:
 
 ## Operational Notes
 - The script writes `compile_commands.json` before mixed/default lint so clang-tidy uses the current build's commands; unchanged JSON remains in place, and the atexit fallback still preserves partial commands after a failed compile. That database is deliberately a snapshot of what the last run compiled, not a merged union, so a `--tests-only` or failed build narrows it; the clang-tidy baseline scope record above is what keeps a narrowed database from corrupting accepted counts.
-- Python tool self-tests execute concurrently through the bounded job policy, capture complete output, and replay diagnostics deterministically on failure. Native unit tests remain the preceding isolation boundary.
+- Python tool self-tests execute concurrently through the bounded job policy with closed stdin and captured output.
+  `tools/python_tool_self_tests.py` records spawn failures separately from suite exit codes. After the parallel batch
+  drains, each access-denied spawn gets one serial retry under the same environment and permissions. A suite which ran
+  keeps its original result. Persistent launch failures fail the gate, identify the suite and OS error in `launch_errors`
+  with a null `exit_code` in the verification manifest, and appear in the release preflight report. Windows checks that
+  require MSYS2, private desktops, ACLs, or junctions still need a host context with those capabilities.
+- The privacy test forwards Python's complete environment mapping to `git ls-files`. On Windows, another test restoring
+  a mocked environment can leave an empty Git configuration value present in the Python mapping but absent from the
+  native child environment. The release-auth test uses a synthetic environment and checks that local execution preserves
+  launcher-supplied Git configuration.
 - Native tests discover top-level tests/*.cpp and tests/*.c. C units use the declared compiler with
   `-x c -std=c11`; C++ language/stdlib/RTTI flags are removed while target, debug symbols, CFG,
   privacy prefix maps and sanitizer policy remain. The C11 ABI probe rejects __cplusplus, asserts

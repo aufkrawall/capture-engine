@@ -10,6 +10,8 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Windows build self-tests with launcher-provided Git settings:** fixed false failures in the repository privacy and release authentication tests when the launcher supplies Git configuration with an empty value.
 
+- **Build self-tests after a denied process launch:** finish independent suites and retry the denied launch once after the parallel batch. Persistent launch failures name the suite and OS error in the build report.
+
 ## v0.1.7161
 
 Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7160).
