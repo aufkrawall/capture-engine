@@ -368,3 +368,16 @@ TEST(HostMetricsPolicyTest, AFreshVramReadingIsAlwaysReadable) {
     EXPECT_TRUE(scan_host::metrics_policy::VramUsageIsReadable(true, /*counterReadThisPoll=*/true,
                                                     /*havePreviousReading=*/false, 99));
 }
+
+TEST(HostMetricsSourceInvariantTest, HostMetricsUsesLayeredGpuLoadSamplerAndStabilizer) {
+    const std::string source = ReadProjectSource("captureengine/app/host_metrics.cpp");
+    const std::string sensorService = ReadProjectSource("captureengine/sensors/sensor_service.cpp");
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(sensorService.empty());
+    EXPECT_NE(source.find("g_HostMetrics.gpuLoadSampler.SampleAdapter(adapter.adapterLuid)"), std::string::npos);
+    EXPECT_NE(source.find("metrics_policy::EvaluatePdhGpuLoadPoll(pdhItems)"), std::string::npos);
+    EXPECT_NE(source.find("g_HostMetrics.gpuLoadStabilizer.Update("), std::string::npos);
+    EXPECT_NE(source.find("[Metrics] GPU load source:"), std::string::npos);
+    EXPECT_NE(sensorService.find("activeTargetWaitMs"), std::string::npos);
+    EXPECT_NE(sensorService.find("gpuSrc=%s"), std::string::npos);
+}

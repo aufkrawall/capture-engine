@@ -1,6 +1,7 @@
 #include "sensor_service.h"
 #include <windows.h>
 #include <tlhelp32.h>
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -49,6 +50,8 @@ struct SensorSession {
     bool lastLuidPublisherEligible = false;
     bool lastSourceWasScreenGrab = false;
     uint32_t updatesSinceSummary = 0;
+    uint64_t lastSummaryTickMs = 0;
+    bool loggedInitialSummary = false;
 };
 
 // `processFound` distinguishes "the process is gone" from "the snapshot did not
@@ -183,6 +186,10 @@ int SensorProcessMain(const AppConfig& config) {
         hardwareSensorPluginActive && effectiveHardwareSensors.pollIntervalMs < 1000
             ? effectiveHardwareSensors.pollIntervalMs
             : 1000;
+    // Active game sessions poll host metrics at 500 ms (matching the overlay's
+    // default text refresh) unless a shorter sensor interval was configured,
+    // keeping GPU load responsive while idle sessions stay at 1000 ms.
+    const DWORD activeTargetWaitMs = (std::min<DWORD>)(serviceWaitMs, 500);
     bool loggedWaitFailure = false;
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
@@ -246,6 +253,7 @@ int SensorProcessMain(const AppConfig& config) {
 
         // 2. Poll metrics for all active sessions
         std::vector<DisplayTimingTarget> displayTimingTargets;
+        bool anyTargetActive = false;
         for (auto it = sessions.begin(); it != sessions.end();) {
             SensorSession& s = it->second;
             const uint32_t hookSourcePid = s.shm->GetSourcePid();
@@ -265,16 +273,23 @@ int SensorProcessMain(const AppConfig& config) {
                     s.lastEffectiveLuid = 0;
                     s.lastSourcePid = 0;
                     s.lastSourceWasScreenGrab = false;
+                    s.updatesSinceSummary = 0;
+                    s.lastSummaryTickMs = 0;
+                    s.loggedInitialSummary = false;
                     ResetGpuTelemetryForSource(s.shm, 0);
                     LogInfo("[Sensors] Session target cleared: injectPid=%u", it->first);
                 }
                 ++it;
                 continue;
             }
+            anyTargetActive = true;
 
             if (sourcePid != s.lastSourcePid || useScreenGrabTarget != s.lastSourceWasScreenGrab) {
                 s.cachedLuid = 0;
                 s.lastEffectiveLuid = 0;
+                s.updatesSinceSummary = 0;
+                s.lastSummaryTickMs = GetTickCount64();
+                s.loggedInitialSummary = false;
                 ResetGpuTelemetryForSource(s.shm, sourcePid);
             }
 
@@ -378,18 +393,32 @@ int SensorProcessMain(const AppConfig& config) {
                 s.lastSourceWasScreenGrab = useScreenGrabTarget;
             }
 
+            // Update metrics using the existing host_metrics logic
+            scan_host::UpdateSystemMetrics(
+                s.shm, sourcePid, effectiveLuid,
+                useScreenGrabTarget ? scan_host::metrics_policy::AdapterResolutionSource::CaptureDeviceLuid
+                                    : scan_host::metrics_policy::AdapterResolutionSource::HookLuid,
+                hardwareSensors);
+
             s.updatesSinceSummary++;
-            if (IsDebugLoggingEnabled(config.logLevel) && s.updatesSinceSummary >= 30) {
+            const uint64_t summaryNowMs = GetTickCount64();
+            if (s.lastSummaryTickMs == 0)
+                s.lastSummaryTickMs = summaryNowMs;
+            const uint64_t summaryIntervalMs = s.loggedInitialSummary ? 30000ull : 10000ull;
+            if (IsDebugLoggingEnabled(config.logLevel) && summaryNowMs - s.lastSummaryTickMs >= summaryIntervalMs) {
                 const auto& metrics = s.shm->systemMetrics;
+                const scan_host::GpuLoadDiagnosticsSnapshot gpuDiag = scan_host::GetLastGpuLoadDiagnostics();
                 LogInfo(
                     "[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u cpu=%.1f maxCore=%u "
-                    "gpu=%.1f vramMB=%.1f vramTotalMB=%llu cpuTemp=%.1f gpuTemp=%.1f cpuW=%.1f gpuW=%.1f "
-                    "gpuFan=%.0f cpuClock=%.0f cpuMaxClock=%.0f validity=0x%X publisherPid=%u publisherParentPid=%u "
-                    "publisherEligible=%d",
+                    "gpu=%.1f gpuSrc=%s gpuHeld=%u gpuDrop=%u vramMB=%.1f vramTotalMB=%llu cpuTemp=%.1f gpuTemp=%.1f "
+                    "cpuW=%.1f gpuW=%.1f gpuFan=%.0f cpuClock=%.0f cpuMaxClock=%.0f validity=0x%X publisherPid=%u "
+                    "publisherParentPid=%u publisherEligible=%d",
                     it->first, sourcePid, effectiveLuid, s.updatesSinceSummary,
                     metrics.cpuUsage.load(std::memory_order_relaxed),
                     metrics.maxCoreLoad.load(std::memory_order_relaxed),
-                    metrics.gpuUsage.load(std::memory_order_relaxed), metrics.vramUsage.load(std::memory_order_relaxed),
+                    metrics.gpuUsage.load(std::memory_order_relaxed),
+                    scan_host::metrics_policy::GpuLoadSourceName(gpuDiag.source), gpuDiag.heldCorruptPolls,
+                    gpuDiag.suppressedDropouts, metrics.vramUsage.load(std::memory_order_relaxed),
                     metrics.vramTotal.load(std::memory_order_relaxed) / (1024 * 1024),
                     metrics.cpuTemperatureC.load(std::memory_order_relaxed),
                     metrics.gpuTemperatureC.load(std::memory_order_relaxed),
@@ -401,14 +430,9 @@ int SensorProcessMain(const AppConfig& config) {
                     metrics.validityMask.load(std::memory_order_relaxed), luidSourcePid, luidSourceParentPid,
                     luidPublisherEligible ? 1 : 0);
                 s.updatesSinceSummary = 0;
+                s.lastSummaryTickMs = summaryNowMs;
+                s.loggedInitialSummary = true;
             }
-
-            // Update metrics using the existing host_metrics logic
-            scan_host::UpdateSystemMetrics(
-                s.shm, sourcePid, effectiveLuid,
-                useScreenGrabTarget ? scan_host::metrics_policy::AdapterResolutionSource::CaptureDeviceLuid
-                                    : scan_host::metrics_policy::AdapterResolutionSource::HookLuid,
-                hardwareSensors);
 
             ++it;
         }
@@ -440,11 +464,12 @@ int SensorProcessMain(const AppConfig& config) {
             controllerIndex = waitCount;
             waitHandles[waitCount++] = hControllerProcess;
         }
+        const DWORD loopWaitMs = anyTargetActive ? activeTargetWaitMs : serviceWaitMs;
         if (waitCount == 0) {
-            Sleep(serviceWaitMs);
+            Sleep(loopWaitMs);
             continue;
         }
-        const DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, serviceWaitMs);
+        const DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, loopWaitMs);
         if (waitResult < WAIT_OBJECT_0 + waitCount) {
             const DWORD signaledIndex = waitResult - WAIT_OBJECT_0;
             if (signaledIndex == shutdownIndex)
@@ -458,7 +483,7 @@ int SensorProcessMain(const AppConfig& config) {
                 LogWarn("[Sensors] Lifetime wait failed (error=%lu); retaining bounded polling", GetLastError());
                 loggedWaitFailure = true;
             }
-            Sleep(serviceWaitMs);
+            Sleep(loopWaitMs);
         }
     }
 

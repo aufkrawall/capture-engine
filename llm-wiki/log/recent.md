@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-11-20 - Reliable overlay GPU load: NVML PMU + D3DKMT node statistics + stabilizer (implemented)
+
+- `MirrorsEdge.exe` (x86 native DX9, `megpuload`, PID 28952, `0.1.7535`, RTX 5070 with HAGS `HwSchMode=2`): while
+  rendering steadily at 948–1008 FPS (`perf_metrics_28952.csv`, `hook_debug.log`), overlay GPU load jumped
+  `26% -> 0% -> 0% -> 0% -> 100%` because `host_metrics.cpp` published raw, unfiltered 1 s PDH
+  `\GPU Engine(*)\Utilization Percentage` polls. WDDM/HAGS per-process `RunningTime` both drops to 0%/100% bursts
+  on high-FPS DX9 and inflates toward ~100% under FIFO V-Sync when queued frames wait on scanout fences (whereas a
+  CPU FPS limiter drains the queue).
+- Live RTX 5070 probes (`nvml.dll` + `D3DKMTQueryAdapterInfo`/`D3DKMTQueryStatistics`):
+  - `D3DKMTQueryAdapterInfo(KMTQAITYPE_ADAPTERADDRESS=6)` matches `nvmlDeviceGetPciInfo_v3` (`bus=6 dev=0 fn=0`;
+    software WARP returns `0xFFFFFFFF`), enabling exact multi-GPU LUID-to-NVML matching.
+  - `nvmlDeviceGetSamples(NVML_GPU_UTILIZATION_SAMPLES=1)` provides 200 ms hardware PMU GR-engine samples
+    (excluding NVENC/NVDEC), reading steady `22–23%`, `62–63%`, `93–94%` on DX9 and `3–8%` on light/moderate FIFO
+    V-Sync with ~200–400 ms step response.
+  - `KMTQAITYPE_NODEMETADATA=25` uses `#pragma pack(1)` (`sizeof == 78`) and classifies all 14 RTX 5070 nodes
+    (3D, Copy, VideoEncode, VideoDecode, OFA, JPEG), allowing direct adapter-wide `D3DKMTQueryStatistics(NODE)`
+    running-time deltas for non-NVIDIA GPUs without PDH wildcard/per-process churn.
+- Implemented `captureengine/app/gpu_load_policy.h` (`IntegrateNvmlGpuSamples`, `IsD3dkmtVideoEngineNode`,
+  `ComputeD3dkmtAdapterLoadPercent`, `EvaluatePdhGpuLoadPoll`, `GpuLoadStabilizer`) and `gpu_load_sampler.{h,cpp}`,
+  wired into `host_metrics.cpp` (NVML -> D3DKMT -> hardened PDH) and `sensor_service.cpp` (500 ms active-target
+  polling, `[Metrics] GPU load source:` transition log, `gpuSrc`/`gpuHeld`/`gpuDrop` in `[Sensors] Summary`).
+- Tests: `tests/test_gpu_load_sampler.cpp` (13 tests) + `HostMetricsSourceInvariantTest.HostMetricsUsesLayeredGpuLoadSamplerAndStabilizer`.
+  In-game Mirror's Edge and FIFO V-Sync hardware retest pending.
+
 ### 2026-11-15 - RoboCop overlay blank on DLSS-G activation: v1 slDLSSGState OOB read + cold-start PostSL/pre-SL gates (fixed)
 
 - `RoboCop-Win64-Shipping.exe` (`20261115_142942`, `0.1.7527`, Steam Overlay + Streamline active): the overlay

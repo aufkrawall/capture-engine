@@ -7,6 +7,8 @@
 #include <vector>
 #include "common/ipc/shared_defs.h"
 #include "gpu_engine_breakdown.h"
+#include "gpu_load_policy.h"
+#include "gpu_load_sampler.h"
 #include "host_metrics_policy.h"
 
 namespace ce::hardware_sensors {
@@ -63,6 +65,19 @@ struct HostMetricsState {
     uint32_t engineWindowPid = 0;
     int64_t engineWindowLuid = 0;
 
+    // Native hardware/kernel GPU load sampler (NVML PMU -> D3DKMT node -> PDH fallback)
+    // and temporal stabilizer.
+    GpuLoadSampler gpuLoadSampler;
+    metrics_policy::GpuLoadStabilizer gpuLoadStabilizer;
+    uint32_t gpuLoadPid = 0;
+    int64_t gpuLoadLuid = 0;
+    metrics_policy::GpuLoadSource activeGpuLoadSource = metrics_policy::GpuLoadSource::Unavailable;
+    metrics_policy::GpuLoadSource lastLoggedGpuLoadSource = metrics_policy::GpuLoadSource::Unavailable;
+    uint32_t lastLoggedGpuLoadPid = 0;
+    int64_t lastLoggedGpuLoadLuid = 0;
+    uint32_t lastLoggedHeldCorrupt = 0;
+    uint32_t lastLoggedSuppressedDropouts = 0;
+
     // Helper
     void Initialize(bool includeGpuMetrics);
     void Cleanup();
@@ -70,6 +85,15 @@ struct HostMetricsState {
     // Query VRAM total from DXGI (64-bit safe)
     uint64_t QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidHigh);
 };
+
+struct GpuLoadDiagnosticsSnapshot {
+    metrics_policy::GpuLoadSource source = metrics_policy::GpuLoadSource::Unavailable;
+    uint32_t heldCorruptPolls = 0;
+    uint32_t suppressedDropouts = 0;
+    uint32_t confirmedDrops = 0;
+};
+
+GpuLoadDiagnosticsSnapshot GetLastGpuLoadDiagnostics();
 
 // Main update function called by CaptureEngine loop
 // targetPid: The process ID we are capturing (to filter GPU usage if possible)

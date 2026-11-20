@@ -118,6 +118,17 @@ void HostMetricsState::Cleanup() {
     lastPublishedPid = 0;
     lastPublishedLuid = 0;
     lastPublishedAdapterSource = 0;
+    gpuLoadSampler.Reset();
+    gpuLoadStabilizer.Reset();
+    gpuLoadStabilizer.ResetStats();
+    gpuLoadPid = 0;
+    gpuLoadLuid = 0;
+    activeGpuLoadSource = metrics_policy::GpuLoadSource::Unavailable;
+    lastLoggedGpuLoadSource = metrics_policy::GpuLoadSource::Unavailable;
+    lastLoggedGpuLoadPid = 0;
+    lastLoggedGpuLoadLuid = 0;
+    lastLoggedHeldCorrupt = 0;
+    lastLoggedSuppressedDropouts = 0;
 }
 
 uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidHigh) {
@@ -386,28 +397,91 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
         g_HostMetrics.lastPublishedAdapterSource = sourceClass;
     }
 
+    if (g_HostMetrics.gpuLoadPid != targetPid || g_HostMetrics.gpuLoadLuid != adapter.adapterLuid) {
+        g_HostMetrics.gpuLoadStabilizer.Reset();
+        g_HostMetrics.gpuLoadPid = targetPid;
+        g_HostMetrics.gpuLoadLuid = adapter.adapterLuid;
+        g_HostMetrics.activeGpuLoadSource = metrics_policy::GpuLoadSource::Unavailable;
+    }
+
     double totalGpuLoad = 0.0;
-    // A resolved adapter plus a counter query that succeeded is a readable
-    // sample even when no engine instance matched this process: that is 0%
-    // load, not an unknown. See GpuLoadIsReadable.
-    bool gpuUsageValid = metrics_policy::GpuLoadIsReadable(adapter.adapterLuid != 0, gpuCounterRead);
-    if (gpuCounterRead && adapter.adapterLuid != 0) {
-        // Per engine, not per instance: the 3D, Compute and Copy engines run at
-        // the same time, so their utilizations are not addends of one elapsed
-        // second. Summing them reached the 100 clamp long before the GPU was
-        // busy - which is why an in-game step from 3x to 4x multi-frame
-        // generation, measured at 36.0 base renders per second against 47.8,
-        // moved the reported load not at all.
-        std::vector<metrics_policy::GpuEngineLoadSample> engineLoads;
-        engineLoads.reserve(gpuValues.size());
-        for (const GpuEngineValue& value : gpuValues) {
-            if (value.adapterLuid != adapter.adapterLuid || !value.valueValid)
-                continue;
-            if (!value.videoEngine)
-                engineLoads.push_back({value.engineKey, value.utilization});
+    bool gpuUsageValid = false;
+    metrics_policy::GpuLoadSource activeGpuLoadSource = metrics_policy::GpuLoadSource::Unavailable;
+    std::string activeGpuLoadDetail;
+
+    if (adapter.adapterLuid != 0) {
+        if (gpuCounterRead)
+            ObserveGpuEngineBreakdown(g_HostMetrics, gpuValues, adapter.adapterLuid, targetPid);
+
+        // Prefer hardware PMU (NVML matched by PCI bus/device) or direct WDDM
+        // adapter-wide node running time (D3DKMTQueryStatistics) over PDH
+        // \GPU Engine(*), avoiding both HAGS/DX9 per-process 0%<->100% jumps
+        // and FIFO-VSync queue-wait inflation.
+        const GpuLoadReading nativeReading = g_HostMetrics.gpuLoadSampler.SampleAdapter(adapter.adapterLuid);
+        metrics_policy::GpuLoadStabilizerOutput stabilized;
+        if (nativeReading.valid) {
+            activeGpuLoadSource = nativeReading.source;
+            activeGpuLoadDetail = nativeReading.detail;
+            stabilized = g_HostMetrics.gpuLoadStabilizer.Update(nativeReading.source, nativeReading.percent,
+                                                                /*sampleValid=*/true);
+        } else {
+            // PDH fallback: per physical engine, not per instance (concurrent
+            // 3D/Compute/Copy engines must not sum past 100%), and detect
+            // invalid PDH CStatus items so corrupt polls hold instead of
+            // flashing 0%. A clean query with zero instances stays a valid 0%
+            // (see GpuLoadIsReadable).
+            std::vector<metrics_policy::PdhNonVideoEngineItem> pdhItems;
+            if (gpuCounterRead) {
+                pdhItems.reserve(gpuValues.size());
+                for (const GpuEngineValue& value : gpuValues) {
+                    if (value.adapterLuid != adapter.adapterLuid)
+                        continue;
+                    if (!value.videoEngine)
+                        pdhItems.push_back({value.engineKey, value.utilization, value.valueValid});
+                }
+            }
+            const metrics_policy::PdhGpuLoadPoll pdhPoll = metrics_policy::EvaluatePdhGpuLoadPoll(pdhItems);
+            const bool pdhReadable = metrics_policy::GpuLoadIsReadable(true, gpuCounterRead);
+            activeGpuLoadSource =
+                pdhReadable ? metrics_policy::GpuLoadSource::PdhEngine : metrics_policy::GpuLoadSource::Unavailable;
+            activeGpuLoadDetail = pdhPoll.pollCorrupt ? "pdh-invalid-status" : "pdh";
+            stabilized = g_HostMetrics.gpuLoadStabilizer.Update(metrics_policy::GpuLoadSource::PdhEngine,
+                                                                pdhPoll.percent, pdhReadable, pdhPoll.pollCorrupt);
         }
-        totalGpuLoad = metrics_policy::ResolveAdapterGpuLoadPercent(std::move(engineLoads));
-        ObserveGpuEngineBreakdown(g_HostMetrics, gpuValues, adapter.adapterLuid, targetPid);
+
+        gpuUsageValid = stabilized.readable;
+        totalGpuLoad = stabilized.readable ? stabilized.percent : 0.0;
+        g_HostMetrics.activeGpuLoadSource = activeGpuLoadSource;
+
+        if (activeGpuLoadSource != metrics_policy::GpuLoadSource::Unavailable &&
+            (g_HostMetrics.lastLoggedGpuLoadPid != targetPid ||
+             g_HostMetrics.lastLoggedGpuLoadLuid != adapter.adapterLuid ||
+             g_HostMetrics.lastLoggedGpuLoadSource != activeGpuLoadSource)) {
+            LogInfo("[Metrics] GPU load source: gamePid=%u luid=0x%llX source=%s detail=%s", targetPid,
+                    adapter.adapterLuid, metrics_policy::GpuLoadSourceName(activeGpuLoadSource),
+                    activeGpuLoadDetail.empty() ? "-" : activeGpuLoadDetail.c_str());
+            g_HostMetrics.lastLoggedGpuLoadPid = targetPid;
+            g_HostMetrics.lastLoggedGpuLoadLuid = adapter.adapterLuid;
+            g_HostMetrics.lastLoggedGpuLoadSource = activeGpuLoadSource;
+        }
+
+        const auto& stats = g_HostMetrics.gpuLoadStabilizer.Stats();
+        if (stabilized.heldCorrupt &&
+            (stats.heldCorruptPolls == 1 || stats.heldCorruptPolls - g_HostMetrics.lastLoggedHeldCorrupt >= 10)) {
+            LogInfo("[Metrics] GPU load held across corrupt/invalid poll: gamePid=%u luid=0x%llX source=%s held=%u",
+                    targetPid, adapter.adapterLuid, metrics_policy::GpuLoadSourceName(activeGpuLoadSource),
+                    stats.heldCorruptPolls);
+            g_HostMetrics.lastLoggedHeldCorrupt = stats.heldCorruptPolls;
+        }
+        if (stabilized.suppressedDropout &&
+            (stats.suppressedDropouts == 1 ||
+             stats.suppressedDropouts - g_HostMetrics.lastLoggedSuppressedDropouts >= 10)) {
+            LogInfo("[Metrics] GPU load suppressed single-poll WDDM dropout: gamePid=%u luid=0x%llX source=%s "
+                    "suppressed=%u confirmedDrops=%u",
+                    targetPid, adapter.adapterLuid, metrics_policy::GpuLoadSourceName(activeGpuLoadSource),
+                    stats.suppressedDropouts, stats.confirmedDrops);
+            g_HostMetrics.lastLoggedSuppressedDropouts = stats.suppressedDropouts;
+        }
     }
 
     static NtQuerySystemInformationPtr NtQuerySystemInformation = nullptr;
@@ -543,4 +617,11 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
         g_HostMetrics.lastLoggedVramTotal = vramTotal;
     }
 }
+
+GpuLoadDiagnosticsSnapshot GetLastGpuLoadDiagnostics() {
+    std::lock_guard<std::mutex> lock(g_MetricsMutex);
+    const auto& stats = g_HostMetrics.gpuLoadStabilizer.Stats();
+    return {g_HostMetrics.activeGpuLoadSource, stats.heldCorruptPolls, stats.suppressedDropouts, stats.confirmedDrops};
+}
+
 }  // namespace scan_host
