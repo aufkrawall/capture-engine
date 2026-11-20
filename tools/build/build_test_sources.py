@@ -68,7 +68,7 @@ TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp"
 TESTS_ONLY_DISPLAY_TIMING_SOURCES = ("present_progress_feed.cpp", "display_timing_session_reclaim.cpp",
                                      "display_stall_trace_sealer.cpp")
 
-TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp", "mediaengine_loader.cpp", "windows_gpu_scheduling.cpp")
+TESTS_ONLY_APP_SOURCES = ("gpu_load_sampler.cpp", "role_configuration.cpp", "mediaengine_loader.cpp", "windows_gpu_scheduling.cpp")
 # The logger role entry and its shared-ring source: the tests drive RunLoggerRole through injected rings.
 TESTS_ONLY_LOGGER_SOURCES = ("logger_service.cpp", "logger_ring_source.cpp")
 # The inject role (RunInjectRole) and its link closure: the tests run it on a thread over the in-memory channel. The

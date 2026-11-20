@@ -15,6 +15,7 @@ CENGINE_SDK_HEADERS = ("cengine.h", "cengine.hpp")
 # (captureengine/display_timing/present_progress_feed.h); the rest is their link closure. A unit missing here fails the DLL link with an undefined symbol, never
 # silently.
 CENGINE_ROLE_HOST_SOURCES = (
+    "captureengine/app/gpu_load_sampler.cpp",
     "captureengine/app/host_metrics.cpp",
     "captureengine/app/mediaengine_loader.cpp",
     "captureengine/app/role_configuration.cpp",
