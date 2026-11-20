@@ -314,13 +314,29 @@ void* MaybeAnswerQueryInterface(uint32_t functionId, void* resolved, const void*
         return nullptr;
     if (HookIsShuttingDown())
         return nullptr;
+
+    char caller[MAX_PATH] = {};
+    const bool haveCaller =
+        callerAddress && ce::overlay_compat::TryGetModulePathFromCodeAddress(callerAddress, caller, sizeof(caller));
+    const bool callerIsThirdPartyOverlay = haveCaller && ce::overlay_compat::IsThirdPartyOverlayModulePath(caller);
+    if (!ShouldWrapFlipMeteringQueryForCaller(callerIsThirdPartyOverlay)) {
+        static ce::log_meter::StreamChangeGate<4> s_overlayBypassGate;
+        if (const auto verdict = s_overlayBypassGate.Observe(functionId, ce::log_meter::FieldKey(caller))) {
+            const char* name = functionId == kNvApiIdD3D12SetFlipConfig ? "NvAPI_D3D12_SetFlipConfig"
+                                                                        : "NvAPI_NGX_GetDriverFeatureSupport";
+            HookLogImportant(
+                "NVAPI flip metering: %s requested by third-party overlay/add-on %s - returning driver result %p "
+                "unwrapped%s",
+                name, caller, resolved, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return nullptr;
+    }
+
     const QueryAnswer answer = DecideQueryInterface(functionId, resolved != nullptr,
                                                     !resolved && ce::vulkan_layer_bridge::FlipMeteringBridgeAvailable());
 
     static ce::log_meter::StreamChangeGate<4> s_answerGate;
     if (const auto verdict = s_answerGate.Observe(functionId, static_cast<uint64_t>(answer))) {
-        char caller[MAX_PATH] = {};
-        ce::overlay_compat::TryGetModulePathFromCodeAddress(callerAddress, caller, sizeof(caller));
         const char* name =
             functionId == kNvApiIdD3D12SetFlipConfig ? "NvAPI_D3D12_SetFlipConfig" : "NvAPI_NGX_GetDriverFeatureSupport";
         const char* outcome = answer == QueryAnswer::kPassThrough

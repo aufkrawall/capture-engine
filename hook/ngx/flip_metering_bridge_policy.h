@@ -62,6 +62,13 @@ inline QueryAnswer DecideQueryInterface(uint32_t functionId, bool residentImplem
                                                     : QueryAnswer::kDriverFeatureSupport;
 }
 
+// Third-party overlays and ReShade add-ons (e.g. ReLimiter) query NvAPI_D3D12_SetFlipConfig
+// to locate and hook the driver's real function. Returning CE's observation wrapper makes them
+// hook CE instead of nvapi64.dll, so they miss calls made directly by sl.dlss_g.dll.
+inline bool ShouldWrapFlipMeteringQueryForCaller(bool callerIsThirdPartyOverlay) {
+    return !callerIsThirdPartyOverlay;
+}
+
 // NV_FLIP_CONFIG_V1 / _V2, field for field.
 struct FlipConfigV1 {
     uint32_t version;

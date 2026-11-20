@@ -671,4 +671,29 @@ TEST(PresentInterposerCompositeRouteTest, TheBoundRenderTargetIsNeverBorrowedOnA
     EXPECT_TRUE(MayAdoptBoundRenderTargetAsOverlayTarget(/*presentInterposerPrivateOutputChain=*/false));
 }
 
+// ReShade add-ons (e.g. relimiter.addon64) must be classified as third-party overlay/add-on
+// modules so CE leaves their IAT, GetProcAddress, NVAPI, and Streamline lookups untouched,
+// without inflating the tracked overlay count used for Present entry arbitration.
+TEST_F(OverlayModuleDetectionTest, ReShadeAddonsMatchOverlayPathWithoutInflatingOverlayCount) {
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("C:\\Games\\Title\\relimiter.addon64"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("C:\\Games\\Title\\AutoHDR.ADDON32"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath("C:\\Games\\Title\\custom.addon"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(L"C:\\Games\\Title\\relimiter.addon64"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(L"C:\\Games\\Title\\custom.ADDON32"));
+    EXPECT_TRUE(IsThirdPartyOverlayModulePath(L"relimiter.addon64"));
+
+    // Directory names, bare extensions, and ordinary DLLs must never match.
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("C:\\Mods\\foo.addon64\\game.exe"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath(L"C:\\Mods\\foo.addon64\\game.exe"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("C:\\Games\\.addon64"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("C:\\Games\\relimiter.addon64.dll"));
+    EXPECT_FALSE(IsThirdPartyOverlayModulePath("C:\\Games\\game_addon64.dll"));
+
+    // Must not inflate CountLoadedTrackedOverlayModules(kOverlay): ReShade itself is already counted.
+    NoteModuleLoadedForOverlayCache("ReShade64.dll");
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 1u);
+    EXPECT_EQ(NoteModuleLoadedForOverlayCache("C:\\Games\\Title\\relimiter.addon64"), nullptr);
+    EXPECT_EQ(CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay), 1u);
+}
+
 }  // namespace

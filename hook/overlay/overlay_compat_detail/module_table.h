@@ -369,11 +369,55 @@ inline bool IsVerifiedUbisoftOverlayModulePath(const CharT* path) {
            IsIdentifiedThirdPartyOverlayModulePath(path, OverlayPathIdentity::kUbisoft);
 }
 
+template <typename CharT>
+inline bool HasSuffixInsensitiveAscii(const CharT* str, const char* suffix) {
+    if (!str || !suffix) {
+        return false;
+    }
+    size_t strLen = 0;
+    while (str[strLen] != 0) {
+        ++strLen;
+    }
+    size_t suffixLen = 0;
+    while (suffix[suffixLen] != '\0') {
+        ++suffixLen;
+    }
+    if (strLen <= suffixLen) {
+        return false;
+    }
+    const size_t offset = strLen - suffixLen;
+    for (size_t i = 0; i < suffixLen; ++i) {
+        if (detail::ToLowerAscii(str[offset + i]) != detail::ToLowerAscii(suffix[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ReShade add-on modules use the standard .addon64 / .addon32 / .addon extensions
+// (e.g. relimiter.addon64). Recognizing them by base-name extension keeps CE from
+// patching their IAT, intercepting their GetProcAddress / nvapi_QueryInterface /
+// slGetFeatureFunction lookups, or mistaking them for game modules, without
+// inflating CountLoadedTrackedOverlayModules.
+template <typename CharT>
+inline bool IsReShadeAddonModulePath(const CharT* path) {
+    if (!path || !*path) {
+        return false;
+    }
+    const CharT* baseName = ExtractModuleBaseName(path);
+    if (!baseName || !*baseName || baseName[0] == '.') {
+        return false;
+    }
+    return HasSuffixInsensitiveAscii(baseName, ".addon64") ||
+           HasSuffixInsensitiveAscii(baseName, ".addon32") ||
+           HasSuffixInsensitiveAscii(baseName, ".addon");
+}
+
 inline bool IsThirdPartyOverlayModulePath(const char* path) {
     if (IsFrameGenerationRuntimeModulePath(path)) {
         return false;
     }
-    if (IsVerifiedUbisoftOverlayModulePath(path)) {
+    if (IsVerifiedUbisoftOverlayModulePath(path) || IsReShadeAddonModulePath(path)) {
         return true;
     }
     static constexpr const char* kOverlayTokens[] = {
@@ -394,7 +438,7 @@ inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
     if (IsFrameGenerationRuntimeModulePath(path)) {
         return false;
     }
-    if (IsVerifiedUbisoftOverlayModulePath(path)) {
+    if (IsVerifiedUbisoftOverlayModulePath(path) || IsReShadeAddonModulePath(path)) {
         return true;
     }
     static constexpr const wchar_t* kOverlayTokens[] = {

@@ -7,6 +7,7 @@
 
 #include "hook/ngx/flip_metering_bridge.h"
 #include "hook/ngx/flip_metering_bridge_policy.h"
+#include "hook/overlay/overlay_compat.h"
 #include "hook/vulkan_layer/vulkan_flip_metering_bridge_policy.h"
 #include "hook/vulkan_layer/vulkan_present_chain_policy.h"
 
@@ -175,6 +176,25 @@ TEST(FlipMeteringBridge, TheDriversSetFlipConfigReachesTheDriverUnchanged) {
     EXPECT_EQ(g_driverCall.config, &config);
     EXPECT_EQ(config.nFramesPerBatch, 1u);
     EXPECT_EQ(config.flipConfigFeedbackMask, hookside::kFlipConfigFeedbackNoIndependentFlip);
+}
+
+// ReLimiter and other third-party overlays/add-ons query NvAPI_D3D12_SetFlipConfig to hook
+// nvapi64.dll's real function. Handing them Observed_SetFlipConfig breaks their hook chain.
+TEST(FlipMeteringBridge, ThirdPartyOverlayCallerReceivesDriverSetFlipConfigUnwrapped) {
+    EXPECT_TRUE(hookside::ShouldWrapFlipMeteringQueryForCaller(/*callerIsThirdPartyOverlay=*/false));
+    EXPECT_FALSE(hookside::ShouldWrapFlipMeteringQueryForCaller(/*callerIsThirdPartyOverlay=*/true));
+
+    char exePath[MAX_PATH] = {};
+    ASSERT_GT(GetModuleFileNameA(nullptr, exePath, MAX_PATH), 0u);
+    ce::overlay_compat::ResetThirdPartyOverlayModuleCacheForTesting();
+    ASSERT_TRUE(ce::overlay_compat::PublishIdentifiedThirdPartyOverlayModulePath(exePath));
+
+    void* const answer = hookside::MaybeAnswerQueryInterface(
+        hookside::kNvApiIdD3D12SetFlipConfig, reinterpret_cast<void*>(&FakeDriverSetFlipConfig),
+        reinterpret_cast<const void*>(&FakeDriverSetFlipConfig));
+    ce::overlay_compat::ResetThirdPartyOverlayModuleCacheForTesting();
+
+    EXPECT_EQ(answer, nullptr);
 }
 
 TEST(FlipMeteringBridge, BinderTakesTheOpenFrameOrTheNextStart) {
