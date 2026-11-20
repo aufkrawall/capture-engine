@@ -549,6 +549,14 @@ once those tools are loaded.
   foreign prepend) with `InlineHook::CreateBypassTrampoline` before creating
   the temp D3D11 (and D3D10) device, so the probe operates on genuine d3d11
   objects — the same genuine-object rule as the temp-DXGI-factory fix.
+ - The x64 D3D10 startup probe crashed with `STATUS_STACK_OVERFLOW` in build 0.1.7161 (session `20261120_151932`).
+   In the symbolized dump, the WARP probe went through `d3d10`, ReShade's `dxgi` proxy, and System32 `d3d10_1`.
+   A late import in `d3d10_1` entered `Wrapped_D3D11CreateDeviceAndSwapChain`, whose saved original pointed back
+   to itself for 528 frames. Steam's overlay was absent from the process. The second IAT pass in `DX11Hook::Init`
+   had saved the previous import target into the wrapper's runtime-export slot. `CustomHook::HookExport` now
+   receives no output slot at this call site, so the primary IAT wrappers retain their own runtime export and
+   the supplemental detour uses its separately resolved entry. `FlowLateGraphicsImports.D3D10_1LoadedAfterDiscoveryCreatesItsDevice`
+   reproduces the stack overflow on the old code without any overlay proxy and creates a WARP D3D10.1 device with the fix.
 - Talos (DX12) + ReShade-only crashed twice in the queue hook chain, not in
   the loader (sessions `20260813_041416` / `20260813_050515`): CE's
   "first captured original" globals for `ExecuteCommandLists`/`Signal` were

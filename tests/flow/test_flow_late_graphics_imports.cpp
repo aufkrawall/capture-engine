@@ -202,4 +202,30 @@ TEST(FlowLateGraphicsImports, D3D10_1LoadedAfterInitCreatesItsDevice) {
         device->Release();
     }
 }
+
+TEST(FlowLateGraphicsImports, D3D10_1LoadedAfterDiscoveryCreatesItsDevice) {
+    // The D3D10 import starts in the wrapper and is repatched during discovery.
+    // A newly loaded D3D10.1 runtime still reaches D3D11 through the first wrapper.
+    const HMODULE runtime = LoadLibraryExW(L"d3d10.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ASSERT_NE(runtime, nullptr);
+    const auto releaseRuntime = ce::make_scope_guard([&] { FreeLibrary(runtime); });
+    ASSERT_NE(GetModuleHandleW(L"d3d11.dll"), nullptr);
+    ASSERT_EQ(GetModuleHandleW(L"d3d10_1.dll"), nullptr);
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.Error().empty()) << game.Error();
+    const auto hook = GetModuleHandleW(L"capture_hook_x64.dll");
+    const auto pump = reinterpret_cast<CEFlow_PumpHookThread_t>(GetProcAddress(hook, "CEFlow_PumpHookThread"));
+    ASSERT_NE(pump, nullptr);
+    pump();
+
+    const HMODULE runtime1 = LoadLibraryExW(L"d3d10_1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ASSERT_NE(runtime1, nullptr);
+    const auto releaseRuntime1 = ce::make_scope_guard([&] { FreeLibrary(runtime1); });
+    const auto create = reinterpret_cast<decltype(&D3D10CreateDevice1)>(GetProcAddress(runtime1, "D3D10CreateDevice1"));
+    ASSERT_NE(create, nullptr);
+    ce::ComGuard<ID3D10Device1> device;
+    const HRESULT hr = create(nullptr, D3D10_DRIVER_TYPE_WARP, nullptr, 0, D3D10_FEATURE_LEVEL_10_0,
+                              D3D10_1_SDK_VERSION, device.put());
+    EXPECT_TRUE(SUCCEEDED(hr) && device.get()) << "hr=0x" << std::hex << static_cast<uint32_t>(hr);
+}
 }  // namespace

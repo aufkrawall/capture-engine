@@ -365,10 +365,6 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
             pFinalDesc = &desc;
     }
 
-    // Use the local copy of the real original.  The shared oD3D11CreateDeviceAndSwapChain
-    // (from dx11_hook.h) may have been overwritten by HookExport -> PatchIATAllModules,
-    // which sets it to Wrapped_D3D11CreateDeviceAndSwapChain when a prior IAT hook exists.
-    // Calling that would re-enter the wrapper -> infinite recursion -> stack overflow.
     ce::translated_swapchain::CreateScope translation(pSwapChainDesc ? pSwapChainDesc->OutputWindow : nullptr);
     HRESULT hr = realOriginal(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
                               pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);

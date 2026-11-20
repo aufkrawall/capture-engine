@@ -197,14 +197,8 @@ void STDMETHODCALLTYPE DetourSwapDeviceContextState11(ID3D11DeviceContext1* cont
 void STDMETHODCALLTYPE DetourPSGetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                              ID3D11SamplerState** samplers);
 
-// Local copy of the real original D3D11CreateDeviceAndSwapChain function address.
-// HookExport calls PatchIATAllModules which overwrites the shared
-// oD3D11CreateDeviceAndSwapChain (also used by wrapper_hooks.cpp) with the
-// address of Wrapped_D3D11CreateDeviceAndSwapChain — causing the DX11 detour
-// to call back into the wrapper instead of the real function, leading to
-// infinite IAT recursion and stack overflow (0xC00000FD).
-// Save the real GetProcAddress result separately so DetourD3D11CreateDeviceAndSwapChain
-// can always reach the actual d3d11.dll code.
+// Pinned runtime entry used by the supplemental detour and the discovery probe.
+// The primary IAT wrapper's own forward target is resolved by IATHook.
 inline PFN_D3D11CreateDeviceAndSwapChain dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain = NULL;
 
 inline CreateSwapChain_t dx11_hook_oCreateSwapChain = NULL;

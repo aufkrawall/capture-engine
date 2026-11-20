@@ -353,8 +353,6 @@ void DX11Hook::Init() {
         return;
     }
 
-    // D3D11CreateDeviceAndSwapChain hook is now handled by IAT patching in
-    // iat_hook.cpp The InitializeD3D11Hooks() function sets up the IAT hook.
     // Pinned: everything below resolves, inline-patches and calls into this
     // image, and the patch plus the saved originals are never withdrawn, so the
     // module must not be able to unload underneath them. CheckAndInstallHooks
@@ -366,24 +364,22 @@ void DX11Hook::Init() {
         // This may have been called before d3d11.dll was loaded at startup
         IATHook::InitializeD3D11Hooks();
 
-        // Also hook the export directly using CustomHook to catch calls that bypass
-        // IAT (e.g., statically bound imports, GetProcAddress)
+        // Keep the supplemental creation detour for existing imports and dynamic lookups.
         CustomHook::Initialize();
         void* pTarget = (void*)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
         if (pTarget) {
-            HookLog("DX11: Hook target at %p", pTarget);
-            // Save the real original BEFORE HookExport overwrites the shared
-            // oD3D11CreateDeviceAndSwapChain (shared with wrapper_hooks.cpp).
+            // HookExport reports the previous import target, which can be CE's wrapper.
+            // The detour forwards to the resolved export. The wrapper's own forward target
+            // belongs to IATHook and must stay callable by importers loaded later.
             dx11_hook_s_oRealD3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(pTarget);
-            bool created = CustomHook::HookExport(
-                               "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (void*)DetourD3D11CreateDeviceAndSwapChain,
-                               (void**)&oD3D11CreateDeviceAndSwapChain) == CustomHook::Status::Success;
-            HookLog("DX11: HookExport result: %s", created ? "success" : "failed");
-            HookLog("DX11: D3D11CreateDeviceAndSwapChain export hook installed.");
+            const auto status = CustomHook::HookExport(
+                "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (void*)DetourD3D11CreateDeviceAndSwapChain, nullptr);
+            HookLog("DX11: D3D11CreateDeviceAndSwapChain detour registration=%s runtimeEntry=%p wrapperForward=%p",
+                    status == CustomHook::Status::Success ? "ok" : "failed", pTarget,
+                    reinterpret_cast<void*>(oD3D11CreateDeviceAndSwapChain));
         } else {
             HookLog("DX11: Failed to get D3D11CreateDeviceAndSwapChain address!");
         }
-        HookLog("DX11: D3D11CreateDeviceAndSwapChain hook installed.");
     }
 
     // 2. Hook D3D10 entry points

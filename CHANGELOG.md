@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7161).
 
+### Fixed
+
+- **Direct3D 10 startup crash:** fixed a stack overflow when a Direct3D 10 application loads part of the graphics runtime after Capture Engine initializes its hooks.
+
 ## v0.1.7161
 
 Changes since [v0.1.7160](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7160).
