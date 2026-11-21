@@ -124,4 +124,92 @@ TEST(FlowQueueDispatch, TranslatorDiscoverySubmitsWithoutClaimingTheGameQueue) {
     ExpectNoDebugLayerErrors();
 }
 
+// ReLimiter 4.0's Streamline GPU handoff and D3D12 queue-based pacer both reject a command queue
+// whose vtable[10] (ExecuteCommandLists) or vtable[14] (Signal) has been overwritten outside
+// D3D12Core.dll / d3d12.dll. Verify on a real headless WARP D3D12 queue that CE intercepts via
+// an inline hook and leaves the class vtable slots pointing inside D3D12Core.dll / d3d12.dll.
+TEST(FlowQueueDispatch, NativeD3D12QueueKeepsVTableSlotsInD3D12Core) {
+    FlowGame game(CurrentTestName());
+    ComPtr<IDXGIFactory4> factory;
+    ComPtr<IDXGIAdapter> warp;
+    ComPtr<ID3D12Device> device;
+    ASSERT_EQ(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), S_OK);
+    ASSERT_EQ(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)), S_OK);
+    ASSERT_EQ(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)), S_OK);
+
+    D3D12_COMMAND_QUEUE_DESC desc{};
+    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ComPtr<ID3D12CommandQueue> native;
+    ASSERT_EQ(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&native)), S_OK);
+
+    auto isNativeD3D12Address = [](const void* addr) {
+        HMODULE mod = nullptr;
+        if (!addr ||
+            !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                static_cast<LPCSTR>(addr), &mod) ||
+            !mod) {
+            return false;
+        }
+        char path[MAX_PATH] = {};
+        if (!GetModuleFileNameA(mod, path, MAX_PATH))
+            return false;
+        const char* base = std::strrchr(path, '\\');
+        base = base ? base + 1 : path;
+        return _stricmp(base, "d3d12core.dll") == 0 || _stricmp(base, "d3d12.dll") == 0;
+    };
+
+    void** vtbl = *reinterpret_cast<void***>(native.Get());
+    ASSERT_NE(vtbl, nullptr);
+    void* const eclBefore = vtbl[10];
+    void* const signalBefore = vtbl[14];
+    ASSERT_TRUE(isNativeD3D12Address(vtbl)) << "expected native D3D12Core.dll command queue vtable";
+    ASSERT_TRUE(isNativeD3D12Address(eclBefore)) << "expected native ExecuteCommandLists slot";
+    ASSERT_TRUE(isNativeD3D12Address(signalBefore)) << "expected native Signal slot";
+
+    game.TrackQueue(native.Get());
+
+    // VTable slots [10] and [14] must remain unchanged inside D3D12Core.dll / d3d12.dll.
+    EXPECT_EQ(vtbl[10], eclBefore);
+    EXPECT_EQ(vtbl[14], signalBefore);
+    EXPECT_TRUE(isNativeD3D12Address(vtbl[10]));
+    EXPECT_TRUE(isNativeD3D12Address(vtbl[14]));
+
+    // Resolved original must be CE's callable inline trampoline (distinct from the inline-hooked
+    // native entry), so forwarding never recurses back into DetourExecuteCommandLists.
+    void* const resolved = game.QueueOriginal(native.Get());
+    ASSERT_NE(resolved, nullptr);
+    EXPECT_NE(resolved, eclBefore);
+
+    // Real submission through both the virtual call (hitting CE's inline detour) and the resolved
+    // trampoline must complete cleanly on the GPU.
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    ASSERT_EQ(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)), S_OK);
+    ASSERT_EQ(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                        IID_PPV_ARGS(&list)),
+              S_OK);
+    ASSERT_EQ(list->Close(), S_OK);
+    ID3D12CommandList* lists[] = {list.Get()};
+    native->ExecuteCommandLists(1, lists);
+    game.ForwardQueue(native.Get());
+
+    // Resetting queue bindings must still recover the exact trampoline rather than looping into
+    // the inline-hooked native entry.
+    game.ResetQueueBindings();
+    EXPECT_EQ(game.QueueOriginal(native.Get()), resolved);
+    game.ForwardQueue(native.Get());
+    EXPECT_EQ(vtbl[10], eclBefore);
+
+    ComPtr<ID3D12Fence> fence;
+    ASSERT_EQ(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), S_OK);
+    const HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    ASSERT_NE(done, nullptr);
+    ASSERT_EQ(native->Signal(fence.Get(), 1), S_OK);
+    ASSERT_EQ(fence->SetEventOnCompletion(1, done), S_OK);
+    const DWORD wait = WaitForSingleObject(done, 5000);
+    CloseHandle(done);
+    ASSERT_EQ(wait, WAIT_OBJECT_0);
+    EXPECT_EQ(device->GetDeviceRemovedReason(), S_OK);
+}
+
 }  // namespace

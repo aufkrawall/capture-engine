@@ -357,7 +357,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         ID3D12CommandQueue* realQueue = (ID3D12CommandQueue*)pThis;
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
-        const bool queueLooksDirect = original && real && original == real;
+        const bool queueLooksDirect = ce::dx12_queue_dispatch::MethodsShareImplementation(original, real);
         ID3D12CommandQueue* capturedSLWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         const bool usableDirectQueueCandidate = ce::dx12_overlay_policy::IsUsableValidatedPostSLDirectQueueCandidate(
@@ -403,6 +403,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                                                         "ExecuteCommandLists", "PostSL wrapper dispatch"))
                 {
                     ScopedHookForwardedCall forwardedCycles;
+                    real = ce::dx12_queue_dispatch::CallableMethodForNative(real);
                     real(pThis, NumCommandLists, ppCommandLists);
                     ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
                 }

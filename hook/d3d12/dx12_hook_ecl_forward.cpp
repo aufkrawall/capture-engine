@@ -7,9 +7,10 @@ namespace ce::dx12_ecl_forward {
 namespace {
 
 dx12_overlay_policy::EclBreakTargetClass ClassifyBreakTarget(ExecuteCommandListsPtr candidate) {
+    const ExecuteCommandListsPtr native = ce::dx12_queue_dispatch::NativeMethodForCallable(candidate);
     char modulePath[MAX_PATH] = {};
     const bool resolved =
-        TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(candidate), modulePath, sizeof(modulePath));
+        TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(native), modulePath, sizeof(modulePath));
     return dx12_overlay_policy::ClassifyEclBreakTargetCandidate(resolved, modulePath);
 }
 

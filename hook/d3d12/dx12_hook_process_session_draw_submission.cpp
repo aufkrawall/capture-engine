@@ -140,7 +140,8 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                 (!useDedicated && realECL && !isSLWrapperECL)
                     ? true
                     : (origECL
-                           ? IsD3D12ModuleAddress(reinterpret_cast<void*>(origECL))
+                           ? IsD3D12ModuleAddress(reinterpret_cast<void*>(
+                                 ce::dx12_queue_dispatch::NativeMethodForCallable(origECL)))
                            : false);
             HookLogImportant(
                 "DX12: ECL path=%s (eclQ=%p realECL=%p origECL=%p "
@@ -175,8 +176,8 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                 // hook see and accept our overlay ECL.
                 origECL(eclQueue, 1, lists);
                 if (classifyFocusLossSubmitPath) {
-                    submitPathIsD3D12Module =
-                        IsD3D12ModuleAddress(reinterpret_cast<void*>(origECL));
+                    submitPathIsD3D12Module = IsD3D12ModuleAddress(
+                        reinterpret_cast<void*>(ce::dx12_queue_dispatch::NativeMethodForCallable(origECL)));
                 }
             } else {
                 realECL(eclQueue, 1, lists);
@@ -186,8 +187,8 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
         } else if (origECL) {
             origECL(eclQueue, 1, lists);
             if (classifyFocusLossSubmitPath) {
-                submitPathIsD3D12Module =
-                    IsD3D12ModuleAddress(reinterpret_cast<void*>(origECL));
+                submitPathIsD3D12Module = IsD3D12ModuleAddress(
+                    reinterpret_cast<void*>(ce::dx12_queue_dispatch::NativeMethodForCallable(origECL)));
             }
         } else {
             eclQueue->ExecuteCommandLists(1, lists);
@@ -478,6 +479,8 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                 const bool directSignal = DX12_MayCallResolvedQueueMethod(
                     eclQueue, reinterpret_cast<const void*>(realSignal), "Signal",
                     "overlay completion fence");
+                if (directSignal)
+                    realSignal = ce::dx12_queue_dispatch::CallableSignalForNative(realSignal);
                 HRESULT compSigHr = directSignal
                                         ? realSignal(eclQueue, completionFence, compVal)
                                         : eclQueue->Signal(completionFence, compVal);

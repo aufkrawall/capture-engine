@@ -168,7 +168,7 @@ bool explicitFinalOutputWithNativeSubmit = false;
         explicitFinalOutputWithNativeSubmit =
             ce::dx12_overlay_policy::HasExplicitFinalOutputNativeSubmitForSameQueueColdStart(
                 originalEcl != nullptr, nativeEcl != nullptr,
-                originalEcl != nullptr && originalEcl == nativeEcl, hasNativeStartupSubmit,
+                ce::dx12_queue_dispatch::MethodsShareImplementation(originalEcl, nativeEcl), hasNativeStartupSubmit,
                 selectedQueueCompatible);
     }
     sameQueuePureDLSSColdStartSafe = ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe(

@@ -470,7 +470,8 @@ postFSRProbeFramesPerLevel = fastPostFSRDLSSProbe ? 1 : dx12_hook_kPostFSRProbeF
 realECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
 realQ = dx12_hook_g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
 selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
-selectedQueueOrigECLMatchesRealECL = selectedQueueOrigECL && selectedQueueOrigECL == realECL;
+selectedQueueOrigECLMatchesRealECL =
+    ce::dx12_queue_dispatch::MethodsShareImplementation(selectedQueueOrigECL, realECL);
 isSLWrapperQ = ce::dx12_overlay_policy::ShouldTreatPostSLSelectedQueueAsWrapper(
     queue == dx12_hook_g_OriginalGameQueue, queue == g_PostSLQueues.DedicatedQueue(), selectedQueueIsSwapchainQueue,
     selectedQueueOrigECLMatchesRealECL);

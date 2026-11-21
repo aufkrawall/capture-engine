@@ -129,7 +129,8 @@ void LogResolvedQueueMethodFit(ce::dx12_overlay_policy::ResolvedQueueMethodFit f
 }  // namespace
 
 bool DX12_HasNativeStartupOutputSubmitPath(ID3D12CommandQueue* queue) {
-    const auto original = reinterpret_cast<void*>(GetOriginalExecuteCommandLists(queue));
+    const auto original = reinterpret_cast<void*>(
+        ce::dx12_queue_dispatch::NativeMethodForCallable(GetOriginalExecuteCommandLists(queue)));
     char path[MAX_PATH] = {};
     if (!GetCodeModulePath(original, path)) {
         return false;
@@ -141,7 +142,9 @@ bool DX12_HasNativeStartupOutputSubmitPath(ID3D12CommandQueue* queue) {
         return false;
     }
     const void* jump = FollowDirectJump(original);
-    return DX12_MayCallResolvedQueueMethod(queue, jump ? jump : original, "ExecuteCommandLists",
+    char jumpPath[MAX_PATH] = {};
+    const bool jumpInNativeD3D12 = jump && IsNativeD3D12CodeAddress(jump, jumpPath);
+    return DX12_MayCallResolvedQueueMethod(queue, jumpInNativeD3D12 ? jump : original, "ExecuteCommandLists",
                                           "first Streamline output");
 }
 
@@ -163,14 +166,15 @@ bool DX12_MayCallResolvedQueueMethod(ID3D12CommandQueue* queue, const void* meth
 ExecuteCommandListsPtr DX12_RealD3D12ECLForQueue(ID3D12CommandQueue* queue, const char* site) {
     const ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
     return DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(real), "ExecuteCommandLists", site)
-               ? real
+               ? ce::dx12_queue_dispatch::CallableMethodForNative(real)
                : nullptr;
 }
 
 SignalPtr DX12_RealD3D12SignalForQueue(ID3D12CommandQueue* queue, const char* site) {
     const SignalPtr real = dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire);
-    return DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(real), "Signal", site) ? real
-                                                                                                        : nullptr;
+    return DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(real), "Signal", site)
+               ? ce::dx12_queue_dispatch::CallableSignalForNative(real)
+               : nullptr;
 }
 
 bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source) {
@@ -197,17 +201,22 @@ bool TryPublishRealD3D12ECLCandidate(ExecuteCommandListsPtr candidate, const cha
         return false;
     }
 
-    void* selected = reinterpret_cast<void*>(candidate);
+    void* selected = reinterpret_cast<void*>(ce::dx12_queue_dispatch::NativeMethodForCallable(candidate));
     char modulePath[MAX_PATH] = {};
+    const bool selectedInNativeD3D12 = IsNativeD3D12CodeAddress(selected, modulePath);
     void* jumpTarget = FollowDirectJump(selected);
     if (jumpTarget) {
         char jumpModulePath[MAX_PATH] = {};
-        if (!IsNativeD3D12CodeAddress(jumpTarget, jumpModulePath)) {
+        if (IsNativeD3D12CodeAddress(jumpTarget, jumpModulePath)) {
+            selected = jumpTarget;
+            memcpy(modulePath, jumpModulePath, sizeof(modulePath));
+        } else if (!selectedInNativeD3D12) {
             return false;
         }
-        selected = jumpTarget;
-        memcpy(modulePath, jumpModulePath, sizeof(modulePath));
-    } else if (!IsNativeD3D12CodeAddress(selected, modulePath)) {
+        // When `selected` is already inside D3D12Core.dll/d3d12.dll and byte 0 jumps
+        // outside D3D12 (CE's or another tool's inline hook entry patch), keep `selected`
+        // as the native D3D12 method identity.
+    } else if (!selectedInNativeD3D12) {
         return false;
     }
 

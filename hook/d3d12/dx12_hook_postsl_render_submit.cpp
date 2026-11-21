@@ -75,7 +75,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
     HookLogImportant(
         "DX12: PostSL ECL diag — queue=%p scQueue=%p origECL=%p realECL=%p match=%d sameQueue=%d slWrapper=%d "
         "slFG=%d hadFSR=%d",
-        queue, scQueue, (void*)origECLDiag, (void*)realECL, origECLDiag == realECL ? 1 : 0,
+        queue, scQueue, (void*)origECLDiag, (void*)realECL,
+        ce::dx12_queue_dispatch::MethodsShareImplementation(origECLDiag, realECL) ? 1 : 0,
         queue == scQueue ? 1 : 0, isSLWrapperQ ? 1 : 0, slFGAtDispatch ? 1 : 0, dx12_hook_g_HadFSRFGPhase ? 1 : 0);
     g_PostSLECLDiagCount.fetch_add(1, std::memory_order_relaxed);
 }
@@ -170,9 +171,9 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                 usedOrigECL = true;
             } else if (DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(realECL),
                                                        "ExecuteCommandLists", "PostSL selected scQueue")) {
-                submittedECL = realECL;
+                submittedECL = ce::dx12_queue_dispatch::CallableMethodForNative(realECL);
                 captureBeforeOverlay(queue, submittedECL);
-                realECL(queue, 1, lists);
+                submittedECL(queue, 1, lists);
                 usedRealECL = true;
             } else {
                 captureBeforeOverlay(queue, nullptr);
@@ -246,9 +247,9 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             // Direct submission: bypass SL's wrapper entirely
             submittedQueue = realQ;
             dx12_hook_s_insidePostSLOverlayECL = true;
-            submittedECL = realECL;
+            submittedECL = ce::dx12_queue_dispatch::CallableMethodForNative(realECL);
             captureBeforeOverlay(realQ, submittedECL);
-            realECL(realQ, 1, lists);
+            submittedECL(realQ, 1, lists);
             dx12_hook_s_insidePostSLOverlayECL = false;
             usedRealECL = true;
 
@@ -360,9 +361,9 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
         }
     } else if (realECL && DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(realECL),
                                                           "ExecuteCommandLists", "PostSL submit")) {
-        submittedECL = realECL;
+        submittedECL = ce::dx12_queue_dispatch::CallableMethodForNative(realECL);
         captureBeforeOverlay(queue, submittedECL);
-        realECL(queue, 1, lists);
+        submittedECL(queue, 1, lists);
         usedRealECL = true;
     } else {
         ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);

@@ -10,7 +10,11 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **ReLimiter 4.0 and ReShade add-on compatibility:** preserve Capture Engine hook installation when a co-resident hook engine runs a thread whose DACL denies suspend/context access (`ThreadQuiescence` now steps past DACL-protected peers instead of aborting thread enumeration), classify ReShade add-ons (`.addon64` / `.addon32` / `.addon`) as third-party overlay/add-on modules so Capture Engine leaves their IAT, `GetProcAddress`, and NVAPI lookups untouched, return the driver's real `NvAPI_D3D12_SetFlipConfig` pointer unwrapped to third-party overlay/add-on callers, and preserve the real `sl.dlss_g.dll` / `sl.reflex.dll` / `sl.pcl.dll` function pointers returned by `slGetFeatureFunction` whenever Capture Engine's inline hook is active (and always for third-party overlay/add-on callers).
+- **ReLimiter 4.0 and ReShade add-on compatibility:** made Capture Engine coexist cleanly with ReLimiter 4.0 and other ReShade add-ons so frame pacing, Streamline frame generation handoff, and both overlays work together:
+  - Step past peer threads whose kernel DACL explicitly denies suspend/context access (`ThreadQuiescence` on both `NtGetNextThread` and system-snapshot walks) so co-resident anti-freeze hook installer threads no longer block Capture Engine's inline/deep hooks.
+  - Classify ReShade add-ons (`.addon64` / `.addon32` / `.addon`) as third-party overlay/add-on modules without inflating the tracked overlay count, keeping Capture Engine from patching their IAT or hijacking their `GetProcAddress`, `nvapi_QueryInterface`, and `NvAPI_D3D12_SetFlipConfig` lookups.
+  - Preserve the real `sl.dlss_g.dll` / `sl.reflex.dll` / `sl.pcl.dll` function pointers returned by `slGetFeatureFunction` whenever Capture Engine's direct inline hook is active (and always for third-party overlay/add-on callers), so co-resident tools discover the real Streamline plugin image and chained entry hooks run.
+  - Inline-hook native `D3D12Core.dll` / `d3d12.dll` `ID3D12CommandQueue::ExecuteCommandLists` and `Signal` instead of overwriting `ID3D12CommandQueue` vtable slots `[10]` and `[14]` in place, preserving the class vtable slots that ReLimiter 4.0's queue-based pacer and Streamline GPU handoff require.
 
 - **Direct3D 10 startup crash:** fixed a stack overflow when a Direct3D 10 application loads part of the graphics runtime after Capture Engine initializes its hooks.
 

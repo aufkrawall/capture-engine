@@ -4,6 +4,7 @@
 #include <string>
 
 #include "hook/d3d12/dx12_overlay_policy/ecl_recursion_break.h"
+#include "hook/d3d12/dx12_overlay_policy/queue_dispatch_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -192,6 +193,39 @@ TEST(Dx12EclRecursionBreakPolicyTest, SignalVTableHookStoresPerVtableOriginalAnd
     ASSERT_NE(originalSave, std::string::npos);
     ASSERT_NE(eagerPublish, std::string::npos);
     EXPECT_LT(originalSave, eagerPublish);
+}
+
+// ReLimiter 4.0 requires ID3D12CommandQueue vtable[10] (ExecuteCommandLists) and vtable[14] (Signal)
+// to remain inside D3D12Core.dll / d3d12.dll. Only native D3D12 runtime queues take the inline-hook
+// route; debug-layer, proxy, already-vtable-patched, and test queues keep per-vtable hooks.
+TEST(Dx12QueueDispatchPolicyTest, InlineHookAppliesOnlyToNativeD3D12QueueImplementations) {
+    using ce::dx12_overlay_policy::IsNativeD3D12RuntimeModulePath;
+    using ce::dx12_overlay_policy::ShouldInlineHookCommandQueueMethod;
+
+    EXPECT_TRUE(IsNativeD3D12RuntimeModulePath(R"(C:\Windows\System32\D3D12Core.dll)"));
+    EXPECT_TRUE(IsNativeD3D12RuntimeModulePath(R"(C:\Windows\System32\d3d12.dll)"));
+    EXPECT_FALSE(IsNativeD3D12RuntimeModulePath(R"(C:\Windows\System32\d3d12SDKLayers.dll)"));
+    EXPECT_FALSE(IsNativeD3D12RuntimeModulePath(R"(C:\Games\Title\ReShade64.dll)"));
+    EXPECT_FALSE(IsNativeD3D12RuntimeModulePath(R"(C:\Games\Title\capture_hook_x64.dll)"));
+    EXPECT_FALSE(IsNativeD3D12RuntimeModulePath(nullptr));
+    EXPECT_FALSE(IsNativeD3D12RuntimeModulePath(""));
+
+    EXPECT_TRUE(ShouldInlineHookCommandQueueMethod(true, R"(C:\Windows\System32\D3D12Core.dll)", true,
+                                                   R"(C:\Windows\System32\D3D12Core.dll)"));
+    EXPECT_TRUE(ShouldInlineHookCommandQueueMethod(true, R"(C:\Windows\System32\D3D12Core.dll)", true,
+                                                   R"(C:\Windows\System32\d3d12.dll)"));
+
+    // Debug-layer, ReShade proxy, or already-vtable-patched slots keep VTableHook::Create.
+    EXPECT_FALSE(ShouldInlineHookCommandQueueMethod(true, R"(C:\Windows\System32\d3d12SDKLayers.dll)", true,
+                                                    R"(C:\Windows\System32\d3d12SDKLayers.dll)"));
+    EXPECT_FALSE(ShouldInlineHookCommandQueueMethod(true, R"(C:\Windows\System32\D3D12Core.dll)", true,
+                                                    R"(C:\Games\Title\ReShade64.dll)"));
+    EXPECT_FALSE(ShouldInlineHookCommandQueueMethod(true, R"(C:\Games\Title\unit_tests.exe)", true,
+                                                    R"(C:\Games\Title\unit_tests.exe)"));
+    EXPECT_FALSE(ShouldInlineHookCommandQueueMethod(false, R"(C:\Windows\System32\D3D12Core.dll)", true,
+                                                    R"(C:\Windows\System32\D3D12Core.dll)"));
+    EXPECT_FALSE(ShouldInlineHookCommandQueueMethod(true, R"(C:\Windows\System32\D3D12Core.dll)", false,
+                                                    R"(C:\Windows\System32\D3D12Core.dll)"));
 }
 
 }  // namespace

@@ -27,6 +27,13 @@ Capture CaptureVTable(void** vtable);
 ExecuteCommandListsPtr Resolve(ID3D12CommandQueue* queue);
 SignalCapture CaptureSignalVTable(void** vtable);
 SignalPtr ResolveSignal(ID3D12CommandQueue* queue);
+// Maps between a native D3D12 method address (stored in dx12_hook_g_RealD3D12ECL/Signal
+// for module-identity checks) and CE's callable inline trampoline (which bypasses CE's
+// detour when the native method was inline-hooked instead of vtable-patched).
+ExecuteCommandListsPtr CallableMethodForNative(ExecuteCommandListsPtr nativeMethod);
+SignalPtr CallableSignalForNative(SignalPtr nativeMethod);
+ExecuteCommandListsPtr NativeMethodForCallable(ExecuteCommandListsPtr callable);
+bool MethodsShareImplementation(ExecuteCommandListsPtr a, ExecuteCommandListsPtr b);
 bool HasBinding(ID3D12CommandQueue* queue);
 std::vector<Binding> Snapshot();
 uint64_t Generation();
