@@ -5,8 +5,10 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-16 (refused frontend Release slots, attribution limited to DXGI chains; 2026-10-12 frontend Release ownership, address reuse and independent nested caches;
-real DXUP video/screenshot/resize checks from 2026-10-11; closing evidence in log/recent.md).
+Last cross-checked: 2026-11-21 (native D3D12 queue ECL/Signal inline hooking preserving vtable slots for peer tools;
+2026-10-16 refused frontend Release slots, attribution limited to DXGI chains; 2026-10-12 frontend Release ownership,
+address reuse and independent nested caches; real DXUP video/screenshot/resize checks from 2026-10-11; closing evidence
+in log/recent.md).
 
 ## Sources and contract
 
@@ -301,3 +303,24 @@ foreign-interposer work remain required.
 
 CPU/GPU teardown, exact Present adapter detachment and one pacing claim per logical call:
 [transaction and retirement invariants](transaction-and-retirement-invariants.md) (2026-10-12).
+
+## Native D3D12 queue inline hooking (2026-11-21)
+
+Peer tools such as ReLimiter 4.0 inspect `ID3D12CommandQueue` vtable slots `[10]` (`ExecuteCommandLists`) and `[14]`
+(`Signal`) and require those slots to remain inside `D3D12Core.dll`/`d3d12.dll` (otherwise Streamline GPU handoff and
+queue-based pacing reject the queue).
+
+- [queue_dispatch_policy.h](../hook/d3d12/dx12_overlay_policy/queue_dispatch_policy.h)
+  (`ShouldInlineHookNativeD3D12QueueMethod`) selects `InlineHook::InstallPublished` when the slot currently resides in
+  native `D3D12Core.dll`/`d3d12.dll` (and not inside CE or `d3d12sdklayers.dll`). Non-native queues (SDK layers,
+  Streamline/ReShade proxies, already-vtable-patched slots, test probes) keep `VTableHook::Create`; inline hook
+  installation failure also falls back to `VTableHook::Create`.
+- [dx12_queue_dispatch.cpp](../hook/d3d12/dx12_queue_dispatch.cpp) stores the inline trampoline as the registry's
+  callable original while keeping the native method address in `dx12_hook_g_RealD3D12ECL`/`Signal` for module-fit
+  checks (`DX12_MayCallResolvedQueueMethod`), mapping between them via `CallableMethodForNative`,
+  `CallableSignalForNative`, `NativeMethodForCallable`, and `MethodsShareImplementation`.
+- [dx12_hook_queue_method_resolution.cpp](../hook/d3d12/dx12_hook_queue_method_resolution.cpp) (`TryPublishRealD3D12ECLCandidate`,
+  `DX12_HasNativeStartupOutputSubmitPath`) accepts native `D3D12Core.dll`/`d3d12.dll` slots whose entry bytes contain
+  an inline jump (`FF 25` or `E9` from CE or a peer hooker like MinHook) without rejecting the native method.
+- Regression anchors: `Dx12QueueDispatchPolicyTest.InlineHookAppliesOnlyToNativeD3D12QueueImplementations` and
+  `FlowQueueDispatch.NativeD3D12QueueKeepsVTableSlotsInD3D12Core`. Live in-game ReLimiter 4.0 hardware check pending.

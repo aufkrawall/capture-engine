@@ -40,7 +40,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `architecture-inventory.md` | 12 | D0 module inventory, bounded ownership traces, repeatable coupling measurements and exact pending evidence (2026-10-06) |
 | `frame-generation/ngx-flow-lifecycle.md` | 6 | D1 intercepted NGX fake, resource/status scenarios, production mutations and pending cold-start/SDK retirement evidence (2026-10-06) |
 | `transaction-and-retirement-invariants.md` | 9 | Present pacing, CPU/GPU retirement, audio/time boundaries, override environment ownership and bounded PE/crash invariants (2026-10-12); live hardware scenarios pending |
-| `dx12-queue-dispatch.md` | 23 | private queue/device/Present-vtable dispatch, native translator discovery, frontend Release lifetime, nested caches and refused-slot retry (2026-10-16), real-hook regressions and pending provider/callback lifetime work |
+| `dx12-queue-dispatch.md` | 24 | private queue/device/Present-vtable dispatch, native D3D12 queue ECL/Signal inline hooking (2026-11-21), native translator discovery, frontend Release lifetime, nested caches and refused-slot retry (2026-10-16), real-hook regressions and pending provider/callback lifetime work |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `stable-release.md` | 9 | release-stable job, `tools/stable_release.py` preflight/dispatch, shared source cache and git mirrors, toolchain closure proofs, machine build lock, failure history |
 | `binary-size.md` | 5 | what makes each shipped image big, how to measure it, enforced image size invariants, open size decisions (2026-10-21) |
