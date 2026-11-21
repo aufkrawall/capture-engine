@@ -129,7 +129,7 @@ bool TryInstallInlineQueueHook(void** vtable, Target current, Target detour, Tar
         return true;
     }
     if (InlineHook::InstallPublished(reinterpret_cast<void*>(current), reinterpret_cast<void*>(detour), &trampoline,
-                                     &PublishTrampolineToOriginal<Target>, original) &&
+                                     &PublishTrampolineToOriginal<Target>, static_cast<void*>(original)) &&
         trampoline) {
         *original = reinterpret_cast<Target>(trampoline);
         inlineTable.Record(vtable, current, *original);

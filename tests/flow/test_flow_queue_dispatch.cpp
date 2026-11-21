@@ -162,7 +162,8 @@ TEST(FlowQueueDispatch, NativeD3D12QueueKeepsVTableSlotsInD3D12Core) {
     ASSERT_NE(vtbl, nullptr);
     void* const eclBefore = vtbl[10];
     void* const signalBefore = vtbl[14];
-    ASSERT_TRUE(isNativeD3D12Address(vtbl)) << "expected native D3D12Core.dll command queue vtable";
+    ASSERT_TRUE(isNativeD3D12Address(static_cast<const void*>(vtbl)))
+        << "expected native D3D12Core.dll command queue vtable";
     ASSERT_TRUE(isNativeD3D12Address(eclBefore)) << "expected native ExecuteCommandLists slot";
     ASSERT_TRUE(isNativeD3D12Address(signalBefore)) << "expected native Signal slot";
 
