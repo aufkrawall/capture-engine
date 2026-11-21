@@ -216,7 +216,7 @@ bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function,  bool fallbackToR
             streamline_hook_g_Original_slDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(streamline_hook_function);
         }
         if (ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(
-                fallbackToReturnedWrapper, false, GetCallableOriginalDLSSGSetOptions() != nullptr)) {
+                fallbackToReturnedWrapper, hookReady, false, GetCallableOriginalDLSSGSetOptions() != nullptr)) {
             LogReturnedWrapperFallbackOnce(streamline_hook_g_DLSSGSetOptionsReturnedWrapperFallbackLogged, "slDLSSGSetOptions",
                                            streamline_hook_function, reinterpret_cast<void*>(Hooked_slDLSSGSetOptions), hookReady);
             streamline_hook_function = reinterpret_cast<void*>(Hooked_slDLSSGSetOptions);
@@ -266,7 +266,7 @@ bool MaybeHookDLSSGGetState(void*& streamline_hook_function,  bool fallbackToRet
             streamline_hook_g_Original_slDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(streamline_hook_function);
         }
         if (ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(
-                fallbackToReturnedWrapper, false, GetCallableOriginalDLSSGGetState() != nullptr)) {
+                fallbackToReturnedWrapper, hookReady, false, GetCallableOriginalDLSSGGetState() != nullptr)) {
             LogReturnedWrapperFallbackOnce(streamline_hook_g_DLSSGGetStateReturnedWrapperFallbackLogged, "slDLSSGGetState", streamline_hook_function,
                                            reinterpret_cast<void*>(Hooked_slDLSSGGetState), hookReady);
             streamline_hook_function = reinterpret_cast<void*>(Hooked_slDLSSGGetState);

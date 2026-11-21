@@ -86,21 +86,40 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_h
         return result;
     }
 
+    char callerPath[MAX_PATH] = {};
+    const bool haveCallerPath =
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(__builtin_return_address(0), callerPath, sizeof(callerPath));
+    const bool callerIsThirdPartyOverlay =
+        haveCallerPath && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath);
+    const bool allowReturnedWrapperFallback =
+        ce::streamline_runtime_policy::ShouldAllowReturnedStreamlineWrapperFallbackForCaller(callerIsThirdPartyOverlay);
+    if (callerIsThirdPartyOverlay) {
+        static ce::log_meter::StreamChangeGate<8> s_overlayFeatureLookupGate;
+        if (const auto verdict = s_overlayFeatureLookupGate.Observe(
+                ce::log_meter::FieldKey(feature, streamline_hook_functionName),
+                ce::log_meter::FieldKey(callerPath, streamline_hook_function))) {
+            HookLogImportant(
+                "Streamline Hook: Preserving real %s pointer %p for third-party overlay/add-on caller %s%s",
+                streamline_hook_functionName, streamline_hook_function, callerPath,
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
+
     // DLSS Frame Generation feature hooks
     if (feature == streamline_hook_kSLFeatureDLSSG) {
         if (strcmp(streamline_hook_functionName, "slDLSSGSetOptions") == 0) {
             void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookDLSSGSetOptions(streamline_hook_function, true);
+            const bool hookReady = MaybeHookDLSSGSetOptions(streamline_hook_function, allowReturnedWrapperFallback);
             LogFeatureLookupOutcomeOnce(streamline_hook_g_DLSSGSetOptionsLookupLogged, "slDLSSGSetOptions", originalFunction, streamline_hook_function,
                                         hookReady);
         } else if (strcmp(streamline_hook_functionName, "slDLSSGGetState") == 0) {
             void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookDLSSGGetState(streamline_hook_function, true);
+            const bool hookReady = MaybeHookDLSSGGetState(streamline_hook_function, allowReturnedWrapperFallback);
             LogFeatureLookupOutcomeOnce(streamline_hook_g_DLSSGGetStateLookupLogged, "slDLSSGGetState", originalFunction, streamline_hook_function,
                                         hookReady);
             // Talos resolves GetState shortly before it starts tagging the activation inputs, but
             // never resolves/calls SetOptions. Arm standby at pointer delivery, before those tags.
-            if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
+            if (!callerIsThirdPartyOverlay && !ShouldKeepPureObserverOnlyStreamlineBehavior() &&
                 streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_acquire)) {
                 ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(2);
             }
@@ -110,17 +129,17 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_h
     else if (feature == streamline_hook_kSLFeatureReflex) {
         if (strcmp(streamline_hook_functionName, "slReflexSleep") == 0) {
             void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookReflexSleep(streamline_hook_function, true);
+            const bool hookReady = MaybeHookReflexSleep(streamline_hook_function, allowReturnedWrapperFallback);
             LogFeatureLookupOutcomeOnce(streamline_hook_g_ReflexSleepLookupLogged, "slReflexSleep", originalFunction, streamline_hook_function,
                                         hookReady);
         } else if (strcmp(streamline_hook_functionName, "slReflexSetOptions") == 0) {
             void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookReflexSetOptions(streamline_hook_function, true);
+            const bool hookReady = MaybeHookReflexSetOptions(streamline_hook_function, allowReturnedWrapperFallback);
             LogFeatureLookupOutcomeOnce(streamline_hook_g_ReflexSetOptionsLookupLogged, "slReflexSetOptions", originalFunction,
                                         streamline_hook_function, hookReady);
         } else if (strcmp(streamline_hook_functionName, "slReflexSetConstants") == 0) {
             void* originalFunction = streamline_hook_function;
-            const bool hookReady = MaybeHookReflexSetConstants(streamline_hook_function, true);
+            const bool hookReady = MaybeHookReflexSetConstants(streamline_hook_function, allowReturnedWrapperFallback);
             LogFeatureLookupOutcomeOnce(streamline_hook_g_ReflexSetConstantsLookupLogged, "slReflexSetConstants", originalFunction,
                                         streamline_hook_function, hookReady);
         }
@@ -128,7 +147,7 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature,  const char* streamline_h
     else if (feature == streamline_hook_kSLFeaturePCL &&
              strcmp(streamline_hook_functionName, "slPCLSetMarker") == 0) {
         void* originalFunction = streamline_hook_function;
-        const bool hookReady = MaybeHookPCLSetMarker(streamline_hook_function, true);
+        const bool hookReady = MaybeHookPCLSetMarker(streamline_hook_function, allowReturnedWrapperFallback);
         LogPCLFeatureLookupOutcome(originalFunction, streamline_hook_function, hookReady);
     }
 

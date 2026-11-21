@@ -91,12 +91,25 @@ TEST(StreamlineRuntimePolicyTest, FeatureExportsHookOnlyTheirOwningFeatureModule
         ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions", "sl.common.dll"));
 }
 
-TEST(StreamlineRuntimePolicyTest, ReturnedFeatureWrapperSubstitutionRequiresCallableOriginal) {
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, true));
+TEST(StreamlineRuntimePolicyTest, ReturnedFeatureWrapperSubstitutionOnlyRunsWhenInlineHookUnavailable) {
+    // Only substitute CE's wrapper when the direct inline hook is NOT installed.
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, false, true));
 
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(false, false, true));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, true, true));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, false));
+    // When CE's inline hook already covers the real sl.*.dll export, preserve the real pointer
+    // so co-resident tools (e.g. ReLimiter) see the real plugin module and chained entry hooks run.
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, true, false, true));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(false, false, false, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, true, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, false, false));
+
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldAllowReturnedStreamlineWrapperFallbackForCaller(false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAllowReturnedStreamlineWrapperFallbackForCaller(true));
 }
 
 TEST(StreamlineRuntimePolicyTest, StreamlineFeatureLookupIsDeferredDuringModuleLoad) {

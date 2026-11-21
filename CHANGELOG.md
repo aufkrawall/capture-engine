@@ -10,7 +10,7 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **ReLimiter 4.0 and ReShade add-on compatibility:** preserve Capture Engine hook installation when a co-resident hook engine runs a thread whose DACL denies suspend/context access (`ThreadQuiescence` now steps past DACL-protected peers instead of aborting thread enumeration), classify ReShade add-ons (`.addon64` / `.addon32` / `.addon`) as third-party overlay/add-on modules so Capture Engine leaves their IAT, `GetProcAddress`, and NVAPI lookups untouched, and return the driver's real `NvAPI_D3D12_SetFlipConfig` pointer unwrapped to third-party overlay/add-on callers.
+- **ReLimiter 4.0 and ReShade add-on compatibility:** preserve Capture Engine hook installation when a co-resident hook engine runs a thread whose DACL denies suspend/context access (`ThreadQuiescence` now steps past DACL-protected peers instead of aborting thread enumeration), classify ReShade add-ons (`.addon64` / `.addon32` / `.addon`) as third-party overlay/add-on modules so Capture Engine leaves their IAT, `GetProcAddress`, and NVAPI lookups untouched, return the driver's real `NvAPI_D3D12_SetFlipConfig` pointer unwrapped to third-party overlay/add-on callers, and preserve the real `sl.dlss_g.dll` / `sl.reflex.dll` / `sl.pcl.dll` function pointers returned by `slGetFeatureFunction` whenever Capture Engine's inline hook is active (and always for third-party overlay/add-on callers).
 
 - **Direct3D 10 startup crash:** fixed a stack overflow when a Direct3D 10 application loads part of the graphics runtime after Capture Engine initializes its hooks.
 

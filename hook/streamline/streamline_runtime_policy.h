@@ -291,13 +291,22 @@ inline bool ShouldHookStreamlineFeatureExportOnLoad(const char* functionName, co
     return false;
 }
 
-inline bool ShouldSubstituteReturnedStreamlineFeatureWrapper(bool fallbackRequested, bool returnedFunctionIsWrapper,
+inline bool ShouldAllowReturnedStreamlineWrapperFallbackForCaller(bool callerIsThirdPartyOverlay) {
+    // Third-party overlays and ReShade add-ons (e.g. ReLimiter) query
+    // slGetFeatureFunction to locate and hook the real sl.*.dll plugin exports
+    // and identify the plugin image range. Never hand them a CE wrapper pointer.
+    return !callerIsThirdPartyOverlay;
+}
+
+inline bool ShouldSubstituteReturnedStreamlineFeatureWrapper(bool fallbackRequested, bool inlineHookReady,
+                                                             bool returnedFunctionIsWrapper,
                                                              bool originalCallableAvailable) {
-    // A game can cache a function pointer returned from slGetFeatureFunction and
-    // keep using it after Streamline tears down or repairs the feature export.
-    // Returning CE's stable wrapper keeps that cached pointer observable while
-    // the wrapper forwards through the current saved original/trampoline.
-    return fallbackRequested && !returnedFunctionIsWrapper && originalCallableAvailable;
+    // Only fall back to returning CE's wrapper when the direct inline hook on
+    // the real Streamline feature export did not install. Returning a CE
+    // wrapper when the inline hook is already live hides the real sl.*.dll
+    // module from co-resident tools and causes game calls to jump straight into
+    // CE's detour/trampoline, bypassing any peer hook chained at the real entry.
+    return fallbackRequested && !inlineHookReady && !returnedFunctionIsWrapper && originalCallableAvailable;
 }
 
 inline bool ShouldDeferStreamlineFeatureLookupDuringModuleLoad(bool loadedModuleIsStreamline) {
