@@ -10,6 +10,7 @@
 #include <mutex>
 
 #include "encoder_auto_select.h"
+#include "mediaengine/engine/av_log_open_capture.h"
 #include "mediaengine/engine/screen_grab_adapter.h"
 #include "video_encoder_internal.h"
 
@@ -254,9 +255,16 @@ AutoEncoderProbeResult OpenOnDevice(ID3D11Device* device, const Precheck& check,
     for (const auto& option : plan.requiredOptions)
         av_dict_set(&options, option.key.c_str(), option.value.c_str(), 0);
 
+    ScopedAvOpenDebugCapture openDebugCapture;
     const int ret = avcodec_open2(codecCtx, check.codec, &options);
-    if (ret < 0)
-        return finish({false, "open: " + AvErrorText(ret)});
+    if (ret < 0) {
+        std::string detail = "open: " + AvErrorText(ret);
+        const std::string lastDebug = openDebugCapture.LastLineTruncated(160);
+        if (!lastDebug.empty()) {
+            detail += " (" + lastDebug + ")";
+        }
+        return finish({false, std::move(detail)});
+    }
     return finish({true, "ok"});
 }
 

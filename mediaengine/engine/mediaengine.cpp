@@ -1,6 +1,7 @@
 #include "mediaengine_internal.h"
 #include "mediaengine_handles.h"
 #include "submission_transaction.h"
+#include "mediaengine/engine/av_log_open_capture.h"
 #include "mediaengine/mux/recording_recovery.h"
 
 #include <libavutil/log.h>
@@ -48,7 +49,12 @@ namespace {
 // stream key, so the level was pinned to AV_LOG_QUIET for live output. Redacting here means
 // the endpoint can never reach the log and the diagnostics can stay on.
 void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list args) {
-    if (level > av_log_get_level() || level == AV_LOG_QUIET)
+    if (level == AV_LOG_QUIET)
+        return;
+    const bool emitToLog = (level <= av_log_get_level());
+    const bool captureOpenDebug =
+        !emitToLog && level <= AV_LOG_DEBUG && ce::media::ScopedAvOpenDebugCapture::HasActiveCapture();
+    if (!emitToLog && !captureOpenDebug)
         return;
 
     // Fixed stack buffer: this runs on the encode path and must not allocate.
@@ -59,6 +65,18 @@ void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list 
         return;
     line[sizeof(line) - 1] = '\0';
 
+    std::string message(line);
+    while (!message.empty() && (message.back() == '\n' || message.back() == '\r'))
+        message.pop_back();
+    if (message.empty())
+        return;
+
+    const std::string redacted = ce::privacy::RedactStreamEndpointsForLog(message);
+    if (captureOpenDebug) {
+        ce::media::ScopedAvOpenDebugCapture::TryRecordForCurrentThread(redacted);
+        return;
+    }
+
     // libav repeats identical messages per frame on a sustained fault; keep the first burst
     // and then sample, so one bad stream cannot flood a session log.
     static std::atomic<uint32_t> s_count{0};
@@ -67,13 +85,7 @@ void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list 
     if (!boundedAacDiagnostic && seen > 200 && (seen % 500) != 0)
         return;
 
-    std::string message(line);
-    while (!message.empty() && (message.back() == '\n' || message.back() == '\r'))
-        message.pop_back();
-    if (message.empty())
-        return;
-
-    DLL_Log("[ffmpeg] %s", ce::privacy::RedactStreamEndpointsForLog(message).c_str());
+    DLL_Log("[ffmpeg] %s", redacted.c_str());
 }
 
 // Idempotent, and re-asserted on every call: the libav sink is process-global and

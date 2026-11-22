@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "mediaengine/engine/av_log_open_capture.h"
 
 void TrimD3D11Residency(ID3D11Device* device, ID3D11DeviceContext* context, const char* label) {
     if (context) {
@@ -298,6 +299,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     uint64_t budget = 0;
     const bool memoryBefore =
         ce::gpu_memory::QueryProcessVideoMemory(d3d11Device, &localBefore, &nonLocal, &budget);
+    ce::media::ScopedAvOpenDebugCapture openDebugCapture;
     int ret = avcodec_open2(codecCtx, codec, &opts);
     gpuMemory.codecOpenDelta = 0;
     if (memoryBefore && ce::gpu_memory::QueryProcessVideoMemory(d3d11Device, &localAfter, &nonLocal, &budget)) {
@@ -321,6 +323,17 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
         DLL_Log("[VideoEncoder] Failed to open codec: %d. Error details: %s", ret, errbuf);
+        if (!openDebugCapture.Empty()) {
+            const std::string droppedSuffix =
+                openDebugCapture.DroppedCount() > 0
+                    ? (", " + std::to_string(openDebugCapture.DroppedCount()) + " earlier omitted")
+                    : "";
+            DLL_Log("[VideoEncoder] Codec open debug trace (%zu line(s)%s):", openDebugCapture.Lines().size(),
+                    droppedSuffix.c_str());
+            for (const std::string& traceLine : openDebugCapture.Lines()) {
+                DLL_Log("[VideoEncoder]   [ffmpeg-debug] %s", traceLine.c_str());
+            }
+        }
         codecOpenFailed = true;
         return false;
     }

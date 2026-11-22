@@ -6,6 +6,8 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Hardware encoder open-failure trace diagnostics:** when `avcodec_open2` fails (including `h264_amf`, `hevc_amf`, `av1_amf`, Quick Sync, and NVENC), Capture Engine now flushes the bounded thread-local libav debug trace captured during the failed open (and includes the last line in `encoder=auto` probe rejections). This surfaces AMF's own internal property/init rejection lines (which FFmpeg's AMF trace writer logs at `AV_LOG_DEBUG`) without adding any log noise when opens succeed.
+
 - **Reliable, responsive overlay GPU load reporting:** replaced raw single-poll Windows PDH `\GPU Engine` reporting with a three-tier sampler and stabilizer. On NVIDIA GPUs (including multi-GPU systems, matched per adapter LUID via PCI bus and device), Capture Engine now integrates hardware PMU utilization samples directly from NVML (`nvmlDeviceGetSamples` with `nvmlDeviceGetUtilizationRates` fallback), measuring actual graphics/compute core activity instead of WDDM scheduler residency. This eliminates the 0%/100% jumping seen in high-FPS Direct3D 9 workloads under HAGS (Mirror's Edge) as well as inflated ~100% GPU load readings when FIFO V-Sync holds queued frames waiting on scanout. On non-NVIDIA GPUs (AMD, Intel) or when NVML is unavailable, Capture Engine reads adapter-wide WDDM node running times directly through `D3DKMTQueryStatistics` (excluding video encode/decode/OFA/JPEG engines), detects invalid PDH counter statuses instead of publishing false 0% readings, suppresses single-poll WDDM dropouts while confirming real idle drops on the next poll, and polls active targets every 500 ms to match the overlay's text refresh.
 
 ### Fixed
