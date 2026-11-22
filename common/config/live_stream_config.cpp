@@ -194,7 +194,7 @@ bool ApplyProfile(const ProfileSettings& settings, VideoConfig* video, std::vect
     video->amfPreset = "speed";
     video->amfAsyncDepth = 2;
     video->amfPreencode = false;
-    video->amfPreanalysis = false;
+    video->amfPreanalysis = "disabled";
     video->amfLookahead = "off";
     video->amfSpatialAq = false;
     video->amfTemporalAq = false;

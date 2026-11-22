@@ -266,7 +266,7 @@ void LoadVideo(ConfigReader& reader, AppConfig& config) {
     config.video.amfQp = reader.GetBoundedInt("AMF", "qp", 23, 0, 255);
     config.video.amfAsyncDepth = ReadAutoOrBoundedInt(reader, "AMF", "async_depth", 1, 42);
     config.video.amfPreencode = reader.GetBool("AMF", "preencode", false);
-    config.video.amfPreanalysis = reader.GetBool("AMF", "preanalysis", false);
+    config.video.amfPreanalysis = reader.GetStr("AMF", "preanalysis", "auto");
     config.video.amfLookahead = reader.GetStr("AMF", "lookahead", "off");
     config.video.amfSpatialAq = reader.GetBool("AMF", "spatial_aq", false);
     config.video.amfTemporalAq = reader.GetBool("AMF", "temporal_aq", false);

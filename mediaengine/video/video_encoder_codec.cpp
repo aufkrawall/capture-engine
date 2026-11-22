@@ -69,10 +69,10 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     bool isQSV = (savedConfig.encoder.find("_qsv") != std::string::npos);
     if (isAMF) {
         DLL_Log(
-            "[VideoEncoder] AMF usage=%s preset=%s qp=%d async_depth=%d preencode=%d preanalysis=%d "
+            "[VideoEncoder] AMF usage=%s preset=%s qp=%d async_depth=%d preencode=%d preanalysis=%s "
             "lookahead=%s spatial_aq=%d temporal_aq=%d",
             savedConfig.amfUsage.c_str(), savedConfig.amfPreset.c_str(), savedConfig.amfQp, savedConfig.amfAsyncDepth,
-            savedConfig.amfPreencode ? 1 : 0, savedConfig.amfPreanalysis ? 1 : 0, savedConfig.amfLookahead.c_str(),
+            savedConfig.amfPreencode ? 1 : 0, savedConfig.amfPreanalysis.c_str(), savedConfig.amfLookahead.c_str(),
             savedConfig.amfSpatialAq ? 1 : 0, savedConfig.amfTemporalAq ? 1 : 0);
         DLL_Log("[VideoEncoder] AMF aq_strength=%d high_motion_boost=%d b_ref_mode=%s enforce_hrd=%d filler=%d",
                 savedConfig.amfAqStrength, savedConfig.amfHighMotionQualityBoost ? 1 : 0,

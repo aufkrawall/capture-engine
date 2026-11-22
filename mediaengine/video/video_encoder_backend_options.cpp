@@ -161,16 +161,17 @@ BackendBitrateUsage AddAmfRateControlOptions(const VideoConfig& config, const En
         return MakeUsage(true, false);
     }
     if (rateControl == "cq" || rateControl == "qvbr") {
-        if (config.amfQp < 0 || config.amfQp > 51) {
-            AddError(plan, "AMF CQ quality value must be between 0 and 51");
+        if (config.amfQp < 1 || config.amfQp > 51) {
+            AddError(plan, "AMF CQ/QVBR quality value must be between 1 and 51");
         }
         AddOption(plan, "rc", "qvbr");
         AddOption(plan, "qvbr_quality_level", std::to_string(config.amfQp));
         return {};
     }
     if (rateControl == "cqp" || rateControl == "constqp") {
+        const int minQp = kind.family == CodecFamily::kAV1 ? 1 : 0;
         const int maxQp = kind.family == CodecFamily::kAV1 ? 255 : 51;
-        if (config.amfQp < 0 || config.amfQp > maxQp) {
+        if (config.amfQp < minQp || config.amfQp > maxQp) {
             AddError(plan, "AMF CQP value is out of range for the selected codec");
         }
         AddOption(plan, "rc", "cqp");
@@ -255,7 +256,7 @@ BackendBitrateUsage AddQsvRateControlOptions(const VideoConfig& config, const En
     return {};
 }
 
-void AddAmfOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOptionPlan* plan) {
+void AddAmfOptions(const VideoConfig& config, const EncoderKind& kind, bool use10Bit, EncoderOptionPlan* plan) {
     const std::string usage = Canonicalize(config.amfUsage);
     if (!IsAllowedValue(usage, {"transcoding", "ultralowlatency", "lowlatency", "webcam", "high_quality",
                                 "lowlatency_high_quality"})) {
@@ -271,9 +272,66 @@ void AddAmfOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOp
         AddOption(plan, "preset", preset);
     }
 
+    const std::string rateControl = Canonicalize(config.rateControl.empty() ? "vbr" : config.rateControl);
+    const bool isCqp = (rateControl == "cqp" || rateControl == "constqp");
+    const bool isCbrFamily = (rateControl == "cbr" || rateControl == "hqcbr");
+    const bool rcRequiresPreanalysis =
+        (rateControl == "cq" || rateControl == "qvbr" || rateControl == "hqvbr" || rateControl == "hqcbr");
+    const bool isLowLatencyUsage = (usage == "ultralowlatency" || usage == "lowlatency" || usage == "webcam" ||
+                                    usage == "lowlatency_high_quality");
+
     const std::optional<int> lookahead = ResolveLookaheadDepth(config.amfLookahead, 41, 20, "AMF", plan);
     if (!lookahead.has_value()) {
         AddError(plan, "Unsupported AMF lookahead value: " + config.amfLookahead);
+    }
+
+    const std::optional<int> preanalysisSetting = ResolveTriState(config.amfPreanalysis);
+    if (!preanalysisSetting.has_value()) {
+        AddError(plan, "Unsupported AMF preanalysis value: " + config.amfPreanalysis);
+    }
+
+    if (config.amfAqStrength < 0 || config.amfAqStrength > 2) {
+        AddError(plan, "AMF aq_strength must be between 0 and 2");
+    }
+
+    const int requestedLookahead = lookahead.value_or(0);
+    const bool explicitPreanalysisOn = preanalysisSetting.has_value() && *preanalysisSetting == 1;
+    const bool explicitPreanalysisOff = preanalysisSetting.has_value() && *preanalysisSetting == 0;
+    bool preanalysis = false;
+    int effectiveLookahead = 0;
+
+    if (isCqp) {
+        if (explicitPreanalysisOn || requestedLookahead > 0 || config.amfTemporalAq) {
+            AddWarning(plan, "AMF preanalysis, lookahead, and temporal_aq are not supported with rate_control=CQP "
+                             "and are disabled");
+        }
+    } else if (use10Bit) {
+        // AMF's PreAnalysis component operates on 8-bit NV12 surfaces; enabling it with 10-bit P010 input
+        // fails encoder initialization in AMF drivers. Rate controls that depend on PA fail closed, while
+        // optional PA assists degrade cleanly so HDR recordings still work.
+        if (rcRequiresPreanalysis) {
+            AddError(plan, "AMF rate_control=" + config.rateControl +
+                               " requires PreAnalysis, which only supports 8-bit NV12 input; use VBR, CBR, or CQP "
+                               "for 10-bit/HDR output");
+        } else if (explicitPreanalysisOn || requestedLookahead > 0 || config.amfTemporalAq) {
+            AddWarning(plan, "AMF preanalysis, lookahead, and temporal_aq only support 8-bit NV12 input and are "
+                             "disabled for 10-bit output");
+        }
+    } else {
+        const bool needsPreanalysis = rcRequiresPreanalysis || config.amfTemporalAq || requestedLookahead > 0;
+        preanalysis = explicitPreanalysisOn || needsPreanalysis;
+        if (needsPreanalysis && explicitPreanalysisOff) {
+            AddWarning(plan, "AMF preanalysis was enabled because the selected rate_control, temporal AQ, or "
+                             "lookahead requires it");
+        }
+        if (preanalysis) {
+            effectiveLookahead = requestedLookahead;
+            if ((config.amfTemporalAq || config.amfHighMotionQualityBoost) && effectiveLookahead == 0) {
+                effectiveLookahead = 1;
+                AddWarning(plan, "AMF pa_lookahead_buffer_depth was set to 1 because temporal_aq or "
+                                 "high_motion_quality_boost with preanalysis requires lookahead");
+            }
+        }
     }
 
     if (config.amfAsyncDepth != 0 && (config.amfAsyncDepth < 1 || config.amfAsyncDepth > kAmfMaxAsyncDepth)) {
@@ -281,54 +339,87 @@ void AddAmfOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOp
     } else {
         int effectiveAsyncDepth =
             config.amfAsyncDepth == 0 ? ResolveAmfAsyncDepth(config.fps) : config.amfAsyncDepth;
-        if (lookahead.has_value() && *lookahead >= effectiveAsyncDepth) {
-            effectiveAsyncDepth = *lookahead + 1;
+        if (preanalysis && effectiveLookahead >= effectiveAsyncDepth) {
+            effectiveAsyncDepth = effectiveLookahead + 1;
             AddWarning(plan, "AMF async_depth was increased to " + std::to_string(effectiveAsyncDepth) +
                                  " so it exceeds the configured lookahead depth");
         }
         AddOption(plan, "async_depth", std::to_string(effectiveAsyncDepth));
     }
 
-    const bool needsPreanalysis = config.amfTemporalAq || (lookahead.has_value() && *lookahead > 0);
-    const bool preanalysis = config.amfPreanalysis || needsPreanalysis;
-    if (needsPreanalysis && !config.amfPreanalysis) {
-        AddWarning(plan, "AMF preanalysis was enabled because temporal AQ or lookahead requires it");
+    bool enablePreencode = config.amfPreencode;
+    if (enablePreencode && isCqp) {
+        AddWarning(plan, "AMF preencode is not supported with rate_control=CQP and is disabled");
+        enablePreencode = false;
+    } else if (enablePreencode && isLowLatencyUsage) {
+        AddWarning(plan, "AMF preencode is incompatible with low-latency usage modes and is disabled");
+        enablePreencode = false;
     }
-    AddOption(plan, "preencode", config.amfPreencode ? "1" : "0");
+    AddOption(plan, "preencode", enablePreencode ? "1" : "0");
     AddOption(plan, "preanalysis", preanalysis ? "1" : "0");
 
-    if (kind.family == CodecFamily::kAV1) {
-        AddOption(plan, "aq_mode", config.amfSpatialAq ? "caq" : "none");
-    } else {
-        AddOption(plan, "vbaq", config.amfSpatialAq ? "1" : "0");
-    }
-
-    if (preanalysis) {
-        if (lookahead.has_value() && *lookahead > 0) {
-            AddOption(plan, "pa_lookahead_buffer_depth", std::to_string(*lookahead));
-        }
+    if (isCqp) {
         if (config.amfSpatialAq) {
-            AddOption(plan, "pa_paq_mode", "caq");
-            AddOption(plan, "pa_caq_strength", std::to_string(config.amfAqStrength));
+            AddWarning(plan, "AMF spatial_aq is not supported with rate_control=CQP and is disabled");
         }
-        if (config.amfTemporalAq) {
-            AddOption(plan, "pa_taq_mode", "1");
+        if (kind.family == CodecFamily::kAV1) {
+            AddOption(plan, "aq_mode", "none");
+        } else {
+            AddOption(plan, "vbaq", "0");
         }
         if (config.amfHighMotionQualityBoost) {
-            AddOption(plan, "pa_high_motion_quality_boost_mode", "auto");
+            AddWarning(plan, "AMF high_motion_quality_boost is not supported with rate_control=CQP and is disabled");
         }
-    } else if (config.amfSpatialAq && config.amfAqStrength != 1) {
-        AddWarning(plan, "AMF aq_strength applies to preanalysis AQ and is ignored while preanalysis=false");
+        AddOption(plan, "high_motion_quality_boost_enable", "0");
+    } else if (preanalysis) {
+        // PA perceptual/temporal AQ and encoder-native VBAQ/CAQ are mutually exclusive in AMF; disable the
+        // encoder-side AQ and high-motion flags (which usage=high_quality enables by default) and drive them
+        // exclusively through the PA properties.
+        if (kind.family == CodecFamily::kAV1) {
+            AddOption(plan, "aq_mode", "none");
+        } else {
+            AddOption(plan, "vbaq", "0");
+        }
+        AddOption(plan, "high_motion_quality_boost_enable", "0");
+        // Always emit pa_lookahead_buffer_depth explicitly when PA is active so AMF does not silently apply
+        // its usage default (11 frames for transcoding/high_quality), which can deadlock a smaller async_depth.
+        AddOption(plan, "pa_lookahead_buffer_depth", std::to_string(effectiveLookahead));
+        if (config.amfSpatialAq) {
+            AddOption(plan, "pa_paq_mode", "caq");
+            if (config.amfAqStrength >= 0 && config.amfAqStrength <= 2) {
+                AddOption(plan, "pa_caq_strength", std::to_string(config.amfAqStrength));
+            }
+        } else {
+            AddOption(plan, "pa_paq_mode", "none");
+        }
+        // AMF documents TAQ mode 2 for gaming workloads on DX11 surfaces (mode 1 is non-gaming).
+        AddOption(plan, "pa_taq_mode", config.amfTemporalAq ? "2" : "none");
+        AddOption(plan, "pa_high_motion_quality_boost_mode", config.amfHighMotionQualityBoost ? "auto" : "none");
+    } else {
+        if (kind.family == CodecFamily::kAV1) {
+            AddOption(plan, "aq_mode", config.amfSpatialAq ? "caq" : "none");
+        } else {
+            AddOption(plan, "vbaq", config.amfSpatialAq ? "1" : "0");
+        }
+        if (config.amfSpatialAq && config.amfAqStrength != 1) {
+            AddWarning(plan, "AMF aq_strength applies to preanalysis AQ and is ignored while preanalysis is disabled");
+        }
+        AddOption(plan, "high_motion_quality_boost_enable", config.amfHighMotionQualityBoost ? "1" : "0");
     }
 
-    if (config.amfHighMotionQualityBoost) {
-        AddOption(plan, "high_motion_quality_boost_enable", "1");
-    }
     if (config.amfEnforceHrd) {
-        AddOption(plan, "enforce_hrd", "1");
+        if (isCqp) {
+            AddWarning(plan, "AMF enforce_hrd is not supported with rate_control=CQP and is ignored");
+        } else {
+            AddOption(plan, "enforce_hrd", "1");
+        }
     }
     if (config.amfFillerData) {
-        AddOption(plan, "filler_data", "1");
+        if (!isCbrFamily) {
+            AddWarning(plan, "AMF filler_data is only supported with CBR/HQCBR rate control and is ignored");
+        } else {
+            AddOption(plan, "filler_data", "1");
+        }
     }
 
     if (kind.family == CodecFamily::kHEVC && plan->maxBFrames > 0) {
@@ -520,7 +611,7 @@ void AddHardwareEncoderOptions(const VideoConfig& config, bool use10Bit, bool ou
     const EncoderKind kind = ClassifyEncoder(config.encoder);
     switch (kind.backend) {
         case EncoderBackend::kAMF:
-            AddAmfOptions(config, kind, plan);
+            AddAmfOptions(config, kind, use10Bit, plan);
             break;
         case EncoderBackend::kQSV:
             AddQsvOptions(config, kind, plan);

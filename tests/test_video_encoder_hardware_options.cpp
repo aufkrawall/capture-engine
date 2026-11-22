@@ -79,6 +79,7 @@ TEST(VideoEncoderOptionsTest, AmfUsesNativeVbrQualityAndPreanalysisControls) {
     config.amfUsage = "high_quality";
     config.amfPreset = "high_quality";
     config.amfAsyncDepth = 12;
+    config.amfPreanalysis = "false";  // older config files carry false; lookahead/TAQ still auto-enable PA
     config.amfLookahead = "25";
     config.amfSpatialAq = true;
     config.amfTemporalAq = true;
@@ -94,11 +95,14 @@ TEST(VideoEncoderOptionsTest, AmfUsesNativeVbrQualityAndPreanalysisControls) {
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preset").value_or(""), "high_quality");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "26");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "1");
-    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "aq_mode").value_or(""), "caq");
+    // Encoder-native AQ and high-motion boost are disabled while PA drives them to avoid AMF conflicts.
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "aq_mode").value_or(""), "none");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "high_motion_quality_boost_enable").value_or(""), "0");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_paq_mode").value_or(""), "caq");
-    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_taq_mode").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_taq_mode").value_or(""), "2");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_caq_strength").value_or(""), "2");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").value_or(""), "25");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_high_motion_quality_boost_mode").value_or(""), "auto");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "bf").value_or(""), "3");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "max_b_frames").value_or(""), "3");
     EXPECT_EQ(plan.maxBFrames, 3);
@@ -119,8 +123,16 @@ TEST(VideoEncoderOptionsTest, AmfCqAndCqpMapToNativeModes) {
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc").value_or(""), "qvbr");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "qvbr_quality_level").value_or(""), "19");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").value_or(""), "0");
     EXPECT_EQ(plan.bitRate.value_or(0), 75000000);
     EXPECT_EQ(plan.maxBitRate.value_or(0), 150000000);
+    // preanalysis=auto enables PA silently when CQ/QVBR/HQVBR/HQCBR needs it.
+    EXPECT_FALSE(HasMessageContaining(plan.warnings, "preanalysis was enabled"));
+
+    config.amfQp = 0;  // AMF QVBR_QUALITY_LEVEL starts at 1
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "between 1 and 51"));
 
     config.encoder = "av1_amf";
     config.rateControl = "CQP";
@@ -133,6 +145,114 @@ TEST(VideoEncoderOptionsTest, AmfCqAndCqpMapToNativeModes) {
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "qp_b").value_or(""), "180");
     EXPECT_FALSE(plan.bitRate.has_value());
     EXPECT_FALSE(plan.maxBitRate.has_value());
+
+    config.amfQp = 0;  // AMF AV1 Q_INDEX starts at 1
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "out of range"));
+}
+
+TEST(VideoEncoderOptionsTest, AmfPreanalysisAvoidsLookaheadDeadlockAndMutuallyExclusiveFlags) {
+    // Explicit PA with lookahead=off must still emit pa_lookahead_buffer_depth=0 so AMF does not
+    // silently apply its usage default (11) behind a smaller async_depth.
+    VideoConfig paNoLookahead = MakeBaseVideoConfig("h264_amf");
+    paNoLookahead.rateControl = "HQVBR";
+    paNoLookahead.amfAsyncDepth = 4;
+    paNoLookahead.amfLookahead = "off";
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(paNoLookahead, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc").value_or(""), "hqvbr");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "4");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_taq_mode").value_or(""), "none");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_high_motion_quality_boost_mode").value_or(""), "none");
+
+    // Temporal AQ or high_motion_quality_boost with PA requires at least 1 frame of lookahead.
+    VideoConfig taqNoLookahead = MakeBaseVideoConfig("h264_amf");
+    taqNoLookahead.amfAsyncDepth = 1;
+    taqNoLookahead.amfLookahead = "off";
+    taqNoLookahead.amfTemporalAq = true;
+    plan = BuildEncoderOptionPlan(taqNoLookahead, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "2");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "vbaq").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "pa_taq_mode").value_or(""), "2");
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "pa_lookahead_buffer_depth was set to 1"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "async_depth was increased"));
+
+    // Without PA, hardware VBAQ and encoder-native high-motion boost are used with no pa_* options.
+    VideoConfig hwOnly = MakeBaseVideoConfig("hevc_amf");
+    hwOnly.amfSpatialAq = true;
+    hwOnly.amfHighMotionQualityBoost = true;
+    plan = BuildEncoderOptionPlan(hwOnly, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "vbaq").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "high_motion_quality_boost_enable").value_or(""), "1");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "pa_paq_mode").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "pa_high_motion_quality_boost_mode").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, AmfGuardsIncompatibleCqpLowLatencyCbrAndTenBitCombinations) {
+    // CQP disables preencode, PA, lookahead, AQ, high-motion boost, HRD, and filler data.
+    VideoConfig cqp = MakeBaseVideoConfig("av1_amf");
+    cqp.rateControl = "CQP";
+    cqp.amfQp = 100;
+    cqp.amfPreencode = true;
+    cqp.amfPreanalysis = "enabled";
+    cqp.amfLookahead = "16";
+    cqp.amfSpatialAq = true;
+    cqp.amfTemporalAq = true;
+    cqp.amfHighMotionQualityBoost = true;
+    cqp.amfEnforceHrd = true;
+    cqp.amfFillerData = true;
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(cqp, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preencode").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "aq_mode").value_or(""), "none");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "high_motion_quality_boost_enable").value_or(""), "0");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "enforce_hrd").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "filler_data").has_value());
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "preencode is not supported with rate_control=CQP"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "spatial_aq is not supported with rate_control=CQP"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "enforce_hrd is not supported with rate_control=CQP"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "filler_data is only supported with CBR/HQCBR"));
+
+    // Low-latency usage disables preencode; non-CBR suppresses filler_data.
+    VideoConfig lowLatency = MakeBaseVideoConfig("h264_amf");
+    lowLatency.rateControl = "VBR";
+    lowLatency.amfUsage = "ultralowlatency";
+    lowLatency.amfPreencode = true;
+    lowLatency.amfFillerData = true;
+    plan = BuildEncoderOptionPlan(lowLatency, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preencode").value_or(""), "0");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "filler_data").has_value());
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "low-latency usage"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "CBR/HQCBR"));
+
+    // 10-bit/HDR: PA-dependent rate controls fail closed; optional PA assists degrade cleanly to HW AQ.
+    VideoConfig tenBitQvbr = MakeBaseVideoConfig("hevc_amf");
+    tenBitQvbr.rateControl = "CQ";
+    tenBitQvbr.amfQp = 20;
+    plan = BuildEncoderOptionPlan(tenBitQvbr, true, "420", true);
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "only supports 8-bit NV12"));
+
+    VideoConfig tenBitVbr = MakeBaseVideoConfig("av1_amf");
+    tenBitVbr.rateControl = "VBR";
+    tenBitVbr.amfLookahead = "20";
+    tenBitVbr.amfSpatialAq = true;
+    tenBitVbr.amfTemporalAq = true;
+    plan = BuildEncoderOptionPlan(tenBitVbr, true, "420", true);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "preanalysis").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "aq_mode").value_or(""), "caq");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "pa_lookahead_buffer_depth").has_value());
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "only support 8-bit NV12"));
 }
 
 TEST(VideoEncoderOptionsTest, HevcAmfDisablesUnsupportedBFramesAndAcceptsHighQualityPreset) {
@@ -404,11 +524,10 @@ TEST(VideoEncoderOptionsTest, GeneratedHardwareOptionsExistInBundledFfmpeg) {
     std::vector<HardwareOptionCase> cases;
 
     VideoConfig h264Amf = MakeBaseVideoConfig("h264_amf");
-    h264Amf.rateControl = "CQP";
-    h264Amf.amfUsage = "lowlatency_high_quality";
+    h264Amf.rateControl = "VBR";
+    h264Amf.amfUsage = "high_quality";
     h264Amf.amfPreset = "quality";
-    h264Amf.amfQp = 20;
-    h264Amf.amfPreanalysis = true;
+    h264Amf.amfPreanalysis = "enabled";
     h264Amf.amfLookahead = "16";
     h264Amf.amfSpatialAq = true;
     h264Amf.amfTemporalAq = true;
@@ -416,25 +535,48 @@ TEST(VideoEncoderOptionsTest, GeneratedHardwareOptionsExistInBundledFfmpeg) {
     h264Amf.amfHighMotionQualityBoost = true;
     h264Amf.amfBRefMode = "enabled";
     h264Amf.amfEnforceHrd = true;
-    h264Amf.amfFillerData = true;
     h264Amf.bFrames = 2;
-    cases.push_back({"H.264 AMF", std::move(h264Amf), false});
+    cases.push_back({"H.264 AMF (PA)", std::move(h264Amf), false});
+
+    VideoConfig h264AmfCbr = MakeBaseVideoConfig("h264_amf");
+    h264AmfCbr.rateControl = "CBR";
+    h264AmfCbr.amfUsage = "transcoding";
+    h264AmfCbr.amfPreencode = true;
+    h264AmfCbr.amfSpatialAq = true;
+    h264AmfCbr.amfHighMotionQualityBoost = true;
+    h264AmfCbr.amfEnforceHrd = true;
+    h264AmfCbr.amfFillerData = true;
+    cases.push_back({"H.264 AMF (CBR/HW)", std::move(h264AmfCbr), false});
 
     VideoConfig hevcAmf = MakeBaseVideoConfig("hevc_amf");
     hevcAmf.rateControl = "CQ";
     hevcAmf.amfPreset = "high_quality";
     hevcAmf.amfQp = 19;
-    cases.push_back({"HEVC AMF", std::move(hevcAmf), true});
+    cases.push_back({"HEVC AMF (8-bit CQ)", std::move(hevcAmf), false});
+
+    VideoConfig hevcAmfHdr = MakeBaseVideoConfig("hevc_amf");
+    hevcAmfHdr.rateControl = "VBR";
+    hevcAmfHdr.amfPreset = "quality";
+    hevcAmfHdr.amfSpatialAq = true;
+    hevcAmfHdr.amfHighMotionQualityBoost = true;
+    cases.push_back({"HEVC AMF (10-bit VBR)", std::move(hevcAmfHdr), true});
 
     VideoConfig av1Amf = MakeBaseVideoConfig("av1_amf");
-    av1Amf.rateControl = "CQP";
+    av1Amf.rateControl = "VBR";
     av1Amf.amfUsage = "high_quality";
     av1Amf.amfPreset = "high_quality";
-    av1Amf.amfQp = 180;
-    av1Amf.amfPreanalysis = true;
+    av1Amf.amfPreanalysis = "enabled";
     av1Amf.amfSpatialAq = true;
+    av1Amf.amfTemporalAq = true;
+    av1Amf.amfHighMotionQualityBoost = true;
     av1Amf.bFrames = 3;
-    cases.push_back({"AV1 AMF", std::move(av1Amf), true});
+    cases.push_back({"AV1 AMF (8-bit PA)", std::move(av1Amf), false});
+
+    VideoConfig av1AmfCqp = MakeBaseVideoConfig("av1_amf");
+    av1AmfCqp.rateControl = "CQP";
+    av1AmfCqp.amfQp = 180;
+    av1AmfCqp.bFrames = 3;
+    cases.push_back({"AV1 AMF (10-bit CQP)", std::move(av1AmfCqp), true});
 
     VideoConfig h264Qsv = MakeBaseVideoConfig("h264_qsv");
     h264Qsv.rateControl = "CQ";

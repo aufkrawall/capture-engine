@@ -10,6 +10,11 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **AMD AMF encoder option compatibility and failures:** fixed several invalid option combinations that caused `h264_amf`, `hevc_amf`, and `av1_amf` to fail encoder initialization or stall:
+  - Changed `[AMF] preanalysis` to default to `auto` (still accepting `true`/`false`/`enabled`/`disabled` for existing configs) so `CQ`/`QVBR`, `HQVBR`, and `HQCBR` rate-control modes automatically enable AMF PreAnalysis instead of explicitly forcing `preanalysis=0`.
+  - Stopped emitting mutually exclusive encoder-side `vbaq`/`aq_mode` and `high_motion_quality_boost_enable` alongside PreAnalysis AQ/high-motion options, and explicitly emitted `pa_lookahead_buffer_depth` (raising to at least `1` when temporal AQ or PA high-motion boost is active, with `pa_taq_mode=2` for DX11 gaming) so AMF's 11-frame usage default cannot deadlock a smaller `async_depth`.
+  - Guarded incompatible combinations cleanly: disabled `preencode`, PreAnalysis, `spatial_aq` (including `av1_amf` `aq_mode=caq`), `high_motion_quality_boost`, `enforce_hrd`, and `filler_data` under `CQP`; restricted `filler_data` to `CBR`/`HQCBR` and `preencode` away from low-latency usages; rejected 10-bit/HDR `CQ`/`QVBR`/`HQVBR`/`HQCBR` up front while cleanly disabling optional PreAnalysis assists on 10-bit `P010` input; and enforced AMF's `1-51` QVBR and `1-255` AV1 CQP lower bounds.
+
 - **ReLimiter 4.0 and ReShade add-on compatibility:** made Capture Engine coexist cleanly with ReLimiter 4.0 and other ReShade add-ons so frame pacing, Streamline frame generation handoff, and both overlays work together:
   - Step past peer threads whose kernel DACL explicitly denies suspend/context access (`ThreadQuiescence` on both `NtGetNextThread` and system-snapshot walks) so co-resident anti-freeze hook installer threads no longer block Capture Engine's inline/deep hooks.
   - Classify ReShade add-ons (`.addon64` / `.addon32` / `.addon`) as third-party overlay/add-on modules without inflating the tracked overlay count, keeping Capture Engine from patching their IAT or hijacking their `GetProcAddress`, `nvapi_QueryInterface`, and `NvAPI_D3D12_SetFlipConfig` lookups.

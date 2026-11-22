@@ -100,8 +100,8 @@ struct VideoConfig {
     int amfQp = 23;
     int amfAsyncDepth = 0;  // 0: auto, at least 16 and sized from the pipeline latency budget; 1-42 explicit
     bool amfPreencode = false;
-    bool amfPreanalysis = false;
-    std::string amfLookahead = "off";  // off, auto, or explicit depth 1-41
+    std::string amfPreanalysis = "auto";  // auto, disabled, enabled
+    std::string amfLookahead = "off";     // off, auto, or explicit depth 1-41
     bool amfSpatialAq = false;
     bool amfTemporalAq = false;
     int amfAqStrength = 1;  // 0=low, 1=medium, 2=high

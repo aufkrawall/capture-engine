@@ -473,7 +473,7 @@ TEST_F(ConfigTest, ParseAmfQuickSyncAndMediaFoundationPolicies) {
     EXPECT_EQ(config.video.amfQp, 31);
     EXPECT_EQ(config.video.amfAsyncDepth, 12);
     EXPECT_TRUE(config.video.amfPreencode);
-    EXPECT_TRUE(config.video.amfPreanalysis);
+    EXPECT_EQ(config.video.amfPreanalysis, "true");
     EXPECT_EQ(config.video.amfLookahead, "17");
     EXPECT_TRUE(config.video.amfSpatialAq);
     EXPECT_TRUE(config.video.amfTemporalAq);
@@ -508,6 +508,7 @@ TEST_F(ConfigTest, NewHardwareEncoderPoliciesHaveSafeDefaults) {
     EXPECT_EQ(config.video.amfUsage, "transcoding");
     EXPECT_EQ(config.video.amfPreset, "speed");
     EXPECT_EQ(config.video.amfAsyncDepth, 0);
+    EXPECT_EQ(config.video.amfPreanalysis, "auto");
     EXPECT_EQ(config.video.amfLookahead, "off");
     EXPECT_EQ(config.video.qsvPreset, "veryfast");
     EXPECT_EQ(config.video.qsvLookahead, "off");
