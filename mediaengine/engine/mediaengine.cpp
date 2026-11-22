@@ -71,9 +71,9 @@ void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list 
     if (message.empty())
         return;
 
-    const std::string redacted = ce::privacy::RedactStreamEndpointsForLog(message);
     if (captureOpenDebug) {
-        ce::media::ScopedAvOpenDebugCapture::TryRecordForCurrentThread(redacted);
+        ce::media::ScopedAvOpenDebugCapture::TryRecordForCurrentThread(
+            ce::privacy::RedactStreamEndpointsForLog(message));
         return;
     }
 
@@ -85,7 +85,7 @@ void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list 
     if (!boundedAacDiagnostic && seen > 200 && (seen % 500) != 0)
         return;
 
-    DLL_Log("[ffmpeg] %s", redacted.c_str());
+    DLL_Log("[ffmpeg] %s", ce::privacy::RedactStreamEndpointsForLog(message).c_str());
 }
 
 // Idempotent, and re-asserted on every call: the libav sink is process-global and

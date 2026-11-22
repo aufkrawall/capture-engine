@@ -61,23 +61,21 @@ TEST_F(AvLogOpenCaptureTest, CapturesAvLogDebugLinesWithoutEmittingToNormalLog) 
         av_log(nullptr, AV_LOG_DEBUG, "AMFEncoderAV1Impl: PreAnalysis unsupported for P010\n");
         av_log(nullptr, AV_LOG_INFO, "AMF via D3D11.\n");
 
+        // Only AV_LOG_DEBUG/VERBOSE lines above the active av_log_get_level() enter the
+        // capture buffer; AV_LOG_INFO stays on the normal log path.
         ASSERT_EQ(capture.Lines().size(), 1u);
         EXPECT_NE(capture.Lines().front().find("PreAnalysis unsupported for P010"), std::string::npos);
+        EXPECT_EQ(capture.Lines().front().find("AMF via D3D11."), std::string::npos);
         EXPECT_EQ(capture.DroppedCount(), 0u);
     }
 
     const std::vector<std::string> logs = SnapshotEmittedLogs();
-    bool sawInfo = false;
     bool sawDebug = false;
     for (const std::string& line : logs) {
-        if (line.find("AMF via D3D11.") != std::string::npos) {
-            sawInfo = true;
-        }
         if (line.find("PreAnalysis unsupported for P010") != std::string::npos) {
             sawDebug = true;
         }
     }
-    EXPECT_TRUE(sawInfo);
     EXPECT_FALSE(sawDebug);
 }
 
