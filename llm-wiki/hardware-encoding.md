@@ -1,15 +1,16 @@
 # AMD AMF, Intel Quick Sync, and Media Foundation Encoding
 
-Last cross-checked: 2026-11-06 (AMF B-frame bf/max_b_frames option mapping; AMF AV1 HDR mastering units 2026-11-01)
+Last cross-checked: 2026-11-22 (AMF option contract fixes, tri-state preanalysis, codec-open AV_LOG_DEBUG capture, and opt-in AMF hardware matrix probe; AMF B-frame bf/max_b_frames 2026-11-06; AMF AV1 HDR mastering units 2026-11-01)
 
 Primary sources:
 - `common/config/config.{h,cpp}`
 - `captureengine/{config.ini.template,media_main.cpp}`
+- `mediaengine/engine/{av_log_open_capture.{h,cpp},mediaengine.cpp}`
 - `mediaengine/video/video_encoder.{h,cpp}`
 - `mediaengine/video/video_metadata.{h,cpp}`
 - `mediaengine/video/video_encoder_options.{h,cpp}`
 - `mediaengine/video/video_encoder_backend_options.{h,cpp}`
-- `tests/test_{config,video_encoder_hardware_options,video_encoder_source,video_metadata}.cpp`
+- `tests/test_{amf_matrix_probe,av_log_open_capture,config,video_encoder_hardware_options,video_encoder_source,video_metadata}.cpp`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{amfenc,qsvenc,mfenc}*`
 - `ffmpeg_build/working/ffmpeg/libavutil/hwcontext_qsv.c`
 - `build.py`
@@ -97,23 +98,57 @@ media core on Windows are in `gpu-api-plan.md` (2026-10-24).
 - Supported wrappers are `h264_amf`, `hevc_amf`, and `av1_amf`. The AMD display
   driver supplies the AMF runtime.
 - `[Video] rate_control` supports VBR (`vbr_peak`), CBR, CQ/QVBR, CQP, HQVBR,
-  HQCBR, and VBR latency. CQP emits codec-correct I/P/B quantizers and ignores
-  bitrate fields; CQ is the convenient QVBR alias.
+  HQCBR, and VBR latency. CQP emits codec-correct I/P/B quantizers (`0..51` for
+  H.264/HEVC, `1..255` for AV1) and ignores bitrate fields; CQ is the convenient
+  QVBR alias (`1..51`).
 - `[AMF] usage`, `preset`, `async_depth`, `preencode`, `preanalysis`, and
   `lookahead` expose the corresponding AMF scheduling/quality controls.
+  `preanalysis` is tri-state (`auto|disabled|enabled`, default `auto`, still
+  accepting legacy `true`/`false`). `CQ`/`QVBR`, `HQVBR`, and `HQCBR` require
+  PreAnalysis per AMD's SDK docs, so `auto` enables PA automatically for those
+  modes as well as for `lookahead > 0` and `temporal_aq=true` (legacy explicit
+  `preanalysis=false` still auto-enables with a warning).
 - Recording defaults follow the NVENC least-encoder-work policy (p1, single
   pass): `usage=transcoding` (AMF's "throughput over latency" usage; the
   low-latency usages cap bits per frame or add intra refresh, HQ/HQLL turn on
   pre-analysis, VBAQ and high-motion boost) with `preset=speed` (2026-10-26;
   `balanced` before, which is only the transcoding usage's own default). Per-usage
   defaults: `ffmpeg_build/repos/amf/amf/doc/AMF_Video_Encode_API.md` Annex A.
-  CE sets rate control, preset, pre-analysis, pre-encode, VBAQ, B-frames, GOP and
-  depth explicitly; HRD, filler data and high-motion boost are only sent when
-  enabled, so the usage default decides them otherwise.
-  Lookahead enables preanalysis and raises an undersized async queue to at least
-  `lookahead + 1` rather than opening an internally impossible configuration.
-- Spatial AQ maps to VBAQ for H.264/HEVC and CAQ for AV1. Preanalysis spatial
-  and temporal AQ, CAQ strength, and high-motion quality boost are independent.
+  CE sets rate control, preset, pre-analysis, pre-encode, VBAQ/CAQ,
+  `high_motion_quality_boost_enable`, B-frames, GOP and depth explicitly; HRD
+  and filler data are sent only when enabled and valid for the rate-control mode
+  (HRD non-CQP; filler CBR/HQCBR only).
+- Mutual exclusions and dependencies enforced in `video_encoder_backend_options.cpp`
+  (2026-11-22):
+  - **CQP:** disables `preencode`, PreAnalysis, `lookahead`, `spatial_aq`
+    (including `av1_amf` `aq_mode=none`, which stock FFmpeg `amfenc_av1.c` does
+    not guard), `temporal_aq`, `high_motion_quality_boost`, `enforce_hrd`, and
+    `filler_data` with warnings.
+  - **10-bit `P010` / HDR:** AMF PreAnalysis operates on 8-bit NV12 surfaces;
+    PA-dependent rate controls (`CQ`/`QVBR`/`HQVBR`/`HQCBR`) fail closed with an
+    actionable error on 10-bit input, while optional PA assists (`lookahead`,
+    `temporal_aq`, `preanalysis=enabled`) degrade cleanly to `preanalysis=0` with
+    a warning so HDR recordings still work with hardware `vbaq`/`aq_mode=caq`.
+  - **Active PreAnalysis:** explicitly disables encoder-native `vbaq`/`aq_mode`
+    and `high_motion_quality_boost_enable=0` (avoiding dual-path conflicts even
+    under `usage=high_quality`), drives AQ/boost exclusively via `pa_paq_mode`,
+    `pa_caq_strength`, `pa_taq_mode=2` (DX11 gaming mode per AMD's PA guide and
+    `DisplayDvrPipeline`), and `pa_high_motion_quality_boost_mode`, and always
+    emits `pa_lookahead_buffer_depth` explicitly (raising `0 -> 1` when TAQ or
+    PA high-motion boost is active, and raising `async_depth >= lookahead + 1`)
+    so AMF's 11-frame usage default cannot deadlock a smaller `async_depth`.
+  - **Low-latency usages:** disable `preencode` with a warning.
+- `captureengine/config.ini.template` keeps the core controls active and
+  comments out advanced/streaming-only knobs (`async_depth`, `preanalysis`,
+  `preencode`, `high_motion_quality_boost`, `b_ref_mode`, `enforce_hrd`,
+  `filler_data`); all remain parsed identically when set.
+- `ScopedAvOpenDebugCapture` (`mediaengine/engine/av_log_open_capture.{h,cpp}`)
+  captures a bounded thread-local tail of `AV_LOG_DEBUG`/`AV_LOG_VERBOSE` lines
+  during `avcodec_open2` and flushes them on open failure (plus the tail line in
+  `encoder_auto_probe` rejection strings), surfacing `AMFTraceWriter_Write`
+  warnings/errors that normal `AV_LOG_INFO` logging otherwise drops.
+- Opt-in hardware sweep on AMD GPUs:
+  `tests\unit_tests.exe --gtest_also_run_disabled_tests --gtest_filter=AmfHardwareMatrixProbe.DISABLED_*`.
 - H.264 supports explicit B-reference selection. H.264 and AV1 B-frame counts
   are capped at three and emit both `bf` and `max_b_frames` options (FFmpeg's
   `amfenc` wrapper configures `B_PIC_PATTERN`, `MAX_CONSECUTIVE_BPICTURES`, and

@@ -265,6 +265,8 @@ b_ref_mode=disabled
 ; display driver; frames remain GPU-resident on the capture D3D11 device.
 ; In addition to the common modes, [Video] rate_control accepts QVBR, HQVBR,
 ; HQCBR, and VBR_LATENCY. CQ is the convenient QVBR alias.
+; CQ/QVBR, HQVBR, and HQCBR require AMF PreAnalysis (8-bit SDR only); use VBR,
+; CBR, or CQP for 10-bit/HDR recordings.
 ; transcoding, ultralowlatency, lowlatency, webcam, high_quality, or
 ; lowlatency_high_quality. transcoding favors throughput and compression over
 ; latency, which suits recording; the high_quality usages trade speed for quality.
@@ -272,29 +274,40 @@ usage=transcoding
 ; speed, balanced, quality, or high_quality. speed leaves the encoder the most
 ; headroom; at recording bitrates the quality difference is small.
 preset=speed
-; Lower is higher quality. CQ uses 0-51. CQP uses 0-51 for H.264/HEVC and
-; 0-255 for AV1.
+; Lower is higher quality. CQ/QVBR uses 1-51 (8-bit SDR only). CQP uses 0-51
+; for H.264/HEVC and 1-255 for AV1.
 qp=23
-; Frames the encoder may hold in flight. auto keeps 16 and, above 160 fps, about
-; 100 ms of frames (up to 42); 1-42 sets it explicitly.
-async_depth=auto
-; Assisted rate control. These may improve compression but cost GPU time.
-preencode=false
-preanalysis=false
-; off, auto (20 frames), or 1-41. Lookahead enables preanalysis automatically.
+; off, auto (20 frames), or 1-41. 8-bit SDR non-CQP only; enables PreAnalysis
+; automatically and raises async_depth above the lookahead depth.
 lookahead=off
-; Spatial AQ maps to VBAQ/CAQ. Temporal AQ uses AMF preanalysis.
+; Adaptive quantization. Ignored under CQP. Without PreAnalysis, spatial_aq uses
+; hardware VBAQ/CAQ; with PreAnalysis, it uses PA-CAQ. temporal_aq is 8-bit SDR
+; non-CQP only and enables PreAnalysis automatically (minimum 1-frame lookahead).
 spatial_aq=false
 temporal_aq=false
-; Preanalysis CAQ strength: 0=low, 1=medium, 2=high.
+; PreAnalysis CAQ strength (0=low, 1=medium, 2=high); applies only when
+; spatial_aq=true with PreAnalysis active.
 aq_strength=1
-high_motion_quality_boost=false
-; auto, disabled, or enabled. H.264 only and meaningful with B-frames.
+; Advanced options below default to safe values and rarely need manual tuning:
+; Frames the encoder may hold in flight. auto keeps 16 and, above 160 fps, about
+; 100 ms of frames (up to 42); 1-42 sets it explicitly.
+;async_depth=auto
+; auto, disabled, or enabled. auto enables PreAnalysis only when CQ/QVBR/HQVBR/
+; HQCBR, lookahead, or temporal_aq needs it (8-bit SDR non-CQP only).
+;preanalysis=auto
+; Legacy pre-encode rate-control pass. Unsupported with CQP and low-latency
+; usages; driver-dependent.
+;preencode=false
+; High-motion quality boost. Ignored under CQP; uses PA high-motion boost (with
+; lookahead) when PreAnalysis is active, otherwise hardware boost.
+;high_motion_quality_boost=false
+; auto, disabled, or enabled. H.264 only and meaningful only when b_frames>0.
 ; H.264/AV1 support up to 3 B-frames; HEVC AMF currently exposes none.
-b_ref_mode=auto
-; Useful for strict streaming targets; normally leave both false for recording.
-enforce_hrd=false
-filler_data=false
+;b_ref_mode=auto
+; Strict streaming controls (set automatically by the live-streaming preset).
+; enforce_hrd is ignored under CQP; filler_data applies only to CBR/HQCBR.
+;enforce_hrd=false
+;filler_data=false
 
 [QuickSync]
 ; Used by h264_qsv, hevc_qsv, and av1_qsv through the bundled oneVPL dispatcher.

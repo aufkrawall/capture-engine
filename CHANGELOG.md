@@ -10,6 +10,10 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Reliable, responsive overlay GPU load reporting:** replaced raw single-poll Windows PDH `\GPU Engine` reporting with a three-tier sampler and stabilizer. On NVIDIA GPUs (including multi-GPU systems, matched per adapter LUID via PCI bus and device), Capture Engine now integrates hardware PMU utilization samples directly from NVML (`nvmlDeviceGetSamples` with `nvmlDeviceGetUtilizationRates` fallback), measuring actual graphics/compute core activity instead of WDDM scheduler residency. This eliminates the 0%/100% jumping seen in high-FPS Direct3D 9 workloads under HAGS (Mirror's Edge) as well as inflated ~100% GPU load readings when FIFO V-Sync holds queued frames waiting on scanout. On non-NVIDIA GPUs (AMD, Intel) or when NVML is unavailable, Capture Engine reads adapter-wide WDDM node running times directly through `D3DKMTQueryStatistics` (excluding video encode/decode/OFA/JPEG engines), detects invalid PDH counter statuses instead of publishing false 0% readings, suppresses single-poll WDDM dropouts while confirming real idle drops on the next poll, and polls active targets every 500 ms to match the overlay's text refresh.
 
+### Changed
+
+- **Cleaner default `[AMF]` config template:** `captureengine/config.ini.template` now keeps the core AMF controls (`usage`, `preset`, `qp`, `lookahead`, `spatial_aq`, `temporal_aq`, `aq_strength`) active with accurate compatibility notes, and comments out advanced or streaming-only knobs (`async_depth`, `preanalysis`, `preencode`, `high_motion_quality_boost`, `b_ref_mode`, `enforce_hrd`, `filler_data`) whose defaults are already managed automatically. Existing `config.ini` files continue to parse all keys unchanged.
+
 ### Fixed
 
 - **AMD AMF encoder option compatibility and failures:** fixed several invalid option combinations that caused `h264_amf`, `hevc_amf`, and `av1_amf` to fail encoder initialization or stall:

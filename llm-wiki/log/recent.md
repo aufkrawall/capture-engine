@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-11-22 - AMD AMF option compatibility fixes, codec-open trace capture, template curation
+
+- Audited `mediaengine/video/video_encoder_backend_options.cpp` against bundled FFmpeg `amfenc_{h264,hevc,av1}.c` and
+  AMF 1.5.2 docs/samples (`AMF_Video_Encode*_API.md`, `AMF_Video_PreAnalysis_API.md`, `DisplayDvrPipeline.cpp`):
+  - **Planner fixes (`bb3cec2a`):** made `[AMF] preanalysis` tri-state (`auto|disabled|enabled`, default `auto`) so
+    `CQ`/`QVBR`/`HQVBR`/`HQCBR` enable PreAnalysis automatically instead of forcing `preanalysis=0`; prevented
+    simultaneous encoder-side (`vbaq`/`aq_mode`, `high_motion_quality_boost_enable`) and PA AQ/boost flags; always
+    emitted `pa_lookahead_buffer_depth` (raising `0 -> 1` for TAQ/PA boost, using DX11 gaming `pa_taq_mode=2`, and
+    raising `async_depth > lookahead`) so AMF's 11-frame default cannot deadlock a smaller `async_depth`; guarded CQP
+    (incl. `av1_amf` `aq_mode`), non-CBR `filler_data`, low-latency `preencode`, 10-bit P010 PreAnalysis (fail closed
+    on PA-dependent RCs, clean degradation for optional PA assists), and `1..51` QVBR / `1..255` AV1 CQP bounds.
+  - **Open-failure trace diagnostics (`9aecb93c`):** `hwcontext_amf.c` logs `AMF_TRACE_WARNING`/`ERROR` through
+    `av_log(..., AV_LOG_DEBUG, ...)`, which `CaptureEngineAvLogCallback` previously dropped at `AV_LOG_INFO`. Added
+    `ScopedAvOpenDebugCapture` (`mediaengine/engine/av_log_open_capture.{h,cpp}`) to retain a bounded, redacted tail
+    during `avcodec_open2` and flush it only on failure (zero noise on success; tail line also in `encoder_auto_probe`).
+  - **Template & hardware probe:** commented out advanced/streaming-only `[AMF]` keys in `config.ini.template` while
+    keeping full parser compatibility, and added `tests/test_amf_matrix_probe.cpp` (always-run FFmpeg `av_opt_set`
+    matrix check + opt-in `DISABLED_PrintHardwareCompatibilityMatrix` for real Radeon hardware). Live AMD hardware
+    validation remains pending (no Radeon GPU on dev host).
+
 ### 2026-11-21 - ReLimiter 4.0 / ReShade add-on coexistence (5 root causes fixed)
 
 - User report: with Capture Engine injected alongside ReLimiter 4.0 (`relimiter.addon64`), ReLimiter disabled frame
