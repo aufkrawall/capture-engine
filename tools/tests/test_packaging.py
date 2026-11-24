@@ -21,6 +21,7 @@ class PackagingTests(unittest.TestCase):
             source = root / "ffmpeg-repo"
             downloads = root / "downloads"
             destination = root / "stage" / "ffmpeg-corresponding-source"
+            resolved_commit = "a" * 40
             (source / ".git").mkdir(parents=True)
             downloads.mkdir()
             (source / "configure").write_text("synthetic source", encoding="utf-8")
@@ -36,7 +37,7 @@ class PackagingTests(unittest.TestCase):
                 upstream_name: libiconv["upstream_source_sha256"],
                 libiconv["source_package"]: libiconv["source_package_sha256"],
             }
-            command_results = [build.FFMPEG_SOURCE_REF, "", ""] + [
+            command_results = [resolved_commit, resolved_commit, "", ""] + [
                 "" for _ in (Path(build.PROJECT_ROOT) / "tools" / "patches" / "ffmpeg").glob("*.patch")
             ]
             with patch.object(build.shutil, "which", return_value="git"), patch.object(
@@ -53,13 +54,28 @@ class PackagingTests(unittest.TestCase):
             self.assertTrue((destination / "captureengine-build-inputs" / "build.py").is_file())
             self.assertTrue((destination / "libiconv-source" / upstream_name).is_file())
             self.assertFalse((destination / "ffmpeg" / ".git").exists())
+            manifest = (destination / "SOURCE_MANIFEST.txt").read_text(encoding="utf-8")
+            self.assertIn(f"FFmpeg source ref: {build.FFMPEG_SOURCE_REF}", manifest)
+            self.assertIn(f"FFmpeg commit: {resolved_commit}", manifest)
 
     def test_corresponding_source_refuses_a_dirty_ffmpeg_checkout(self) -> None:
+        resolved_commit = "b" * 40
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             build.shutil, "which", return_value="git"
-        ), patch.object(build, "run_command", side_effect=[build.FFMPEG_SOURCE_REF, " M libavcodec/example.c"]):
+        ), patch.object(
+            build, "run_command", side_effect=[resolved_commit, resolved_commit, " M libavcodec/example.c"]
+        ):
             with self.assertRaisesRegex(RuntimeError, "checkout is dirty"):
                 build._stage_ffmpeg_corresponding_source(temporary, temporary, os.path.join(temporary, "stage"))
+
+    def test_corresponding_source_resolves_annotated_tag_to_peeled_commit(self) -> None:
+        peeled = "c" * 40
+        with patch.object(build, "run_command", return_value=peeled + "\n") as run_command:
+            self.assertEqual(build.resolve_ffmpeg_source_commit("git", "repo"), peeled)
+        self.assertEqual(
+            run_command.call_args.args[0],
+            ["git", "-C", "repo", "rev-parse", "--verify", f"{build.FFMPEG_SOURCE_REF}^0"],
+        )
 
     def test_captureengine_staging_excludes_local_state_and_uses_clean_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
