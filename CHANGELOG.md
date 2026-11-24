@@ -14,6 +14,8 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Changed
 
+- **FFmpeg 9.1 stable:** updated the bundled custom FFmpeg from the pre-release `release/9.1` snapshot to the upstream `n9.1` release tag (commit `74e4393595cf2b5857f0da925c4e0dd74ea306e5`). The stable branch retains native AAC NMR coding and the project's seven local patches, so encoder quality, CFR timing, and audio/video synchronization behavior remain on the validated 9.1 codec path.
+
 - **Cleaner default `[AMF]` config template:** `captureengine/config.ini.template` now keeps the core AMF controls (`usage`, `preset`, `qp`, `lookahead`, `spatial_aq`, `temporal_aq`, `aq_strength`) active with accurate compatibility notes, and comments out advanced or streaming-only knobs (`async_depth`, `preanalysis`, `preencode`, `high_motion_quality_boost`, `b_ref_mode`, `enforce_hrd`, `filler_data`) whose defaults are already managed automatically. Existing `config.ini` files continue to parse all keys unchanged.
 
 ### Fixed

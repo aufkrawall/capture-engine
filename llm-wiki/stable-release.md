@@ -101,8 +101,9 @@ overrides. Nothing in it is trusted on its own:
 - **`makepkg --holdver`.** The winpthreads source package ships the mingw-w64 git repo already holding the pinned
   commit; makepkg used to refresh it from git.code.sf.net on every closure build. `--holdver` builds the signed
   snapshot (same commit, no network).
-- **FFmpeg version string.** A mirror checkout has full history and tags, so `ffbuild/version.sh` yields
-  `n9.1-dev-2756-gfb30650940` like a full network clone; the developer tree's older clone yields only `fb30650940`.
+- **FFmpeg version string.** The `n9.1` release tag checks out at `74e43935`; the built
+  `avcodec-ce-63.dll` reports ProductVersion `n9.1` and file version `63.24.100`. The previous
+  pre-release pin yielded `n9.1-dev-2756-gfb30650940` in a full-history mirror checkout.
 - **Closure proofs** (`tools/toolchain_state.py`): every successful from-source build of the dependency closure
   (`SourceDependencyBuilder.ensure` rebuilt it) or of FFmpeg records `(kind, inputs, toolchain sha)`; so does a
   passing `tools/rehearse_dependency_closure.py`. `dispatch` refuses when a proof exists for an *older* toolchain
