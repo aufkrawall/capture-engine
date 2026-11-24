@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-11-24 - FFmpeg 9.1 stable pin and release-gate robustness
+
+- Upstream released FFmpeg 9.1 as annotated tag `n9.1` (`9d106a4c...`), peeling to commit
+  `74e4393595cf2b5857f0da925c4e0dd74ea306e5` with tree `eed36c7cb77a542a4dcbda4805fafeec0ade05e7`.
+  Both `git.ffmpeg.org` and `github.com/FFmpeg/FFmpeg` report the same tag object and peeled commit.
+  The release source contains `AAC_CODER_NMR` and the `aac_nmr_speed` encoder option.
+- Replaced the pre-release `fb306509...` pin with `n9.1`. All seven CE FFmpeg patches apply in order, the
+  clean source build records commit `74e43935`, the bundled `avcodec-ce-63.dll` reports ProductVersion
+  `n9.1` (file version `63.24.100`), and the full native/Python suite passes. Focused evidence:
+  `AudioEncoderContractTest`, `AacNmrRuntimeTest`, and `AacNmrBudgetTest` (15/15).
+- Release run `45309314055` failed at the final ratchet because three GPU-load test argument comments
+  named the wrong parameters; its fatal lint exit also raced concurrent packaging and produced an
+  interpreter-shutdown error. Commit `8be40e7b` fixed the labels, refreshed the full clang-tidy scope,
+  and drains packaging before re-raising the lint exit. Run `45316494885` was cancelled when the
+  FFmpeg-stable requirement landed; neither failed/cancelled run created a tag or GitHub release.
+
 ### 2026-11-22 - AMD AMF option compatibility fixes, codec-open trace capture, template curation
 
 - Audited `mediaengine/video/video_encoder_backend_options.cpp` against bundled FFmpeg `amfenc_{h264,hevc,av1}.c` and

@@ -699,13 +699,14 @@ class FfmpegSourcePinTest(unittest.TestCase):
         self.assertIn('git_clone(FFMPEG_URLS, "ffmpeg"', source)
         self.assertIn("digest.update(FFMPEG_SOURCE_REF.encode(", source)
 
-    def test_source_upgrade_invalidates_previous_master_build(self) -> None:
-        # A 9.1 pin bump must rebuild FFmpeg even with --skip-updates and DLLs
-        # already present. Compare the real cache identities used by the builder.
+    def test_source_upgrade_invalidates_previous_pre_release_build(self) -> None:
+        # Moving from the release-branch snapshot to the n9.1 tag must rebuild
+        # FFmpeg even with --skip-updates and DLLs already present. Compare the
+        # real cache identities used by the builder.
         current = build.ffmpeg_build_configuration_fingerprint()
-        with mock.patch.object(build, "FFMPEG_SOURCE_REF", "86940d45aff7d59810794df3ab2b39b7b83b478c"):
+        with mock.patch.object(build, "FFMPEG_SOURCE_REF", "fb306509400aa305c5a7206f9b294d5fbb510c25"):
             previous = build.ffmpeg_build_configuration_fingerprint()
-        self.assertNotEqual(current, previous, "the previous master build must not satisfy the 9.1 pin")
+        self.assertNotEqual(current, previous, "the previous pre-release build must not satisfy the n9.1 pin")
 
     def test_pin_check_recognizes_a_clone_already_at_the_pinned_commit(self) -> None:
         # MSYS2's git.exe globs its own command line when a native process starts
@@ -728,16 +729,12 @@ class FfmpegSourcePinTest(unittest.TestCase):
             self.assertTrue(builder._repo_is_at_ref(temp, head, str(git_exe), None))
             self.assertFalse(builder._repo_is_at_ref(temp, "0" * 40, str(git_exe), None))
 
-    def test_pre_release_source_uses_an_immutable_commit(self) -> None:
-        # The 9.1 release branch includes NMR, but has no final release tag yet.
-        # Keep the pre-release source immutable; a future tag needs separate NMR
-        # validation. Native AudioEncoderContractTest checks the opened encoder's
-        # NMR selection and best-quality speed rather than inferring them here.
-        if not build._is_commit_ref(build.FFMPEG_SOURCE_REF):
-            self.fail(
-                "FFMPEG_SOURCE_REF is a release tag; confirm the tag contains the NMR "
-                "aac_coder (grep AAC_CODER_NMR libavcodec/aacenc.c) before allowing it"
-            )
+    def test_source_uses_the_ffmpeg_9_1_stable_tag(self) -> None:
+        # Upstream published n9.1 on 2026-11-19 after the release branch snapshot
+        # used for the initial 9.1 integration. The tag still contains the native
+        # AAC NMR options; Native AudioEncoderContractTest verifies the opened
+        # encoder's NMR selection and speed against the built library.
+        self.assertEqual(build.FFMPEG_SOURCE_REF, "n9.1")
 
     def test_release_workflow_builds_ffmpeg_instead_of_junctioning_it(self) -> None:
         # Every shipped binary must be produced by the run that publishes it, so a

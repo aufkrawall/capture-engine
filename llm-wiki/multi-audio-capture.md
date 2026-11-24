@@ -24,11 +24,14 @@ reports the five-second reply timeout, and the recording manifest never gains
 `captureengine/media/media_main_recording.cpp` (`DetachFromSharedLiveState`), and pinned
 FFmpeg `libavcodec/aacenc.c` (hard-overflow retry and lambda floor).
 
-The installed FFmpeg reports `fb30650940`, matching `FFMPEG_SOURCE_REF` in
-`tools/build/build_linux_msys2.py`; a newer CE build alone does not establish a fix.
+At the time of this investigation the installed FFmpeg reported `fb30650940`, matching the then-current
+`FFMPEG_SOURCE_REF`. The release source is now the upstream `n9.1` tag (commit
+`74e4393595cf2b5857f0da925c4e0dd74ea306e5`), and the native `AudioEncoderContractTest` plus
+`AacNmrRuntimeTest` verify the NMR options against the opened encoder. A newer CE build alone does not
+establish a fix for the original hang.
 Upstream checked 2026-11-07 at master `e196e57ca225a98654e482806fa714facd232b57`:
-both `aacenc.c` and `aaccoder_nmr.h` are byte-identical between the pin and master;
-their path histories have no commits after the pin. The existing VBR legality fix
+both `aacenc.c` and `aaccoder_nmr.h` were byte-identical between the then-current pin
+and master; their path histories had no commits after that pin. The existing VBR legality fix
 therefore does not constitute a newer fix for this CBR failure.
 
 The dump confirms NMR `options.rc=0`, `rc_gl=1`, and internal `lam_rc=10000` while
