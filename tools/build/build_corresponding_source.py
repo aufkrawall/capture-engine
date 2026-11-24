@@ -1,4 +1,13 @@
 
+def resolve_ffmpeg_source_commit(git_exe: str, source_repo: str) -> str:
+    """Peel a commit or annotated-tag pin to the commit checked out for the build."""
+    resolved = run_command(
+        [git_exe, "-C", source_repo, "rev-parse", "--verify", f"{FFMPEG_SOURCE_REF}^0"]
+    ).strip()
+    if len(resolved) != 40 or any(character not in "0123456789abcdefABCDEF" for character in resolved):
+        raise RuntimeError(f"Unable to resolve FFmpeg source ref {FFMPEG_SOURCE_REF!r}: {resolved or 'unknown'}")
+    return resolved.lower()
+
 
 def _stage_ffmpeg_corresponding_source(source_repo: str, downloads_root: str, destination_root: str) -> List[str]:
     """Stage the exact LGPL source and build inputs corresponding to the shipped DLLs."""
@@ -8,9 +17,12 @@ def _stage_ffmpeg_corresponding_source(source_repo: str, downloads_root: str, de
     if not os.path.isdir(source_repo):
         raise RuntimeError(f"FFmpeg source checkout is missing: {source_repo}")
 
+    expected_commit = resolve_ffmpeg_source_commit(git_exe, source_repo)
     head = run_command([git_exe, "-C", source_repo, "rev-parse", "HEAD"]).strip()
-    if head.lower() != FFMPEG_SOURCE_REF.lower():
-        raise RuntimeError(f"FFmpeg source checkout is {head or 'unknown'}, expected {FFMPEG_SOURCE_REF}")
+    if head.lower() != expected_commit:
+        raise RuntimeError(
+            f"FFmpeg source checkout is {head or 'unknown'}, expected {FFMPEG_SOURCE_REF} ({expected_commit})"
+        )
     status = run_command([git_exe, "-C", source_repo, "status", "--porcelain"]).strip()
     if status:
         raise RuntimeError("FFmpeg source checkout is dirty; refusing to publish ambiguous corresponding source")
@@ -70,7 +82,11 @@ def _stage_ffmpeg_corresponding_source(source_repo: str, downloads_root: str, de
     )
     dependency_destination = os.path.join(destination_root, "libiconv-source")
     os.makedirs(dependency_destination, exist_ok=True)
-    manifest_lines = [f"FFmpeg commit: {FFMPEG_SOURCE_REF}", "Local FFmpeg patches are already applied under ffmpeg/."]
+    manifest_lines = [
+        f"FFmpeg source ref: {FFMPEG_SOURCE_REF}",
+        f"FFmpeg commit: {expected_commit}",
+        "Local FFmpeg patches are already applied under ffmpeg/.",
+    ]
     for filename, expected_sha256 in source_archives:
         source = os.path.join(downloads_root, filename)
         if not os.path.isfile(source) or sha256_file(source).lower() != expected_sha256.lower():

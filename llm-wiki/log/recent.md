@@ -15,6 +15,11 @@
   interpreter-shutdown error. Commit `8be40e7b` fixed the labels, refreshed the full clang-tidy scope,
   and drains packaging before re-raising the lint exit. Run `45316494885` was cancelled when the
   FFmpeg-stable requirement landed; neither failed/cancelled run created a tag or GitHub release.
+- Release run `45321475462` passed the source build, sanitizer, unit, flow, Python and lint gates but
+  failed corresponding-source packaging because it compared checkout HEAD (`74e43935...`) to the tag
+  string `n9.1`. `build_corresponding_source.py` now peels commit/tag refs to the expected commit before
+  checking HEAD; the compatible manifest records both `n9.1` and `74e43935...`. Real staging of all
+  11,105 files and all seven patches passed.
 
 ### 2026-11-22 - AMD AMF option compatibility fixes, codec-open trace capture, template curation
 

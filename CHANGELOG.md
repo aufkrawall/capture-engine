@@ -20,6 +20,8 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **FFmpeg corresponding-source packaging with release tags:** fixed source-archive generation to resolve an annotated FFmpeg pin such as `n9.1` to its peeled commit before checking the clean checkout. The archive manifest records both the tag and exact commit, preserving fail-closed provenance without rejecting the released source.
+
 - **AMD AMF encoder option compatibility and failures:** fixed several invalid option combinations that caused `h264_amf`, `hevc_amf`, and `av1_amf` to fail encoder initialization or stall:
   - Changed `[AMF] preanalysis` to default to `auto` (still accepting `true`/`false`/`enabled`/`disabled` for existing configs) so `CQ`/`QVBR`, `HQVBR`, and `HQCBR` rate-control modes automatically enable AMF PreAnalysis instead of explicitly forcing `preanalysis=0`.
   - Stopped emitting mutually exclusive encoder-side `vbaq`/`aq_mode` and `high_motion_quality_boost_enable` alongside PreAnalysis AQ/high-motion options, and explicitly emitted `pa_lookahead_buffer_depth` (raising to at least `1` when temporal AQ or PA high-motion boost is active, with `pa_taq_mode=2` for DX11 gaming) so AMF's 11-frame usage default cannot deadlock a smaller `async_depth`.
