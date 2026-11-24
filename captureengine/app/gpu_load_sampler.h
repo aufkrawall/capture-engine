@@ -175,7 +175,10 @@ public:
     using Clock100nsFn = std::function<int64_t()>;
     using HardwareAdapterCountFn = std::function<unsigned int()>;
 
-    GpuLoadSampler();
+    // The persistent host-metrics owner constructs this during static
+    // initialization. Defer the driver-state allocation to the first sample so
+    // that initialization cannot throw.
+    GpuLoadSampler() noexcept;
     GpuLoadSampler(NvmlLoadApi nvmlApi, D3dkmtLoadApi d3dkmtApi, Clock100nsFn clock100ns = {},
                    HardwareAdapterCountFn hardwareAdapterCount = {});
     ~GpuLoadSampler();

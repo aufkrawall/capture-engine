@@ -4,6 +4,7 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include "common/logging/logging.h"
@@ -19,6 +20,7 @@
 
 namespace scan_host {
 
+static_assert(std::is_nothrow_default_constructible_v<HostMetricsState>);
 static HostMetricsState g_HostMetrics;
 static std::mutex g_MetricsMutex;
 
