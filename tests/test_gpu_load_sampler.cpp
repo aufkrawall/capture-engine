@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "captureengine/app/gpu_load_policy.h"
@@ -15,6 +16,8 @@ namespace {
 
 using namespace scan_host;
 using namespace scan_host::metrics_policy;
+
+static_assert(std::is_nothrow_default_constructible_v<GpuLoadSampler>);
 
 // ============================================================================
 // NVML PMU sample integration

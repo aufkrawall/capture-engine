@@ -348,9 +348,9 @@ public:
         }
 
         double next = published_ + alpha * (clamped - published_);
-        if (clamped <= 0.5 && published_ < 2.0)
-            next = clamped;
-        else if (clamped >= 99.5 && published_ > 98.0)
+        const bool atQuiescentBound = clamped <= 0.5 && published_ < 2.0;
+        const bool atSaturatedBound = clamped >= 99.5 && published_ > 98.0;
+        if (atQuiescentBound || atSaturatedBound)
             next = clamped;
 
         published_ = std::clamp(next, 0.0, 100.0);

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <utility>
 #include <vector>
 
@@ -461,7 +462,7 @@ struct GpuLoadSampler::Impl {
     }
 };
 
-GpuLoadSampler::GpuLoadSampler() : impl_(std::make_unique<Impl>()) {}
+GpuLoadSampler::GpuLoadSampler() noexcept = default;
 
 GpuLoadSampler::GpuLoadSampler(NvmlLoadApi nvmlApi, D3dkmtLoadApi d3dkmtApi, Clock100nsFn clock100ns,
                                HardwareAdapterCountFn hardwareAdapterCount)
@@ -479,7 +480,11 @@ GpuLoadSampler::~GpuLoadSampler() {
 }
 
 GpuLoadReading GpuLoadSampler::SampleAdapter(int64_t adapterLuid) {
-    if (!impl_ || adapterLuid == 0)
+    if (adapterLuid == 0)
+        return {};
+    if (!impl_)
+        impl_.reset(new (std::nothrow) Impl());
+    if (!impl_)
         return {};
     impl_->EnsureBackendsLoaded();
     if (GpuLoadReading nvmlReading = impl_->SampleNvml(adapterLuid); nvmlReading.valid)
