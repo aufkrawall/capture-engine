@@ -6,7 +6,7 @@ Changes since [v0.1.7161](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Capture startup robustness:** host GPU-load metrics now defer driver-state allocation until the first sample instead of allocating during static initialization. The low/high load snapping behavior is unchanged, and startup no longer carries an uncaught static-initialization exception risk.
+- **Capture startup and release robustness:** host GPU-load metrics now defer driver-state allocation until the first sample instead of allocating during static initialization. The low/high load snapping behavior is unchanged, startup no longer carries an uncaught static-initialization exception risk, and release packaging now finishes before a fatal lint result is propagated so the actual gate failure is reported accurately.
 
 - **Hardware encoder open-failure trace diagnostics:** when `avcodec_open2` fails (including `h264_amf`, `hevc_amf`, `av1_amf`, Quick Sync, and NVENC), Capture Engine now flushes the bounded thread-local libav debug trace captured during the failed open (and includes the last line in `encoder=auto` probe rejections). This surfaces AMF's own internal property/init rejection lines (which FFmpeg's AMF trace writer logs at `AV_LOG_DEBUG`) without adding any log noise when opens succeed.
 

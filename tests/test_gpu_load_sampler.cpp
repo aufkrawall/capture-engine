@@ -28,9 +28,7 @@ TEST(GpuLoadPolicyTest, IntegratesFreshNvmlSamplesAndIgnoresOldOrSentinelEntries
         {0, 99},          // sentinel timestamp
         {900'000, 10},    // older than lastSeen
         {1'000'000, 20},  // equal to lastSeen
-        {1'200'000, 94},
-        {1'400'000, 96},
-        {1'600'000, 95},
+        {1'200'000, 94}, {1'400'000, 96}, {1'600'000, 95},
     };
     const NvmlSampleIntegration out = IntegrateNvmlGpuSamples(samples, /*lastSeenTimestampUs=*/1'000'000);
     ASSERT_TRUE(out.valid);
@@ -41,11 +39,8 @@ TEST(GpuLoadPolicyTest, IntegratesFreshNvmlSamplesAndIgnoresOldOrSentinelEntries
 
 TEST(GpuLoadPolicyTest, NvmlIntegrationBoundsStaleHistoryOnFirstPollAndHandlesUnsortedOrder) {
     const std::vector<NvmlUtilSample> samples = {
-        {2'000'000, 90},
-        {200'000, 5},     // older than the 1.2s window before newest (2.2s)
-        {2'200'000, 94},
-        {1'800'000, 92},
-        {400'000, 5},     // outside window
+        {2'000'000, 90}, {200'000, 5},                   // older than the 1.2s window before newest (2.2s)
+        {2'200'000, 94}, {1'800'000, 92}, {400'000, 5},  // outside window
     };
     const NvmlSampleIntegration out = IntegrateNvmlGpuSamples(samples, /*lastSeenTimestampUs=*/0);
     ASSERT_TRUE(out.valid);
@@ -81,14 +76,14 @@ TEST(GpuLoadPolicyTest, ComputesBusiestNonVideoD3dkmtNodeAndRejectsRegressions) 
     // 1 second elapsed = 10,000,000 ticks (100ns)
     const int64_t elapsed = 10'000'000;
     const std::vector<D3dkmtNodeRunningTimeSample> prev = {
-        {100'000, true, false},    // 3D
-        {200'000, true, true},     // VideoEncode (must be ignored)
-        {300'000, true, false},    // Copy
+        {100'000, true, false},  // 3D
+        {200'000, true, true},   // VideoEncode (must be ignored)
+        {300'000, true, false},  // Copy
     };
     const std::vector<D3dkmtNodeRunningTimeSample> curr = {
-        {7'600'000, true, false},   // 75%
-        {10'200'000, true, true},   // 100% video encode - ignored
-        {1'300'000, true, false},   // 10%
+        {7'600'000, true, false},  // 75%
+        {10'200'000, true, true},  // 100% video encode - ignored
+        {1'300'000, true, false},  // 10%
     };
     const D3dkmtLoadResult ok = ComputeD3dkmtAdapterLoadPercent(prev, curr, elapsed);
     ASSERT_TRUE(ok.valid);
@@ -99,9 +94,9 @@ TEST(GpuLoadPolicyTest, ComputesBusiestNonVideoD3dkmtNodeAndRejectsRegressions) 
 
     // Counter regression on the only active node yields invalid rather than 0%.
     const std::vector<D3dkmtNodeRunningTimeSample> regressed = {
-        {50'000, true, false},     // regressed
+        {50'000, true, false},  // regressed
         {200'000, true, true},
-        {300'000, true, false},    // 0%
+        {300'000, true, false},  // 0%
     };
     EXPECT_FALSE(ComputeD3dkmtAdapterLoadPercent(prev, regressed, elapsed).valid);
 }
@@ -169,17 +164,19 @@ TEST(GpuLoadStabilizerTest, HoldsReadingAcrossBoundedCorruptPollsThenReleases) {
     GpuLoadStabilizer stabilizer;
     EXPECT_DOUBLE_EQ(stabilizer.Update(GpuLoadSource::PdhEngine, 72.0, true).percent, 72.0);
 
-    const GpuLoadStabilizerOutput hold1 = stabilizer.Update(GpuLoadSource::PdhEngine, 0.0, true, /*corrupt=*/true);
+    const GpuLoadStabilizerOutput hold1 =
+        stabilizer.Update(GpuLoadSource::PdhEngine, 0.0, true, /*sampleCorrupt=*/true);
     EXPECT_TRUE(hold1.readable);
     EXPECT_TRUE(hold1.heldCorrupt);
     EXPECT_DOUBLE_EQ(hold1.percent, 72.0);
 
-    const GpuLoadStabilizerOutput hold2 = stabilizer.Update(GpuLoadSource::PdhEngine, 0.0, true, /*corrupt=*/true);
+    const GpuLoadStabilizerOutput hold2 =
+        stabilizer.Update(GpuLoadSource::PdhEngine, 0.0, true, /*sampleCorrupt=*/true);
     EXPECT_TRUE(hold2.heldCorrupt);
     EXPECT_DOUBLE_EQ(hold2.percent, 72.0);
 
     // Past kMaxCorruptHoldPolls, a query failure becomes unreadable rather than stuck forever.
-    const GpuLoadStabilizerOutput failed = stabilizer.Update(GpuLoadSource::PdhEngine, 0.0, /*valid=*/false);
+    const GpuLoadStabilizerOutput failed = stabilizer.Update(GpuLoadSource::PdhEngine, 0.0, /*sampleValid=*/false);
     EXPECT_FALSE(failed.readable);
 }
 
@@ -238,11 +235,12 @@ struct FakeDriverEnv {
     }
 
     static int64_t CombineLuid(kmt_load_abi::Luid luid) {
-        return static_cast<int64_t>((static_cast<uint64_t>(static_cast<uint32_t>(luid.highPart)) << 32) |
-                                    luid.lowPart);
+        return static_cast<int64_t>((static_cast<uint64_t>(static_cast<uint32_t>(luid.highPart)) << 32) | luid.lowPart);
     }
 
-    static int NvmlInit() { return nvmlInitResult; }
+    static int NvmlInit() {
+        return nvmlInitResult;
+    }
     static int NvmlShutdown() {
         ++nvmlShutdowns;
         return 0;
@@ -280,8 +278,7 @@ struct FakeDriverEnv {
             *count = static_cast<unsigned int>(nvmlSamples.size());
             return 0;
         }
-        const unsigned int copy =
-            *count < nvmlSamples.size() ? *count : static_cast<unsigned int>(nvmlSamples.size());
+        const unsigned int copy = *count < nvmlSamples.size() ? *count : static_cast<unsigned int>(nvmlSamples.size());
         for (unsigned int i = 0; i < copy; ++i)
             out[i] = nvmlSamples[i];
         *count = copy;
@@ -400,8 +397,9 @@ TEST(GpuLoadSamplerTest, MatchesNvidiaAdapterByPciAndFallsThroughToD3dkmtOnNonNv
     FakeDriverEnv::nvmlSamples = {s1, s2};
 
     int64_t clock100ns = 100'000'000;
-    GpuLoadSampler sampler(FakeDriverEnv::MakeNvml(), FakeDriverEnv::MakeKmt(), [&clock100ns]() { return clock100ns; },
-                           []() { return 2u; });
+    GpuLoadSampler sampler(
+        FakeDriverEnv::MakeNvml(), FakeDriverEnv::MakeKmt(), [&clock100ns]() { return clock100ns; },
+        []() { return 2u; });
 
     // NVIDIA LUID uses NVML 200ms PMU sample average (42%).
     const GpuLoadReading nvReading = sampler.SampleAdapter(kNvidiaLuid);
@@ -439,8 +437,8 @@ TEST(GpuLoadSamplerTest, FallsBackToNvmlRateWhenGetSamplesIsUnsupported) {
     FakeDriverEnv::nvmlSamplesStatus = 3;  // NVML_ERROR_NOT_SUPPORTED
     FakeDriverEnv::nvmlRateGpu = 67;
 
-    GpuLoadSampler sampler(FakeDriverEnv::MakeNvml(), FakeDriverEnv::MakeKmt(), []() { return 0; },
-                           []() { return 1u; });
+    GpuLoadSampler sampler(
+        FakeDriverEnv::MakeNvml(), FakeDriverEnv::MakeKmt(), []() { return 0; }, []() { return 1u; });
     const GpuLoadReading reading = sampler.SampleAdapter(kNvidiaLuid);
     ASSERT_TRUE(reading.valid);
     EXPECT_EQ(reading.source, GpuLoadSource::NvmlRate);
