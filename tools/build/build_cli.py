@@ -723,12 +723,18 @@ def main():
         package_executor = ThreadPoolExecutor(max_workers=1)
         package_future = package_executor.submit(package_build_outputs, portable_archives_flag)
 
+    lint_exit = None
     if lint_flag:
-        lint_ok = run_lint(env, advisory=True)
-        if not lint_ok:
-            log("Lint/LSP checks reported advisory issues; complete diagnostics were retained as artifacts.")
-        if not tests_only_flag and not no_build_flag and not sanitize_flag and not sanitize_regression_child:
-            refresh_full_compile_database_snapshot()
+        try:
+            lint_ok = run_lint(env, advisory=True)
+            if not lint_ok:
+                log("Lint/LSP checks reported advisory issues; complete diagnostics were retained as artifacts.")
+            if not tests_only_flag and not no_build_flag and not sanitize_flag and not sanitize_regression_child:
+                refresh_full_compile_database_snapshot()
+        except SystemExit as error:
+            # The clang-tidy ratchet exits directly. Drain concurrent packaging
+            # first so interpreter shutdown cannot replace the real gate failure.
+            lint_exit = error
 
     if package_future is not None:
         try:
@@ -739,6 +745,9 @@ def main():
         finally:
             assert package_executor is not None
             package_executor.shutdown()
+
+    if lint_exit is not None:
+        raise lint_exit
 
     if run_fuzz_flag:
         run_fuzz_targets(env, fuzz_seconds)

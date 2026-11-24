@@ -319,6 +319,18 @@ class PackagingTests(unittest.TestCase):
         self.assertLess(submit_index, lint_call)
         self.assertIn("should_package_outputs(", source)
 
+    def test_fatal_lint_exit_waits_for_concurrent_packaging(self) -> None:
+        source = build.read_source_text()
+        submit_index = source.index(
+            "package_future = package_executor.submit(package_build_outputs, portable_archives_flag)"
+        )
+        lint_index = source.index("if lint_flag:", submit_index)
+        package_wait_index = source.index("if package_future is not None:", lint_index)
+        lint_block = source[lint_index:package_wait_index]
+        self.assertIn("except SystemExit as error:", lint_block)
+        self.assertIn("lint_exit = error", lint_block)
+        self.assertIn("raise lint_exit", source[package_wait_index:])
+
     def test_output_packaging_policy_excludes_non_shippable_runs(self) -> None:
         self.assertTrue(
             build.should_package_outputs(
