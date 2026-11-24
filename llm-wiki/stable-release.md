@@ -1,6 +1,7 @@
 # Stable release pipeline
 
-Last verified: 2026-11-08 - v0.1.7160, run 42427416394, 43 min 20 s, six assets attested (SLSA v1, commit 5740d37e) and verified with `gh attestation verify`.
+Last verified: 2026-11-24 - v0.1.7162 with FFmpeg `n9.1`, run 45326642405, 43 min 31 s, six assets attested
+(SLSA v1, commit f507bf31) and verified with `gh attestation verify`.
 
 Primary sources:
 - `.github/workflows/release-stable.yml`, `.github/workflows/release-log-cleanup.yml`

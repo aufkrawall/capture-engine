@@ -191,48 +191,32 @@ def unreleased_baseline_tag(text: str) -> Optional[str]:
     return baseline.group(1) if baseline else None
 
 
+def _extract_version_notes_raw(text: str, version: str) -> Optional[str]:
+    """Extract a version body verbatim, preserving wrapped and nested bullet structure."""
+    target_clean = normalize_version(version)
+    pattern = re.compile(r"^##[ \t]+([^\r\n]+?)[ \t]*\r?\n(.*?)(?=^##[ \t]|\Z)", re.MULTILINE | re.DOTALL)
+    for match in pattern.finditer(text):
+        heading = match.group(1).strip()
+        matches = (
+            heading.lower() == "unreleased" and target_clean.lower() == "unreleased"
+        ) or normalize_version(heading) == target_clean
+        if not matches:
+            continue
+        body = match.group(2).lstrip("\r\n")
+        body = re.sub(
+            r"^[ \t]*Changes since \[[^\]]+\]\([^)]*\)\.[ \t]*(?:\r?\n)?",
+            "",
+            body,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        return body.strip()
+    return None
+
+
 def extract_version_notes(text: str, version: str) -> Optional[str]:
     """Extract changelog notes for a version or Unreleased."""
-    target_clean = normalize_version(version)
-    parsed = parse_changelog(text)
-
-    # Search keys
-    matching_key: Optional[str] = None
-    for key in parsed:
-        if key.lower() == "unreleased" and target_clean.lower() == "unreleased":
-            matching_key = key
-            break
-        key_clean = normalize_version(key)
-        if key_clean == target_clean:
-            matching_key = key
-            break
-
-    if not matching_key:
-        return None
-
-    cat_map = parsed[matching_key]
-    if not cat_map:
-        return ""
-
-    out_lines: List[str] = []
-    # Preferred category ordering
-    order = ["New", "Improved", "Fixed", "Changed", "Deprecated", "Removed", "Security"]
-    for cat in order:
-        items = cat_map.get(cat)
-        if items:
-            out_lines.append(f"### {cat}\n")
-            for item in items:
-                out_lines.append(f"- {item}\n")
-            out_lines.append("")
-
-    for cat, items in cat_map.items():
-        if cat not in order and items:
-            out_lines.append(f"### {cat}\n")
-            for item in items:
-                out_lines.append(f"- {item}\n")
-            out_lines.append("")
-
-    return "\n".join(out_lines).strip()
+    return _extract_version_notes_raw(text, version)
 
 
 class StaleUnreleasedError(RuntimeError):
