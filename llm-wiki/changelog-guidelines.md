@@ -95,6 +95,8 @@ not a git-derived one. `release-stable.yml` resolves the requested version (or t
 and seeds that counter before building, then verifies the product version before publication.
 `## Unreleased` stays un-promoted until the release publishes successfully, and
 `--generate-release-notes` falling back to `## Unreleased` is the normal path, not a degraded one.
+Extraction and promotion preserve the section body verbatim, including wrapped text and nested
+bullets; do not round-trip notes through the flat validation parser.
 
 Promotion is the operator's step **after** the release publishes; the workflow prints the exact
 command in its job summary. Skipping it leaves shipped changes under `## Unreleased`, where later

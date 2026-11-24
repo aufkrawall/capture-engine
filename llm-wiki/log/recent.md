@@ -20,6 +20,15 @@
   string `n9.1`. `build_corresponding_source.py` now peels commit/tag refs to the expected commit before
   checking HEAD; the compatible manifest records both `n9.1` and `74e43935...`. Real staging of all
   11,105 files and all seven patches passed.
+- Release run `45326642405` succeeded in 43m31s on commit `f507bf31` and published non-draft,
+  non-prerelease `v0.1.7162` with all six assets. `gh attestation verify` passed every asset against
+  `release-stable.yml`, `refs/heads/main`, and source commit `f507bf31`; the downloaded product's
+  `avcodec-ce-63.dll` reports ProductVersion `n9.1`, and the corresponding-source manifest records
+  `n9.1` plus commit `74e43935...`.
+- The first post-release promotion exposed that `manage_changelog.py` flattened nested release bullets
+  through its validation parser. Extraction now returns each section body verbatim (minus only the
+  `Changes since` baseline line), with regression coverage for nested detail; the live changelog and
+  GitHub release notes were regenerated from the preserved structure.
 
 ### 2026-11-22 - AMD AMF option compatibility fixes, codec-open trace capture, template curation
 

@@ -32,6 +32,8 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 ### Fixed
 
 - **DirectX 12 fence drain:** fixed crash when shutting down overlay during fence synchronization.
+  - The fence cleanup is now ordered before the swapchain is released.
+  - The regression covers nested detail preservation.
 
 ## v0.1.6652
 
@@ -118,6 +120,7 @@ class ChangelogTest(unittest.TestCase):
         assert notes_unreleased is not None
         self.assertIn("### New", notes_unreleased)
         self.assertIn("### Fixed", notes_unreleased)
+        self.assertIn("\n  - The fence cleanup is now ordered", notes_unreleased)
 
         notes_6652 = extract_version_notes(SAMPLE_VALID_CHANGELOG, "0.1.6652")
         self.assertIsNotNone(notes_6652)
@@ -155,6 +158,7 @@ class ChangelogTest(unittest.TestCase):
         self.assertIn("## v0.1.6700", promoted_text)
         self.assertIn("Changes since [v0.1.6652]", promoted_text)
         self.assertIn("FidelityFX CAS/RCAS sharpening", promoted_text)
+        self.assertIn("\n  - The fence cleanup is now ordered", promoted_text)
 
         # Validate that the promoted changelog is structurally valid
         errors = validate_changelog(promoted_text)
